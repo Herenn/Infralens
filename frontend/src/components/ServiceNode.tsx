@@ -26,9 +26,10 @@ export interface ServiceNodeData {
   healthy: boolean
   ports?: number[] // Listening ports
   // Workload aggregation data
-  workloadType?: WorkloadType
+  workloadType?: WorkloadType | null
   podCount?: number
   childServiceIds?: string[]
+  isK8sWorkload?: boolean
 }
 
 interface ServiceNodeProps {
@@ -129,7 +130,7 @@ function getK8sDisplayInfo(service: Service): { type: string; namespace: string;
 }
 
 function ServiceNode({ data, selected }: ServiceNodeProps) {
-  const { label, service, incomingCount, outgoingCount, healthy, ports, workloadType, podCount } = data
+  const { label, service, incomingCount, outgoingCount, healthy, ports, workloadType, podCount, isK8sWorkload } = data
 
   const k8sInfo = getK8sDisplayInfo(service)
   
@@ -137,15 +138,17 @@ function ServiceNode({ data, selected }: ServiceNodeProps) {
   const Icon = getServiceIcon(service.type, service.icon)
   const typeColor = getTypeColor(service.type)
 
-  // Workload type info for badge
-  const workloadInfo = workloadType ? WorkloadTypeInfo[workloadType] : null
+  // Workload type info for badge (only for K8s workloads)
+  const workloadInfo = (workloadType && isK8sWorkload) ? WorkloadTypeInfo[workloadType] : null
   
-  // Determine the badge text - prioritize workload type, then tech
-  const badgeText = workloadInfo?.shortLabel || service.tech || (k8sInfo ? k8sInfo.type : null)
+  // Determine the badge text:
+  // - For K8s workloads: show workload type (DP, DS, etc.)
+  // - For non-K8s: show tech if available
+  const badgeText = workloadInfo?.shortLabel || service.tech || null
   const badgeColor = workloadInfo?.color || (service.type ? typeColor : '#6b7280')
   
-  // Show replica count if > 1
-  const showReplicaCount = podCount && podCount > 1
+  // Show replica count only for K8s workloads with > 1 pod
+  const showReplicaCount = isK8sWorkload && podCount && podCount > 1
 
   // Format ports for display (show first 2 max)
   const displayPorts = ports?.slice(0, 2) || []

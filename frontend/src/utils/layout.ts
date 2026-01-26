@@ -8,9 +8,10 @@ import { Topology, Service, Connection as TopologyConnection } from '../types'
 export type WorkloadType = 'Deploy' | 'DS' | 'STS' | 'Job' | 'RS' | 'App' | 'Pod' | 'Svc' | 'External' | 'Unknown'
 
 export interface AggregatedService extends Service {
-  workloadType: WorkloadType
+  workloadType: WorkloadType | null  // null for non-K8s services
   podCount: number
   childServiceIds: string[] // IDs of services aggregated into this one
+  isK8sWorkload: boolean // Whether this is a K8s workload (for display purposes)
   aggregatedBytes?: {
     sent: number
     recv: number
@@ -38,11 +39,21 @@ export const WorkloadTypeInfo: Record<WorkloadType, { label: string; shortLabel:
 // ============================================================================
 
 /**
+ * Checks if a resolved name is a K8s workload (not just an IP).
+ */
+function isK8sWorkload(resolvedName: string | undefined): boolean {
+  if (!resolvedName) return false
+  // K8s workloads are prefixed with: Deploy:, DS:, STS:, Job:, RS:, App:, Pod:, Svc:
+  return /^(Deploy|DS|STS|Job|RS|App|Pod|Svc):/.test(resolvedName)
+}
+
+/**
  * Parses the workload type from resolved_name.
  * Format: "Deploy: namespace/name", "DS: namespace/name", etc.
+ * Returns null for non-K8s services (raw IPs).
  */
-function parseWorkloadType(resolvedName: string | undefined): WorkloadType {
-  if (!resolvedName) return 'Unknown'
+function parseWorkloadType(resolvedName: string | undefined): WorkloadType | null {
+  if (!resolvedName || !isK8sWorkload(resolvedName)) return null
   
   const prefix = resolvedName.split(':')[0]?.trim()
   switch (prefix) {
@@ -54,7 +65,7 @@ function parseWorkloadType(resolvedName: string | undefined): WorkloadType {
     case 'App': return 'App'
     case 'Pod': return 'Pod'
     case 'Svc': return 'Svc'
-    default: return 'Unknown'
+    default: return null
   }
 }
 
@@ -80,21 +91,19 @@ function parseWorkloadName(resolvedName: string | undefined): string {
 /**
  * Creates an aggregation key for a service.
  * Services with the same key will be aggregated together.
- * Key format: "{node}|{resolved_name}"
+ * For K8s workloads: "{node}|{resolved_name}" 
+ * For non-K8s: unique key per service (no aggregation)
  */
-function getAggregationKey(service: Service): string {
-  const node = service.node || 'External'
-  const resolved = service.resolved_name || service.display_name || service.id
-  return `${node}|${resolved}`
-}
-
-/**
- * Determines if a service should be aggregated (has a K8s workload type).
- */
-function shouldAggregate(service: Service): boolean {
+function getAggregationKey(service: Service): string | null {
   const resolved = service.resolved_name || service.display_name || ''
-  // Only aggregate K8s workload types (not external or unknown)
-  return resolved.match(/^(Deploy|DS|STS|Job|RS|App|Pod|Svc):/) !== null
+  
+  // Only aggregate K8s workloads
+  if (!isK8sWorkload(resolved)) {
+    return null // Return null to indicate no aggregation
+  }
+  
+  const node = service.node || 'External'
+  return `${node}|${resolved}`
 }
 
 // ============================================================================
@@ -119,13 +128,14 @@ function aggregateServicesByWorkload(
   const groups = new Map<string, Service[]>()
   
   services.forEach(service => {
-    if (shouldAggregate(service)) {
-      const key = getAggregationKey(service)
+    const key = getAggregationKey(service)
+    if (key) {
+      // K8s workload - aggregate by key
       const group = groups.get(key) || []
       group.push(service)
       groups.set(key, group)
     } else {
-      // Non-aggregatable services get their own unique key
+      // Non-K8s service - keep as individual (unique key)
       groups.set(`unique-${service.id}`, [service])
     }
   })
@@ -138,13 +148,15 @@ function aggregateServicesByWorkload(
     if (groupServices.length === 0) return
 
     const firstService = groupServices[0]
-    const workloadType = parseWorkloadType(firstService.resolved_name || firstService.display_name)
-    const workloadName = parseWorkloadName(firstService.resolved_name || firstService.display_name)
+    const resolved = firstService.resolved_name || firstService.display_name || ''
+    const isK8s = isK8sWorkload(resolved)
+    const workloadType = parseWorkloadType(resolved)
+    const workloadName = isK8s ? parseWorkloadName(resolved) : ''
     
     // Create stable aggregated ID
     const aggregatedId = groupServices.length === 1 
       ? firstService.id  // Keep original ID for single services
-      : `agg-${(firstService.node || 'ext').replace(/[^a-zA-Z0-9]/g, '-')}-${(firstService.resolved_name || firstService.id).replace(/[^a-zA-Z0-9]/g, '-')}`
+      : `agg-${(firstService.node || 'ext').replace(/[^a-zA-Z0-9]/g, '-')}-${(resolved || firstService.id).replace(/[^a-zA-Z0-9]/g, '-')}`
 
     // Map all child IDs to the aggregated ID
     groupServices.forEach(s => {
@@ -168,6 +180,7 @@ function aggregateServicesByWorkload(
       workloadType,
       podCount: groupServices.length,
       childServiceIds: groupServices.map(s => s.id),
+      isK8sWorkload: isK8s,
     }
 
     aggregatedServices.push(aggregatedService)
@@ -396,6 +409,7 @@ export function layoutGraph(topology: Topology): LayoutResult {
           workloadType: service.workloadType,
           podCount: service.podCount,
           childServiceIds: service.childServiceIds,
+          isK8sWorkload: service.isK8sWorkload,
         },
         style: {
           width: NODE_WIDTH,
