@@ -318,8 +318,14 @@ function App() {
       })
       setDrawerOpen(true)
     } else if (node.type === 'service') {
-      // Service node clicked - find from original topology for full data
-      const service = topology?.services.find((s) => s.id === node.id)
+      // Service node clicked - find from original topology first, then filtered (for aggregated services)
+      let service = topology?.services.find((s) => s.id === node.id)
+      
+      // If not found in original, check filtered topology (for collapsed/aggregated services)
+      if (!service && filteredTopology) {
+        service = filteredTopology.services.find((s) => s.id === node.id)
+      }
+      
       const ports = (node.data as { ports?: number[] })?.ports || []
       setSelectedNode({
         type: 'service',
@@ -329,7 +335,7 @@ function App() {
       })
       setDrawerOpen(true)
     }
-  }, [topology])
+  }, [topology, filteredTopology])
 
   // Handle pane click - close drawer
   const onPaneClick = useCallback(() => {
@@ -459,7 +465,7 @@ function App() {
         isOpen={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         service={selectedNode.service}
-        connections={topology?.connections || []}
+        connections={filteredTopology?.connections || topology?.connections || []}
         ports={selectedNode.ports}
         serverData={selectedNode.serverData}
         nodeType={selectedNode.type}
