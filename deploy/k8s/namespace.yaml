@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: infralens
+  labels:
+    app.kubernetes.io/name: infralens
+    app.kubernetes.io/component: system

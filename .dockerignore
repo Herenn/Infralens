@@ -1,0 +1,49 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Generated eBPF files (will be regenerated in container)
+agent/ebpf/bpf_*.go
+agent/ebpf/bpf_*.o
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Frontend (not needed for agent build)
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Test files
+*_test.go
+testdata/
+
+# Local environment
+.env
+.env.*
+*.local
+
+# Logs
+*.log
+
+# Temporary
+tmp/
+temp/

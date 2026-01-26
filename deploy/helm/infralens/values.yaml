@@ -1,0 +1,146 @@
+# InfraLens Helm Chart Values
+# ===========================
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Namespace
+namespace: infralens
+
+# ===========================
+# Backend Configuration
+# ===========================
+backend:
+  enabled: true
+  replicaCount: 1
+  
+  image:
+    repository: infralens/backend
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 8080
+  
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  
+  # AI Documentation Configuration
+  ai:
+    # OpenAI
+    openai:
+      apiKey: ""
+      model: "gpt-3.5-turbo"
+    # Anthropic
+    anthropic:
+      apiKey: ""
+      model: "claude-3-haiku-20240307"
+    # Google Gemini
+    gemini:
+      apiKey: ""
+      model: "gemini-pro"
+    # Ollama (local)
+    ollama:
+      url: ""
+      model: "llama2"
+    # Default provider
+    defaultProvider: "openai"
+
+# ===========================
+# Frontend Configuration
+# ===========================
+frontend:
+  enabled: true
+  replicaCount: 1
+  
+  image:
+    repository: infralens/frontend
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 3000
+  
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ===========================
+# Agent Configuration (DaemonSet)
+# ===========================
+agent:
+  enabled: true
+  
+  image:
+    repository: infralens/agent
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  
+  # Agent runs with elevated privileges for eBPF
+  securityContext:
+    privileged: true
+  
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  
+  # Node selector for agent deployment
+  nodeSelector: {}
+  
+  # Tolerations for agent (e.g., to run on master nodes)
+  tolerations:
+    - operator: Exists
+      effect: NoSchedule
+
+# ===========================
+# Ingress Configuration
+# ===========================
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: infralens.local
+      paths:
+        - path: /
+          pathType: Prefix
+          service: frontend
+        - path: /api
+          pathType: Prefix
+          service: backend
+  tls: []
+    # - secretName: infralens-tls
+    #   hosts:
+    #     - infralens.local
+
+# ===========================
+# Service Account
+# ===========================
+serviceAccount:
+  create: true
+  name: "infralens"
+  annotations: {}
+
+# ===========================
+# RBAC Configuration
+# ===========================
+rbac:
+  create: true

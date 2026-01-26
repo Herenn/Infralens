@@ -1,0 +1,92 @@
+# InfraLens Docker Compose
+# ========================
+# For single-server deployments and development
+#
+# Usage:
+#   docker-compose up -d
+#
+# With AI features:
+#   OPENAI_API_KEY=sk-xxx docker-compose up -d
+
+version: '3.8'
+
+services:
+  # ===========================
+  # Backend - API & WebSocket Server
+  # ===========================
+  backend:
+    image: infralens/backend:latest
+    build:
+      context: ../../
+      dockerfile: Dockerfile.backend
+    container_name: infralens-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # AI Documentation (optional)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-haiku-20240307}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-pro}
+      - OLLAMA_URL=${OLLAMA_URL:-}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama2}
+      - DEFAULT_LLM_PROVIDER=${DEFAULT_LLM_PROVIDER:-openai}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - infralens
+
+  # ===========================
+  # Frontend - React UI
+  # ===========================
+  frontend:
+    image: infralens/frontend:latest
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+    container_name: infralens-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_WS_URL=ws://backend:8080/api/v1/ws
+    depends_on:
+      - backend
+    networks:
+      - infralens
+
+  # ===========================
+  # Agent - eBPF Network Monitor
+  # ===========================
+  # NOTE: Agent requires privileged mode for eBPF
+  # Run separately on host for production use
+  agent:
+    image: infralens/agent:latest
+    build:
+      context: ../../
+      dockerfile: Dockerfile.agent
+    container_name: infralens-agent
+    restart: unless-stopped
+    privileged: true
+    pid: host
+    network_mode: host
+    command:
+      - --backend=localhost:8080
+      - --node=${HOSTNAME:-docker-host}
+      - --inspect
+    volumes:
+      - /proc:/proc:ro
+      - /sys:/sys:ro
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+    depends_on:
+      - backend
+
+networks:
+  infralens:
+    driver: bridge

@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: infralens
+
+resources:
+  - namespace.yaml
+  - agent-daemonset.yaml
+  - backend-deployment.yaml
+  - frontend-deployment.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: infralens
+      app.kubernetes.io/managed-by: kustomize
+
+commonAnnotations:
+  infralens.io/version: "0.1.0"

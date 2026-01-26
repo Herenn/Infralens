@@ -1,0 +1,86 @@
+# =============================================================================
+# InfraLens Agent Dockerfile
+# Multi-stage build for compiling eBPF programs and Go binary
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Go Builder
+# Compile eBPF C code and build Go binary
+# -----------------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS go-builder
+
+# Install BPF compilation dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    clang-15 \
+    llvm-15 \
+    libbpf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create symlinks for clang and llvm-strip
+RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 100 \
+    && update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-15 100
+
+WORKDIR /app
+
+# Copy go mod files first for better layer caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Install bpf2go tool (pin to v0.12.3 compatible with our go.mod)
+RUN go install github.com/cilium/ebpf/cmd/bpf2go@v0.12.3
+
+# Copy source code (includes vmlinux.h in agent/bpf/headers/)
+COPY . .
+
+# Generate eBPF Go bindings from C code
+WORKDIR /app/agent/ebpf
+RUN go generate ./...
+
+# Build arguments for cross-compilation
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+# Build the Go binary
+WORKDIR /app
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags="-w -s -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo 'dev')" \
+    -o /out/infralens-agent ./agent
+
+# -----------------------------------------------------------------------------
+# Stage 3: Runtime
+# Minimal image with just the binary
+# -----------------------------------------------------------------------------
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+
+# Labels
+LABEL org.opencontainers.image.title="InfraLens Agent"
+LABEL org.opencontainers.image.description="eBPF-based network traffic tracer for Kubernetes"
+LABEL org.opencontainers.image.source="https://github.com/infralens/infralens"
+
+# Copy the binary
+COPY --from=go-builder /out/infralens-agent /infralens-agent
+
+# Run as non-root (note: eBPF requires CAP_BPF, CAP_SYS_ADMIN at runtime)
+USER nonroot:nonroot
+
+ENTRYPOINT ["/infralens-agent"]
+
+# -----------------------------------------------------------------------------
+# Alternative: Debug image with shell
+# Build with: docker build --target debug -t infralens-agent:debug .
+# -----------------------------------------------------------------------------
+FROM alpine:3.19 AS debug
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=go-builder /out/infralens-agent /usr/local/bin/infralens-agent
+
+# Include useful debug tools
+RUN apk add --no-cache \
+    strace \
+    tcpdump \
+    curl \
+    busybox-extras
+
+ENTRYPOINT ["/usr/local/bin/infralens-agent"]

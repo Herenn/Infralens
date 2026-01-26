@@ -1,0 +1,53 @@
+# Binaries
+build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Compiled Go binaries
+backend/backend
+agent/infralens-agent
+infralens-agent
+demo-traffic
+tools/demo/demo-traffic
+
+# Go
+*.test
+*.out
+go.work
+
+# Generated eBPF files
+agent/ebpf/bpf_*.go
+agent/ebpf/bpf_*.o
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.cursorrules
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+tmp/
+temp/
+

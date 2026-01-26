@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: infralens-backend
+  namespace: infralens
+  labels:
+    app.kubernetes.io/name: infralens
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: infralens
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: infralens
+        app.kubernetes.io/component: backend
+    spec:
+      serviceAccountName: infralens-backend
+      containers:
+        - name: backend
+          image: infralens/backend:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --listen=:8080
+            - --debug
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: infralens-backend
+  namespace: infralens
+  labels:
+    app.kubernetes.io/name: infralens
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: infralens
+    app.kubernetes.io/component: backend
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: infralens-backend
+  namespace: infralens
+  labels:
+    app.kubernetes.io/name: infralens
+    app.kubernetes.io/component: backend
+---
+# ClusterRole for reading Pods and Services (required for K8s service discovery)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: infralens-backend
+  labels:
+    app.kubernetes.io/name: infralens
+    app.kubernetes.io/component: backend
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: infralens-backend
+  labels:
+    app.kubernetes.io/name: infralens
+    app.kubernetes.io/component: backend
+subjects:
+  - kind: ServiceAccount
+    name: infralens-backend
+    namespace: infralens
+roleRef:
+  kind: ClusterRole
+  name: infralens-backend
+  apiGroup: rbac.authorization.k8s.io
