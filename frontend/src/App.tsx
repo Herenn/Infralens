@@ -11,6 +11,8 @@ import {
   Node,
   Edge,
   BackgroundVariant,
+  getNodesBounds,
+  getViewportForBounds,
 } from '@xyflow/react'
 import { toPng } from 'html-to-image'
 import '@xyflow/react/dist/style.css'
@@ -342,10 +344,28 @@ function App() {
     setDrawerOpen(false)
   }, [])
 
-  // Export topology as PNG
+  // Export topology as PNG - captures ALL nodes, not just viewport
   const handleExport = useCallback(() => {
+    if (nodes.length === 0) return
+
     const flowElement = document.querySelector('.react-flow') as HTMLElement
     if (!flowElement) return
+
+    // Calculate bounds of all nodes
+    const nodesBounds = getNodesBounds(nodes)
+    const padding = 50
+    const imageWidth = nodesBounds.width + padding * 2
+    const imageHeight = nodesBounds.height + padding * 2
+
+    // Get viewport to fit all nodes
+    const viewport = getViewportForBounds(
+      nodesBounds,
+      imageWidth,
+      imageHeight,
+      0.5,  // minZoom
+      2,    // maxZoom
+      padding
+    )
 
     // Hide controls and minimap during export
     const controls = flowElement.querySelector('.react-flow__controls') as HTMLElement
@@ -356,13 +376,22 @@ function App() {
     if (minimap) minimap.style.display = 'none'
     if (attribution) attribution.style.display = 'none'
 
+    // Get the viewport element and apply transform for full capture
+    const viewportElement = flowElement.querySelector('.react-flow__viewport') as HTMLElement
+    const originalTransform = viewportElement?.style.transform || ''
+    
+    if (viewportElement) {
+      viewportElement.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`
+    }
+
+    // Use larger dimensions to capture all content
     toPng(flowElement, {
       backgroundColor: '#0a0f1a',
-      width: flowElement.offsetWidth,
-      height: flowElement.offsetHeight,
+      width: Math.max(imageWidth, flowElement.offsetWidth),
+      height: Math.max(imageHeight, flowElement.offsetHeight),
       style: {
-        width: `${flowElement.offsetWidth}px`,
-        height: `${flowElement.offsetHeight}px`,
+        width: `${Math.max(imageWidth, flowElement.offsetWidth)}px`,
+        height: `${Math.max(imageHeight, flowElement.offsetHeight)}px`,
       },
     })
       .then((dataUrl: string) => {
@@ -375,12 +404,15 @@ function App() {
         console.error('Export failed:', err)
       })
       .finally(() => {
-        // Restore controls and minimap
+        // Restore everything
+        if (viewportElement) {
+          viewportElement.style.transform = originalTransform
+        }
         if (controls) controls.style.display = ''
         if (minimap) minimap.style.display = ''
         if (attribution) attribution.style.display = ''
       })
-  }, [])
+  }, [nodes])
 
   return (
     <div className="h-screen w-screen flex flex-col bg-dark-950">

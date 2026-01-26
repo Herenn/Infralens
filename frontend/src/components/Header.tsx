@@ -93,18 +93,22 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             <ChevronDown size={12} className={`transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
           </button>
           
-          {/* Dropdown Menu */}
+          {/* Dropdown Menu - high z-index to appear above ReactFlow */}
           {dropdownOpen && (
-            <div className="absolute top-full left-0 mt-1 bg-dark-800 border border-dark-700 rounded-lg shadow-xl z-50 py-1 min-w-[140px]">
+            <div 
+              className="absolute top-full left-0 mt-1 bg-dark-800 border border-dark-700 rounded-lg shadow-xl py-1 min-w-[140px]"
+              style={{ zIndex: 9999 }}
+            >
               {minConnectionOptions.map(opt => (
                 <button
                   key={opt.value}
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation()
                     onFiltersChange({ ...filters, minConnections: opt.value })
                     setDropdownOpen(false)
                   }}
                   className={`
-                    w-full px-4 py-2 text-xs text-left hover:bg-dark-700 transition-colors
+                    w-full px-4 py-2 text-xs text-left hover:bg-dark-700 transition-colors cursor-pointer
                     ${filters.minConnections === opt.value ? 'text-blue-400 bg-dark-700/50' : 'text-dark-300'}
                   `}
                 >
