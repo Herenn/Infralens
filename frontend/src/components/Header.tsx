@@ -1,4 +1,5 @@
-import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown } from 'lucide-react'
 import { Stats } from '../types'
 
 interface FilterState {
@@ -13,11 +14,34 @@ interface HeaderProps {
   filters: FilterState
   onFiltersChange: (filters: FilterState) => void
   filteredStats?: Stats
+  onExport?: () => void
 }
 
-export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats }: HeaderProps) {
+export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, onExport }: HeaderProps) {
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  
   const displayStats = filteredStats || stats
   const hasFilters = filters.hideLocalhost || filters.minConnections > 1 || filters.collapseExternal
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const minConnectionOptions = [
+    { value: 1, label: 'Show all' },
+    { value: 2, label: '2+ connections' },
+    { value: 3, label: '3+ connections' },
+    { value: 5, label: '5+ connections' },
+    { value: 10, label: '10+ connections' },
+  ]
 
   return (
     <header className="h-14 px-6 flex items-center justify-between border-b border-dark-800 bg-dark-900/80 backdrop-blur-sm">
@@ -51,9 +75,10 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           <span>Localhost</span>
         </button>
 
-        {/* Min Connections Filter */}
-        <div className="relative group">
+        {/* Min Connections Filter - Click-based dropdown */}
+        <div className="relative" ref={dropdownRef}>
           <button
+            onClick={() => setDropdownOpen(!dropdownOpen)}
             className={`
               flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
               ${filters.minConnections > 1 
@@ -65,22 +90,29 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           >
             <Filter size={14} />
             <span>Min: {filters.minConnections}</span>
+            <ChevronDown size={12} className={`transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
           </button>
-          {/* Dropdown */}
-          <div className="absolute top-full left-0 mt-1 bg-dark-800 border border-dark-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 py-1">
-            {[1, 2, 3, 5, 10].map(n => (
-              <button
-                key={n}
-                onClick={() => onFiltersChange({ ...filters, minConnections: n })}
-                className={`
-                  w-full px-4 py-1.5 text-xs text-left hover:bg-dark-700 transition-colors
-                  ${filters.minConnections === n ? 'text-blue-400' : 'text-dark-300'}
-                `}
-              >
-                {n === 1 ? 'Show all' : `${n}+ connections`}
-              </button>
-            ))}
-          </div>
+          
+          {/* Dropdown Menu */}
+          {dropdownOpen && (
+            <div className="absolute top-full left-0 mt-1 bg-dark-800 border border-dark-700 rounded-lg shadow-xl z-50 py-1 min-w-[140px]">
+              {minConnectionOptions.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => {
+                    onFiltersChange({ ...filters, minConnections: opt.value })
+                    setDropdownOpen(false)
+                  }}
+                  className={`
+                    w-full px-4 py-2 text-xs text-left hover:bg-dark-700 transition-colors
+                    ${filters.minConnections === opt.value ? 'text-blue-400 bg-dark-700/50' : 'text-dark-300'}
+                  `}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Collapse External Toggle */}
@@ -93,11 +125,23 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
               : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
             }
           `}
-          title="Collapse external endpoints"
+          title="Collapse external endpoints by type"
         >
           <span>🗂️</span>
           <span>Collapse</span>
         </button>
+
+        {/* Export Button */}
+        {onExport && (
+          <button
+            onClick={onExport}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300 hover:bg-dark-700"
+            title="Export topology as PNG"
+          >
+            <Download size={14} />
+            <span>Export</span>
+          </button>
+        )}
 
         {/* Clear filters */}
         {hasFilters && (

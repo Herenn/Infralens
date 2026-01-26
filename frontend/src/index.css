@@ -95,3 +95,48 @@ body {
     linear-gradient(90deg, rgba(55, 65, 81, 0.3) 1px, transparent 1px);
   background-size: 20px 20px;
 }
+
+/* React Flow Controls - Dark Theme */
+.react-flow__controls {
+  background: #1f2937 !important;
+  border: 1px solid #374151 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3) !important;
+}
+
+.react-flow__controls-button {
+  background: #1f2937 !important;
+  border: none !important;
+  border-bottom: 1px solid #374151 !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 4px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: none !important;
+}
+
+.react-flow__controls-button:hover {
+  background: #374151 !important;
+}
+
+.react-flow__controls-button svg {
+  fill: #94a3b8 !important;
+  max-width: 14px !important;
+  max-height: 14px !important;
+}
+
+.react-flow__controls-button:hover svg {
+  fill: #f1f5f9 !important;
+}
+
+/* MiniMap Dark Theme */
+.react-flow__minimap {
+  background: #1f2937 !important;
+  border: 1px solid #374151 !important;
+  border-radius: 8px !important;
+}

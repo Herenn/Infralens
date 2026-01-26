@@ -12,6 +12,7 @@ import {
   Edge,
   BackgroundVariant,
 } from '@xyflow/react'
+import { toPng } from 'html-to-image'
 import '@xyflow/react/dist/style.css'
 
 import ServiceNode from './components/ServiceNode'
@@ -335,6 +336,46 @@ function App() {
     setDrawerOpen(false)
   }, [])
 
+  // Export topology as PNG
+  const handleExport = useCallback(() => {
+    const flowElement = document.querySelector('.react-flow') as HTMLElement
+    if (!flowElement) return
+
+    // Hide controls and minimap during export
+    const controls = flowElement.querySelector('.react-flow__controls') as HTMLElement
+    const minimap = flowElement.querySelector('.react-flow__minimap') as HTMLElement
+    const attribution = flowElement.querySelector('.react-flow__attribution') as HTMLElement
+    
+    if (controls) controls.style.display = 'none'
+    if (minimap) minimap.style.display = 'none'
+    if (attribution) attribution.style.display = 'none'
+
+    toPng(flowElement, {
+      backgroundColor: '#0a0f1a',
+      width: flowElement.offsetWidth,
+      height: flowElement.offsetHeight,
+      style: {
+        width: `${flowElement.offsetWidth}px`,
+        height: `${flowElement.offsetHeight}px`,
+      },
+    })
+      .then((dataUrl: string) => {
+        const link = document.createElement('a')
+        link.download = `infralens-topology-${new Date().toISOString().slice(0, 10)}.png`
+        link.href = dataUrl
+        link.click()
+      })
+      .catch((err: Error) => {
+        console.error('Export failed:', err)
+      })
+      .finally(() => {
+        // Restore controls and minimap
+        if (controls) controls.style.display = ''
+        if (minimap) minimap.style.display = ''
+        if (attribution) attribution.style.display = ''
+      })
+  }, [])
+
   return (
     <div className="h-screen w-screen flex flex-col bg-dark-950">
       <Header 
@@ -343,6 +384,7 @@ function App() {
         filters={filters}
         onFiltersChange={setFilters}
         filteredStats={filteredStats}
+        onExport={handleExport}
       />
       
       <div className="flex-1 flex overflow-hidden">
