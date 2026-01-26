@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image } from 'lucide-react'
 import { Stats } from '../types'
 
 interface FilterState {
@@ -14,21 +15,38 @@ interface HeaderProps {
   filters: FilterState
   onFiltersChange: (filters: FilterState) => void
   filteredStats?: Stats
-  onExport?: () => void
+  onExportPng?: () => void
+  onExportJson?: () => void
 }
 
-export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, onExport }: HeaderProps) {
-  const [dropdownOpen, setDropdownOpen] = useState(false)
-  const dropdownRef = useRef<HTMLDivElement>(null)
+export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, onExportPng, onExportJson }: HeaderProps) {
+  const [filterDropdownOpen, setFilterDropdownOpen] = useState(false)
+  const [exportDropdownOpen, setExportDropdownOpen] = useState(false)
+  const filterButtonRef = useRef<HTMLButtonElement>(null)
+  const exportButtonRef = useRef<HTMLButtonElement>(null)
   
   const displayStats = filteredStats || stats
   const hasFilters = filters.hideLocalhost || filters.minConnections > 1 || filters.collapseExternal
 
-  // Close dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setDropdownOpen(false)
+      const target = event.target as Node
+      
+      // Check filter dropdown
+      if (filterButtonRef.current && !filterButtonRef.current.contains(target)) {
+        const filterDropdown = document.getElementById('filter-dropdown')
+        if (filterDropdown && !filterDropdown.contains(target)) {
+          setFilterDropdownOpen(false)
+        }
+      }
+      
+      // Check export dropdown
+      if (exportButtonRef.current && !exportButtonRef.current.contains(target)) {
+        const exportDropdown = document.getElementById('export-dropdown')
+        if (exportDropdown && !exportDropdown.contains(target)) {
+          setExportDropdownOpen(false)
+        }
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
@@ -43,8 +61,21 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
     { value: 10, label: '10+ connections' },
   ]
 
+  // Get button position for portal dropdown
+  const getDropdownPosition = (buttonRef: React.RefObject<HTMLButtonElement>) => {
+    if (!buttonRef.current) return { top: 0, left: 0 }
+    const rect = buttonRef.current.getBoundingClientRect()
+    return {
+      top: rect.bottom + 4,
+      left: rect.left,
+    }
+  }
+
+  const filterPos = getDropdownPosition(filterButtonRef)
+  const exportPos = getDropdownPosition(exportButtonRef)
+
   return (
-    <header className="h-14 px-6 flex items-center justify-between border-b border-dark-800 bg-dark-900/80 backdrop-blur-sm">
+    <header className="h-14 px-6 flex items-center justify-between border-b border-dark-800 bg-dark-900/80 backdrop-blur-sm relative z-50">
       {/* Logo */}
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-lens-500 to-lens-600 flex items-center justify-center">
@@ -75,49 +106,56 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           <span>Localhost</span>
         </button>
 
-        {/* Min Connections Filter - Click-based dropdown */}
-        <div className="relative" ref={dropdownRef}>
-          <button
-            onClick={() => setDropdownOpen(!dropdownOpen)}
-            className={`
-              flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
-              ${filters.minConnections > 1 
-                ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' 
-                : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
-              }
-            `}
-            title="Minimum connections to show"
+        {/* Min Connections Filter */}
+        <button
+          ref={filterButtonRef}
+          onClick={() => {
+            setFilterDropdownOpen(!filterDropdownOpen)
+            setExportDropdownOpen(false)
+          }}
+          className={`
+            flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+            ${filters.minConnections > 1 
+              ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' 
+              : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
+            }
+          `}
+          title="Minimum connections to show"
+        >
+          <Filter size={14} />
+          <span>Min: {filters.minConnections}</span>
+          <ChevronDown size={12} className={`transition-transform ${filterDropdownOpen ? 'rotate-180' : ''}`} />
+        </button>
+
+        {/* Filter Dropdown Portal */}
+        {filterDropdownOpen && createPortal(
+          <div 
+            id="filter-dropdown"
+            className="fixed bg-dark-800 border border-dark-700 rounded-lg shadow-2xl py-1 min-w-[150px]"
+            style={{ 
+              top: filterPos.top, 
+              left: filterPos.left,
+              zIndex: 99999,
+            }}
           >
-            <Filter size={14} />
-            <span>Min: {filters.minConnections}</span>
-            <ChevronDown size={12} className={`transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
-          </button>
-          
-          {/* Dropdown Menu - high z-index to appear above ReactFlow */}
-          {dropdownOpen && (
-            <div 
-              className="absolute top-full left-0 mt-1 bg-dark-800 border border-dark-700 rounded-lg shadow-xl py-1 min-w-[140px]"
-              style={{ zIndex: 9999 }}
-            >
-              {minConnectionOptions.map(opt => (
-                <button
-                  key={opt.value}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onFiltersChange({ ...filters, minConnections: opt.value })
-                    setDropdownOpen(false)
-                  }}
-                  className={`
-                    w-full px-4 py-2 text-xs text-left hover:bg-dark-700 transition-colors cursor-pointer
-                    ${filters.minConnections === opt.value ? 'text-blue-400 bg-dark-700/50' : 'text-dark-300'}
-                  `}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+            {minConnectionOptions.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => {
+                  onFiltersChange({ ...filters, minConnections: opt.value })
+                  setFilterDropdownOpen(false)
+                }}
+                className={`
+                  w-full px-4 py-2.5 text-sm text-left hover:bg-dark-700 transition-colors cursor-pointer
+                  ${filters.minConnections === opt.value ? 'text-blue-400 bg-dark-700/50' : 'text-dark-300'}
+                `}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
 
         {/* Collapse External Toggle */}
         <button
@@ -135,16 +173,54 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           <span>Collapse</span>
         </button>
 
-        {/* Export Button */}
-        {onExport && (
-          <button
-            onClick={onExport}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300 hover:bg-dark-700"
-            title="Export topology as PNG"
+        {/* Export Button with Dropdown */}
+        <button
+          ref={exportButtonRef}
+          onClick={() => {
+            setExportDropdownOpen(!exportDropdownOpen)
+            setFilterDropdownOpen(false)
+          }}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300 hover:bg-dark-700"
+          title="Export topology"
+        >
+          <Download size={14} />
+          <span>Export</span>
+          <ChevronDown size={12} className={`transition-transform ${exportDropdownOpen ? 'rotate-180' : ''}`} />
+        </button>
+
+        {/* Export Dropdown Portal */}
+        {exportDropdownOpen && createPortal(
+          <div 
+            id="export-dropdown"
+            className="fixed bg-dark-800 border border-dark-700 rounded-lg shadow-2xl py-1 min-w-[160px]"
+            style={{ 
+              top: exportPos.top, 
+              left: exportPos.left,
+              zIndex: 99999,
+            }}
           >
-            <Download size={14} />
-            <span>Export</span>
-          </button>
+            <button
+              onClick={() => {
+                onExportPng?.()
+                setExportDropdownOpen(false)
+              }}
+              className="w-full px-4 py-2.5 text-sm text-left hover:bg-dark-700 transition-colors cursor-pointer text-dark-300 flex items-center gap-2"
+            >
+              <Image size={16} />
+              Export as PNG
+            </button>
+            <button
+              onClick={() => {
+                onExportJson?.()
+                setExportDropdownOpen(false)
+              }}
+              className="w-full px-4 py-2.5 text-sm text-left hover:bg-dark-700 transition-colors cursor-pointer text-dark-300 flex items-center gap-2"
+            >
+              <FileJson size={16} />
+              Export as JSON
+            </button>
+          </div>,
+          document.body
         )}
 
         {/* Clear filters */}

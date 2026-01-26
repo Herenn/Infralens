@@ -344,8 +344,8 @@ function App() {
     setDrawerOpen(false)
   }, [])
 
-  // Export topology as PNG - captures ALL nodes, not just viewport
-  const handleExport = useCallback(() => {
+  // Export topology as high-quality PNG
+  const handleExportPng = useCallback(() => {
     if (nodes.length === 0) return
 
     const flowElement = document.querySelector('.react-flow') as HTMLElement
@@ -353,7 +353,7 @@ function App() {
 
     // Calculate bounds of all nodes
     const nodesBounds = getNodesBounds(nodes)
-    const padding = 50
+    const padding = 100
     const imageWidth = nodesBounds.width + padding * 2
     const imageHeight = nodesBounds.height + padding * 2
 
@@ -384,11 +384,12 @@ function App() {
       viewportElement.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`
     }
 
-    // Use larger dimensions to capture all content
+    // High quality export with 3x pixel ratio
     toPng(flowElement, {
       backgroundColor: '#0a0f1a',
       width: Math.max(imageWidth, flowElement.offsetWidth),
       height: Math.max(imageHeight, flowElement.offsetHeight),
+      pixelRatio: 3, // 3x resolution for high quality
       style: {
         width: `${Math.max(imageWidth, flowElement.offsetWidth)}px`,
         height: `${Math.max(imageHeight, flowElement.offsetHeight)}px`,
@@ -414,6 +415,32 @@ function App() {
       })
   }, [nodes])
 
+  // Export topology as JSON
+  const handleExportJson = useCallback(() => {
+    if (!filteredTopology && !topology) return
+
+    const data = filteredTopology || topology
+    const exportData = {
+      exportedAt: new Date().toISOString(),
+      filters: filters,
+      stats: {
+        services: data?.services.length || 0,
+        connections: data?.connections.length || 0,
+      },
+      services: data?.services || [],
+      connections: data?.connections || [],
+      nodeMetrics: data?.node_metrics || {},
+    }
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.download = `infralens-topology-${new Date().toISOString().slice(0, 10)}.json`
+    link.href = url
+    link.click()
+    URL.revokeObjectURL(url)
+  }, [filteredTopology, topology, filters])
+
   return (
     <div className="h-screen w-screen flex flex-col bg-dark-950">
       <Header 
@@ -422,7 +449,8 @@ function App() {
         filters={filters}
         onFiltersChange={setFilters}
         filteredStats={filteredStats}
-        onExport={handleExport}
+        onExportPng={handleExportPng}
+        onExportJson={handleExportJson}
       />
       
       <div className="flex-1 flex overflow-hidden">
@@ -466,6 +494,8 @@ function App() {
                 return node.data?.healthy ? '#22c55e' : '#ef4444'
               }}
               maskColor="rgba(0, 0, 0, 0.8)"
+              pannable
+              zoomable
             />
           </ReactFlow>
 
