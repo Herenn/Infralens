@@ -26,6 +26,7 @@ import (
 	bpf "github.com/Herenn/Infralens/agent/ebpf"
 	"github.com/Herenn/Infralens/agent/inspector"
 	"github.com/Herenn/Infralens/agent/metrics"
+	"github.com/Herenn/Infralens/agent/updater"
 )
 
 const (
@@ -150,6 +151,9 @@ var (
 	metricsInterval    = flag.Duration("metrics-interval", 5*time.Second, "Interval to collect and report host metrics")
 	enableInspection   = flag.Bool("inspect", true, "Enable deep process inspection")
 	inspectionCooldown = flag.Duration("inspect-cooldown", 30*time.Second, "Minimum time between re-inspecting same PID")
+	autoUpdate         = flag.Bool("auto-update", true, "Enable automatic self-updates")
+	updateCheckInterval = flag.Duration("update-interval", 1*time.Hour, "Interval to check for updates")
+	showVersion        = flag.Bool("version", false, "Show version and exit")
 )
 
 // Global map to store previous stats for delta calculation
@@ -165,11 +169,19 @@ var (
 func main() {
 	flag.Parse()
 
+	// Show version and exit
+	if *showVersion {
+		fmt.Printf("InfraLens Agent %s\n", updater.GetVersion())
+		os.Exit(0)
+	}
+
 	// Get node name
 	if *nodeName == "" {
 		hostname, _ := os.Hostname()
 		*nodeName = hostname
 	}
+	
+	fmt.Printf("InfraLens Agent %s starting...\n", updater.GetVersion())
 
 	// Remove memory lock limit for eBPF (required on older kernels)
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -315,6 +327,27 @@ func main() {
 		fmt.Println("✓ Deep process inspection enabled")
 	}
 
+	// Auto-update checker
+	stopUpdateCh := make(chan struct{})
+	if *autoUpdate && *backendAddr != "" {
+		agentUpdater := updater.NewUpdater(*backendAddr, *updateCheckInterval)
+		agentUpdater.SetUpdateCallback(func() {
+			fmt.Println("📦 New version available! Attempting self-update...")
+			if err := agentUpdater.SelfUpdate(); err != nil {
+				fmt.Printf("⚠️ Self-update failed: %v\n", err)
+				fmt.Println("   Please run the install script again to update manually.")
+			} else {
+				fmt.Println("✓ Update installed! Restarting...")
+				if err := updater.RestartSelf(); err != nil {
+					fmt.Printf("⚠️ Restart failed: %v\n", err)
+					fmt.Println("   Please restart the agent manually: systemctl restart infralens-agent")
+				}
+			}
+		})
+		go agentUpdater.StartPeriodicCheck(stopUpdateCh)
+		fmt.Printf("✓ Auto-update enabled (checking every %s)\n", *updateCheckInterval)
+	}
+
 	// Channels
 	eventCh := make(chan EventPayload, 100)
 	doneCh := make(chan struct{})
@@ -360,6 +393,7 @@ func main() {
 		case <-sig:
 			fmt.Println("\n\nShutting down...")
 			cancel()
+			close(stopUpdateCh) // Stop auto-update checker
 			reader.Close()
 			<-doneCh
 			// Send any remaining events

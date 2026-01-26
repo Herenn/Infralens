@@ -30,6 +30,8 @@ InfraLens is a next-generation observability tool that uses eBPF to automaticall
 - **Dependency Discovery**: Auto-detect package.json, go.mod, requirements.txt
 - **Smart Code Analysis**: Automatic source code discovery with line number references
 - **AI Documentation**: Multi-provider AI support with intelligent service documentation
+- **Auto-Update**: Agents automatically check for updates and self-update
+- **Cached AI Docs**: AI documentation persists in browser - no regeneration needed
 
 ## 🤖 AI-Powered Documentation
 
@@ -278,6 +280,22 @@ The agent automatically discovers and reads project files for AI context:
 ```bash
 --inspect           Enable deep inspection (default: true)
 --inspect-cooldown  Time between re-inspecting same PID (default: 30s)
+--auto-update       Enable automatic self-updates (default: true)
+--update-interval   Interval to check for updates (default: 1h)
+--version           Show agent version and exit
+```
+
+### Auto-Update
+
+Agents automatically check for updates from the backend server and self-update when a new version is available:
+
+1. Agent checks backend `/api/v1/version` endpoint periodically (default: every hour)
+2. If a newer version is detected, the agent downloads and installs it
+3. The agent restarts itself via systemctl
+
+To disable auto-update:
+```bash
+sudo ./infralens-agent --backend=localhost:8080 --auto-update=false
 ```
 
 ---

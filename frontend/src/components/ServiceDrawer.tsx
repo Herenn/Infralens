@@ -724,6 +724,41 @@ function InspectionSection({ inspection }: { inspection: ServiceInspection }) {
   )
 }
 
+// Cache key prefix for localStorage
+const AI_DOCS_CACHE_PREFIX = 'infralens_ai_docs_'
+const AI_DOCS_CACHE_TTL = 24 * 60 * 60 * 1000 // 24 hours
+
+// Get cached docs from localStorage
+function getCachedDocs(serviceId: string): { content: string; provider: string; timestamp: number } | null {
+  try {
+    const cached = localStorage.getItem(AI_DOCS_CACHE_PREFIX + serviceId)
+    if (!cached) return null
+    const parsed = JSON.parse(cached)
+    // Check if cache is still valid
+    if (Date.now() - parsed.timestamp < AI_DOCS_CACHE_TTL) {
+      return parsed
+    }
+    // Cache expired, remove it
+    localStorage.removeItem(AI_DOCS_CACHE_PREFIX + serviceId)
+    return null
+  } catch {
+    return null
+  }
+}
+
+// Save docs to localStorage cache
+function cacheDocs(serviceId: string, content: string, provider: string) {
+  try {
+    localStorage.setItem(AI_DOCS_CACHE_PREFIX + serviceId, JSON.stringify({
+      content,
+      provider,
+      timestamp: Date.now()
+    }))
+  } catch {
+    // localStorage might be full, ignore
+  }
+}
+
 // AI Docs Tab
 function AIDocsTab({ 
   service, 
@@ -743,6 +778,7 @@ function AIDocsTab({
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [fromCache, setFromCache] = useState(false)
   const [config, setConfig] = useState({
     openai_api_key: '',
     anthropic_api_key: '',
@@ -761,6 +797,24 @@ function AIDocsTab({
     fetchAIStatus()
   }, [])
 
+  // Load cached docs when serviceId changes
+  useEffect(() => {
+    if (serviceId) {
+      const cached = getCachedDocs(serviceId)
+      if (cached) {
+        setDocs(cached.content)
+        setProvider(cached.provider)
+        setFromCache(true)
+        setError(null)
+      } else {
+        // Reset when switching to a new service without cache
+        setDocs(null)
+        setProvider(null)
+        setFromCache(false)
+      }
+    }
+  }, [serviceId])
+
   const fetchAIStatus = async () => {
     try {
       setLoading(true)
@@ -778,13 +832,22 @@ function AIDocsTab({
     }
   }
 
-  const handleGenerateDocs = async () => {
+  const handleGenerateDocs = async (forceRefresh = false) => {
     if (!serviceId) return
+    
+    // If we have cached docs and not forcing refresh, don't regenerate
+    if (!forceRefresh && docs && fromCache) {
+      return
+    }
+    
     try {
       setGenerating(true)
       setError(null)
-      setDocs(null)
-      setProvider(null)
+      if (forceRefresh) {
+        setDocs(null)
+        setProvider(null)
+        setFromCache(false)
+      }
       const backendHost = window.location.hostname
       
       // Use AbortController for timeout
@@ -806,6 +869,10 @@ function AIDocsTab({
       const data = await resp.json()
       setDocs(data.content)
       setProvider(data.provider || null)
+      setFromCache(false)
+      
+      // Cache the docs
+      cacheDocs(serviceId, data.content, data.provider || '')
     } catch (err: any) {
       if (err.name === 'AbortError') {
         setError('Request timed out. The service has too much data - try a simpler service.')
@@ -1103,9 +1170,31 @@ function AIDocsTab({
                   <BrainCircuit size={16} className="text-purple-400" />
                   AI-Generated Documentation
                 </h4>
-                <span className="text-xs text-slate-500 bg-slate-700/50 px-2 py-1 rounded">
-                  {provider || 'AI'}
-                </span>
+                <div className="flex items-center gap-2">
+                  {fromCache && (
+                    <span className="text-xs text-amber-400 bg-amber-900/30 px-2 py-1 rounded flex items-center gap-1">
+                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10 12a2 2 0 100-4 2 2 0 000 4z"/>
+                        <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd"/>
+                      </svg>
+                      Cached
+                    </span>
+                  )}
+                  <span className="text-xs text-slate-500 bg-slate-700/50 px-2 py-1 rounded">
+                    {provider || 'AI'}
+                  </span>
+                  <button
+                    onClick={() => handleGenerateDocs(true)}
+                    disabled={generating}
+                    className="text-xs text-slate-400 hover:text-slate-200 bg-slate-700/50 hover:bg-slate-600/50 px-2 py-1 rounded flex items-center gap-1 transition-colors disabled:opacity-50"
+                    title="Refresh documentation"
+                  >
+                    <svg className={`w-3 h-3 ${generating ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Refresh
+                  </button>
+                </div>
               </div>
               <MarkdownRenderer content={docs} />
             </div>

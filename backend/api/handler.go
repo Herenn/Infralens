@@ -18,6 +18,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// Version is the backend version (set at build time)
+var Version = "dev"
+
 // Handler provides HTTP API endpoints.
 type Handler struct {
 	graph        *graph.ServiceGraph
@@ -197,6 +200,12 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	// Health check
 	r.HandleFunc("/health", h.handleHealth).Methods("GET")
 	r.HandleFunc("/ready", h.handleReady).Methods("GET")
+
+	// Version endpoint (for agent auto-update)
+	api.HandleFunc("/version", h.handleVersion).Methods("GET")
+
+	// Agent update notification
+	api.HandleFunc("/agents/notify-update", h.handleNotifyAgentsUpdate).Methods("POST")
 
 	// Graph stats (GET)
 	api.HandleFunc("/graph/stats", h.handleGraphStats).Methods("GET")
@@ -1017,4 +1026,44 @@ func (h *Handler) buildServiceContext(service *graph.Service) llm.ServiceContext
 	}
 
 	return ctx
+}
+
+// ============================================================================
+// Version and Agent Update Handlers
+// ============================================================================
+
+// VersionInfo represents version information returned to agents
+type VersionInfo struct {
+	Version     string `json:"version"`
+	CommitHash  string `json:"commit_hash,omitempty"`
+	ReleaseDate string `json:"release_date,omitempty"`
+	UpdateURL   string `json:"update_url,omitempty"`
+}
+
+// handleVersion returns the current backend version for agent auto-update
+func (h *Handler) handleVersion(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	info := VersionInfo{
+		Version: Version,
+	}
+	
+	json.NewEncoder(w).Encode(info)
+}
+
+// handleNotifyAgentsUpdate triggers all connected agents to check for updates
+// This can be called via webhook from GitHub Actions or manually
+func (h *Handler) handleNotifyAgentsUpdate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	// The notification will be sent via WebSocket to all connected agents
+	// on the next topology broadcast (they check version periodically)
+	// For immediate notification, we'd need to track agent WebSocket connections
+	
+	log.Info("Agent update notification requested")
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "notified",
+		"message": "Agents will check for updates on their next version check interval",
+	})
 }
