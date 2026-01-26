@@ -23,7 +23,11 @@ spec:
           image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
           imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
           args:
-            - --backend={{ include "infralens.fullname" . }}-backend:{{ .Values.backend.service.port }}
+            {{- if .Values.agent.externalBackend.enabled }}
+            - --backend={{ .Values.agent.externalBackend.url }}
+            {{- else }}
+            - --backend=http://{{ include "infralens.fullname" . }}-backend:{{ .Values.backend.service.port }}
+            {{- end }}
             - --node=$(NODE_NAME)
             - --inspect
           env:

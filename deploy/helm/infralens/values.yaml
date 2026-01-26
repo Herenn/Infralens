@@ -17,7 +17,7 @@ backend:
   replicaCount: 1
   
   image:
-    repository: infralens/backend
+    repository: ghcr.io/herenn/infralens/backend
     tag: "latest"
     pullPolicy: IfNotPresent
   
@@ -62,7 +62,7 @@ frontend:
   replicaCount: 1
   
   image:
-    repository: infralens/frontend
+    repository: ghcr.io/herenn/infralens/frontend
     tag: "latest"
     pullPolicy: IfNotPresent
   
@@ -85,9 +85,17 @@ agent:
   enabled: true
   
   image:
-    repository: infralens/agent
+    repository: ghcr.io/herenn/infralens/agent
     tag: "latest"
     pullPolicy: IfNotPresent
+  
+  # Backend connection settings
+  # If externalBackend.enabled is true, agents connect to an external backend (outside the cluster)
+  # If false, agents connect to the in-cluster backend service
+  externalBackend:
+    enabled: false
+    # URL of external backend (e.g., "http://your-server-ip:8080")
+    url: ""
   
   # Agent runs with elevated privileges for eBPF
   securityContext:

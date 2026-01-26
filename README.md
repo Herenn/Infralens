@@ -428,6 +428,43 @@ backend:
       cpu: 500m
 ```
 
+#### Kubernetes Agents with External Backend
+
+If you have a backend running on a separate server (e.g., via [Native Installation](#️-option-1-native-installation-recommended-for-servers)) and want to monitor Kubernetes nodes, deploy **only the agents** pointing to your external backend:
+
+```bash
+# Install agents only (disable backend and frontend in cluster)
+helm install infralens-agents ./infralens -n infralens --create-namespace \
+  --set backend.enabled=false \
+  --set frontend.enabled=false \
+  --set agent.externalBackend.enabled=true \
+  --set agent.externalBackend.url="http://YOUR_BACKEND_IP:8080"
+```
+
+**Example values file for agent-only deployment:**
+
+```yaml
+# values-agents-only.yaml
+backend:
+  enabled: false
+
+frontend:
+  enabled: false
+
+agent:
+  enabled: true
+  externalBackend:
+    enabled: true
+    url: "http://192.168.1.100:8080"  # Your backend server
+```
+
+Then install with:
+```bash
+helm install infralens-agents ./infralens -n infralens --create-namespace -f values-agents-only.yaml
+```
+
+This allows you to monitor **both** standalone servers and Kubernetes clusters from a single InfraLens dashboard!
+
 ### 🐳 Option 3: Docker Compose (Development Only)
 
 > ⚠️ **Note:** Docker Compose is recommended for development/testing only. The agent container has limited visibility into host processes. For production, use [Native Installation](#️-option-1-native-installation-recommended-for-servers).
