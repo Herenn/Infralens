@@ -1,235 +1,6 @@
 import { Node, Edge } from '@xyflow/react'
 import { Topology, Service, Connection as TopologyConnection } from '../types'
 
-// ============================================================================
-// Workload Type Definitions
-// ============================================================================
-
-export type WorkloadType = 'Deploy' | 'DS' | 'STS' | 'Job' | 'RS' | 'App' | 'Pod' | 'Svc' | 'External' | 'Unknown'
-
-export interface AggregatedService extends Service {
-  workloadType: WorkloadType | null  // null for non-K8s services
-  podCount: number
-  childServiceIds: string[] // IDs of services aggregated into this one
-  isK8sWorkload: boolean // Whether this is a K8s workload (for display purposes)
-  aggregatedBytes?: {
-    sent: number
-    recv: number
-    sentRate: number
-    recvRate: number
-  }
-}
-
-// Workload type display info
-export const WorkloadTypeInfo: Record<WorkloadType, { label: string; shortLabel: string; color: string }> = {
-  Deploy: { label: 'Deployment', shortLabel: 'DP', color: '#3b82f6' },    // Blue
-  DS: { label: 'DaemonSet', shortLabel: 'DS', color: '#8b5cf6' },         // Purple
-  STS: { label: 'StatefulSet', shortLabel: 'SS', color: '#f59e0b' },      // Amber
-  Job: { label: 'Job', shortLabel: 'JB', color: '#06b6d4' },              // Cyan
-  RS: { label: 'ReplicaSet', shortLabel: 'RS', color: '#6366f1' },        // Indigo
-  App: { label: 'Application', shortLabel: 'AP', color: '#22c55e' },      // Green
-  Pod: { label: 'Pod', shortLabel: 'PD', color: '#64748b' },              // Slate
-  Svc: { label: 'Service', shortLabel: 'SV', color: '#ec4899' },          // Pink
-  External: { label: 'External', shortLabel: 'EX', color: '#94a3b8' },    // Slate-400
-  Unknown: { label: 'Unknown', shortLabel: '??', color: '#6b7280' },      // Gray
-}
-
-// ============================================================================
-// Workload Parsing Utilities
-// ============================================================================
-
-/**
- * Checks if a resolved name is a K8s workload (not just an IP).
- */
-function isK8sWorkload(resolvedName: string | undefined): boolean {
-  if (!resolvedName) return false
-  // K8s workloads are prefixed with: Deploy:, DS:, STS:, Job:, RS:, App:, Pod:, Svc:
-  return /^(Deploy|DS|STS|Job|RS|App|Pod|Svc):/.test(resolvedName)
-}
-
-/**
- * Parses the workload type from resolved_name.
- * Format: "Deploy: namespace/name", "DS: namespace/name", etc.
- * Returns null for non-K8s services (raw IPs).
- */
-function parseWorkloadType(resolvedName: string | undefined): WorkloadType | null {
-  if (!resolvedName || !isK8sWorkload(resolvedName)) return null
-  
-  const prefix = resolvedName.split(':')[0]?.trim()
-  switch (prefix) {
-    case 'Deploy': return 'Deploy'
-    case 'DS': return 'DS'
-    case 'STS': return 'STS'
-    case 'Job': return 'Job'
-    case 'RS': return 'RS'
-    case 'App': return 'App'
-    case 'Pod': return 'Pod'
-    case 'Svc': return 'Svc'
-    default: return null
-  }
-}
-
-/**
- * Parses the workload name from resolved_name.
- * Format: "Deploy: namespace/name" -> "name"
- */
-function parseWorkloadName(resolvedName: string | undefined): string {
-  if (!resolvedName) return ''
-  
-  // Format: "Type: namespace/name"
-  const colonIdx = resolvedName.indexOf(':')
-  if (colonIdx < 0) return resolvedName
-  
-  const namespacePath = resolvedName.slice(colonIdx + 1).trim()
-  const slashIdx = namespacePath.lastIndexOf('/')
-  if (slashIdx >= 0) {
-    return namespacePath.slice(slashIdx + 1)
-  }
-  return namespacePath
-}
-
-/**
- * Creates an aggregation key for a service.
- * Services with the same key will be aggregated together.
- * For K8s workloads: "{node}|{resolved_name}" 
- * For non-K8s: unique key per service (no aggregation)
- */
-function getAggregationKey(service: Service): string | null {
-  const resolved = service.resolved_name || service.display_name || ''
-  
-  // Only aggregate K8s workloads
-  if (!isK8sWorkload(resolved)) {
-    return null // Return null to indicate no aggregation
-  }
-  
-  const node = service.node || 'External'
-  return `${node}|${resolved}`
-}
-
-// ============================================================================
-// Aggregation Logic
-// ============================================================================
-
-interface AggregationResult {
-  services: AggregatedService[]
-  connections: TopologyConnection[]
-  idMapping: Map<string, string> // old ID -> aggregated ID
-}
-
-/**
- * Aggregates services by workload type within each node.
- * Returns aggregated services and remapped connections.
- */
-function aggregateServicesByWorkload(
-  services: Service[],
-  connections: TopologyConnection[]
-): AggregationResult {
-  // Group services by aggregation key
-  const groups = new Map<string, Service[]>()
-  
-  services.forEach(service => {
-    const key = getAggregationKey(service)
-    if (key) {
-      // K8s workload - aggregate by key
-      const group = groups.get(key) || []
-      group.push(service)
-      groups.set(key, group)
-    } else {
-      // Non-K8s service - keep as individual (unique key)
-      groups.set(`unique-${service.id}`, [service])
-    }
-  })
-
-  // Create aggregated services
-  const aggregatedServices: AggregatedService[] = []
-  const idMapping = new Map<string, string>() // old ID -> new aggregated ID
-
-  groups.forEach((groupServices, _key) => {
-    if (groupServices.length === 0) return
-
-    const firstService = groupServices[0]
-    const resolved = firstService.resolved_name || firstService.display_name || ''
-    const isK8s = isK8sWorkload(resolved)
-    const workloadType = parseWorkloadType(resolved)
-    const workloadName = isK8s ? parseWorkloadName(resolved) : ''
-    
-    // Create stable aggregated ID
-    const aggregatedId = groupServices.length === 1 
-      ? firstService.id  // Keep original ID for single services
-      : `agg-${(firstService.node || 'ext').replace(/[^a-zA-Z0-9]/g, '-')}-${(resolved || firstService.id).replace(/[^a-zA-Z0-9]/g, '-')}`
-
-    // Map all child IDs to the aggregated ID
-    groupServices.forEach(s => {
-      idMapping.set(s.id, aggregatedId)
-    })
-
-    // Aggregate health status (unhealthy if any child is unhealthy)
-    const allHealthy = groupServices.every(s => s.healthy !== false)
-
-    // Combine all pod IPs
-    const podIPs = groupServices.map(s => s.pod_ip).filter(Boolean)
-
-    // Create the aggregated service
-    const aggregatedService: AggregatedService = {
-      ...firstService,
-      id: aggregatedId,
-      name: workloadName || firstService.name,
-      display_name: firstService.resolved_name || firstService.display_name,
-      healthy: allHealthy,
-      pod_ip: podIPs.length === 1 ? podIPs[0] : undefined, // Only show IP if single pod
-      workloadType,
-      podCount: groupServices.length,
-      childServiceIds: groupServices.map(s => s.id),
-      isK8sWorkload: isK8s,
-    }
-
-    aggregatedServices.push(aggregatedService)
-  })
-
-  // Remap connections to use aggregated IDs
-  const connectionAggregation = new Map<string, TopologyConnection>()
-
-  connections.forEach(conn => {
-    const newSourceId = idMapping.get(conn.source_id) || conn.source_id
-    const newTargetId = idMapping.get(conn.target_id) || conn.target_id
-    
-    // Skip self-loops (can happen when pods of same workload talk to each other)
-    if (newSourceId === newTargetId) return
-
-    // Create stable connection ID
-    const newConnId = `${newSourceId}->${newTargetId}:${conn.port}`
-
-    const existing = connectionAggregation.get(newConnId)
-    if (existing) {
-      // Aggregate connection metrics
-      existing.count += conn.count
-      existing.bytes_sent = (existing.bytes_sent || 0) + (conn.bytes_sent || 0)
-      existing.bytes_recv = (existing.bytes_recv || 0) + (conn.bytes_recv || 0)
-      existing.bytes_sent_rate = Math.max(existing.bytes_sent_rate || 0, conn.bytes_sent_rate || 0)
-      existing.bytes_recv_rate = Math.max(existing.bytes_recv_rate || 0, conn.bytes_recv_rate || 0)
-      existing.packets_sent = (existing.packets_sent || 0) + (conn.packets_sent || 0)
-      existing.packets_recv = (existing.packets_recv || 0) + (conn.packets_recv || 0)
-    } else {
-      connectionAggregation.set(newConnId, {
-        ...conn,
-        id: newConnId,
-        source_id: newSourceId,
-        target_id: newTargetId,
-      })
-    }
-  })
-
-  return {
-    services: aggregatedServices,
-    connections: Array.from(connectionAggregation.values()),
-    idMapping,
-  }
-}
-
-// ============================================================================
-// Layout Constants
-// ============================================================================
-
 // Node dimensions
 const NODE_WIDTH = 200
 const NODE_HEIGHT = 110
@@ -262,7 +33,6 @@ function getServerDisplayName(serverName: string | undefined): string {
 /**
  * Converts topology data to React Flow nodes and edges with automatic layout.
  * Groups services by their server/node and creates parent containers.
- * Aggregates services by workload type (Deployment, DaemonSet, etc.)
  */
 export function layoutGraph(topology: Topology): LayoutResult {
   const { services, connections } = topology
@@ -272,20 +42,16 @@ export function layoutGraph(topology: Topology): LayoutResult {
     return { nodes: [], edges: [] }
   }
 
-  // STEP 1: Aggregate services by workload type
-  const { services: aggregatedServices, connections: aggregatedConnections } = 
-    aggregateServicesByWorkload(services, connections)
-
-  // Build adjacency lists for layout (using aggregated data)
+  // Build adjacency lists for layout
   const outgoing = new Map<string, string[]>()
   const incoming = new Map<string, string[]>()
   
-  aggregatedServices.forEach(s => {
+  services.forEach(s => {
     outgoing.set(s.id, [])
     incoming.set(s.id, [])
   })
 
-  aggregatedConnections.forEach(c => {
+  connections.forEach(c => {
     const out = outgoing.get(c.source_id) || []
     out.push(c.target_id)
     outgoing.set(c.source_id, out)
@@ -296,8 +62,8 @@ export function layoutGraph(topology: Topology): LayoutResult {
   })
 
   // Group services by server node (using display name)
-  const serverGroups = new Map<string, AggregatedService[]>()
-  aggregatedServices.forEach(service => {
+  const serverGroups = new Map<string, typeof services>()
+  services.forEach(service => {
     const serverName = getServerDisplayName(service.node)
     const group = serverGroups.get(serverName) || []
     group.push(service)
@@ -378,15 +144,11 @@ export function layoutGraph(topology: Topology): LayoutResult {
       const outgoingCount = (outgoing.get(service.id) || []).length
 
       // Get listening ports (ports this service receives connections on)
-      const listeningPorts = aggregatedConnections
+      const listeningPorts = connections
         .filter(c => c.target_id === service.id)
         .map(c => c.port)
         .filter((v, i, a) => a.indexOf(v) === i) // unique
         .sort((a, b) => a - b)
-
-      // Use workload name as label if available
-      const workloadName = parseWorkloadName(service.resolved_name || service.display_name)
-      const displayLabel = workloadName || service.display_name || service.name || service.id
 
       allNodes.push({
         id: service.id,
@@ -399,17 +161,12 @@ export function layoutGraph(topology: Topology): LayoutResult {
         extent: 'parent',
         expandParent: true,
         data: {
-          label: displayLabel,
+          label: service.display_name || service.name || service.id,
           service,
           incomingCount,
           outgoingCount,
           healthy: service.healthy !== false,
-          ports: listeningPorts,
-          // Workload aggregation data
-          workloadType: service.workloadType,
-          podCount: service.podCount,
-          childServiceIds: service.childServiceIds,
-          isK8sWorkload: service.isK8sWorkload,
+          ports: listeningPorts, // Listening ports
         },
         style: {
           width: NODE_WIDTH,
@@ -426,7 +183,7 @@ export function layoutGraph(topology: Topology): LayoutResult {
 
   // Create React Flow edges - using smoothstep for clean orthogonal routing
   // Edges have LOW z-index so they render BEHIND nodes
-  const edges: Edge[] = aggregatedConnections.map(conn => ({
+  const edges: Edge[] = connections.map(conn => ({
     id: conn.id,
     source: conn.source_id,
     target: conn.target_id,
@@ -459,7 +216,7 @@ export function layoutGraph(topology: Topology): LayoutResult {
  * This creates a clean, list-like layout with edges running behind nodes.
  */
 function layoutServicesInServer(
-  services: AggregatedService[],
+  services: Service[],
   _outgoing: Map<string, string[]>,
   _incoming: Map<string, string[]>
 ): { positions: Map<string, { x: number; y: number }>; width: number; height: number } {
@@ -470,10 +227,10 @@ function layoutServicesInServer(
   }
 
   // Simple vertical stacking - all nodes in a single centered column
-  // Sort services by workload name for consistent ordering
+  // Sort services by name for consistent ordering
   const sortedServices = [...services].sort((a, b) => {
-    const nameA = parseWorkloadName(a.resolved_name || a.display_name) || a.name || a.id
-    const nameB = parseWorkloadName(b.resolved_name || b.display_name) || b.name || b.id
+    const nameA = a.display_name || a.name || a.id
+    const nameB = b.display_name || b.name || b.id
     return nameA.localeCompare(nameB)
   })
 

@@ -12,11 +12,9 @@ import {
   Cloud,
   Zap,
   ArrowDownToLine, 
-  ArrowUpFromLine,
-  Layers
+  ArrowUpFromLine 
 } from 'lucide-react'
 import { Service, TypeColors } from '../types'
-import { WorkloadType, WorkloadTypeInfo } from '../utils/layout'
 
 export interface ServiceNodeData {
   label: string
@@ -25,11 +23,6 @@ export interface ServiceNodeData {
   outgoingCount: number
   healthy: boolean
   ports?: number[] // Listening ports
-  // Workload aggregation data
-  workloadType?: WorkloadType | null
-  podCount?: number
-  childServiceIds?: string[]
-  isK8sWorkload?: boolean
 }
 
 interface ServiceNodeProps {
@@ -115,6 +108,14 @@ function getTypeColor(type?: string): string {
   return TypeColors[type || 'unknown'] || TypeColors.unknown
 }
 
+// Check if the service is a K8s resource
+function isK8sResource(service: Service): 'pod' | 'service' | null {
+  const resolved = service.display_name || service.resolved_name || ''
+  if (resolved.startsWith('Pod:')) return 'pod'
+  if (resolved.startsWith('Svc:')) return 'service'
+  return null
+}
+
 // Get display info from K8s resolved name
 function getK8sDisplayInfo(service: Service): { type: string; namespace: string; name: string } | null {
   const resolved = service.display_name || service.resolved_name || ''
@@ -130,25 +131,18 @@ function getK8sDisplayInfo(service: Service): { type: string; namespace: string;
 }
 
 function ServiceNode({ data, selected }: ServiceNodeProps) {
-  const { label, service, incomingCount, outgoingCount, healthy, ports, workloadType, podCount, isK8sWorkload } = data
+  const { label, service, incomingCount, outgoingCount, healthy, ports } = data
 
+  const k8sType = isK8sResource(service)
   const k8sInfo = getK8sDisplayInfo(service)
   
   // Get icon and color based on fingerprinted type
   const Icon = getServiceIcon(service.type, service.icon)
   const typeColor = getTypeColor(service.type)
 
-  // Workload type info for badge (only for K8s workloads)
-  const workloadInfo = (workloadType && isK8sWorkload) ? WorkloadTypeInfo[workloadType] : null
-  
-  // Determine the badge text:
-  // - For K8s workloads: show workload type (DP, DS, etc.)
-  // - For non-K8s: show tech if available
-  const badgeText = workloadInfo?.shortLabel || service.tech || null
-  const badgeColor = workloadInfo?.color || (service.type ? typeColor : '#6b7280')
-  
-  // Show replica count only for K8s workloads with > 1 pod
-  const showReplicaCount = isK8sWorkload && podCount && podCount > 1
+  // Determine the badge text (tech or K8s type)
+  const badgeText = service.tech || (k8sInfo ? k8sInfo.type : null)
+  const badgeColor = service.type ? typeColor : (k8sType === 'pod' ? '#3b82f6' : '#8b5cf6')
 
   // Format ports for display (show first 2 max)
   const displayPorts = ports?.slice(0, 2) || []
@@ -186,25 +180,13 @@ function ServiceNode({ data, selected }: ServiceNodeProps) {
         }`}
       />
 
-      {/* Workload Type badge (left) */}
+      {/* Tech/Type badge */}
       {badgeText && (
         <div 
-          className="absolute -top-2 left-3 px-1.5 py-0.5 text-[9px] font-semibold rounded text-white flex items-center gap-1"
+          className="absolute -top-2 left-3 px-1.5 py-0.5 text-[9px] font-semibold rounded text-white"
           style={{ backgroundColor: badgeColor }}
-          title={workloadInfo?.label || service.tech || ''}
         >
           {badgeText}
-        </div>
-      )}
-
-      {/* Replica count badge (right) */}
-      {showReplicaCount && (
-        <div 
-          className="absolute -top-2 right-3 px-1.5 py-0.5 text-[9px] font-semibold rounded bg-slate-600 text-white flex items-center gap-0.5"
-          title={`${podCount} replicas`}
-        >
-          <Layers size={10} />
-          <span>{podCount}</span>
         </div>
       )}
 
@@ -223,19 +205,19 @@ function ServiceNode({ data, selected }: ServiceNodeProps) {
         <div className="flex-1 min-w-0">
           {/* Primary name */}
           <h3 className="font-medium text-dark-100 truncate text-xs leading-tight">
-            {label}
+            {k8sInfo ? k8sInfo.name : label}
           </h3>
 
-          {/* Namespace (if K8s) or workload type full name */}
+          {/* Namespace (if K8s) */}
           {k8sInfo && (
             <p className="text-[10px] text-dark-400 truncate">
               ns/{k8sInfo.namespace}
             </p>
           )}
 
-          {/* IP address + Port badges (hide IP if aggregated with multiple pods) */}
+          {/* IP address + Port badges */}
           <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-            {service.pod_ip && !showReplicaCount && (
+            {service.pod_ip && (
               <span className="text-[10px] text-dark-500 font-mono">
                 {service.pod_ip}
               </span>
