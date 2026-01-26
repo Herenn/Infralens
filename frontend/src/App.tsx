@@ -61,6 +61,14 @@ interface FilterState {
   collapseExternal: boolean
 }
 
+// Helper to check if an ID is localhost
+function isLocalhostId(id: string): boolean {
+  return id.startsWith('127.') || 
+         id.startsWith('::1') || 
+         id.includes('/127.') ||
+         id.includes('localhost')
+}
+
 // Filter topology based on filter settings
 function filterTopology(topology: Topology | null, filters: FilterState): Topology | null {
   if (!topology) return null
@@ -68,27 +76,19 @@ function filterTopology(topology: Topology | null, filters: FilterState): Topolo
   let services = [...topology.services]
   let connections = [...topology.connections]
 
-  // 1. Hide localhost traffic
+  // 1. Hide localhost traffic - remove ALL localhost services and connections
   if (filters.hideLocalhost) {
-    // Remove connections between localhost addresses
-    connections = connections.filter(conn => {
-      const isLocalSource = conn.source_id.startsWith('127.') || conn.source_id.includes('localhost')
-      const isLocalTarget = conn.target_id.startsWith('127.') || conn.target_id.includes('localhost')
-      return !(isLocalSource && isLocalTarget)
-    })
+    // Remove all localhost services
+    services = services.filter(svc => !isLocalhostId(svc.id))
     
-    // Remove services that only have localhost IDs (keep if they have external connections)
-    const connectedServiceIds = new Set([
-      ...connections.map(c => c.source_id),
-      ...connections.map(c => c.target_id),
-    ])
-    
-    services = services.filter(svc => {
-      const isLocalhost = svc.id.startsWith('127.') || svc.id.includes('localhost')
-      if (!isLocalhost) return true
-      // Keep localhost services that have non-localhost connections
-      return connectedServiceIds.has(svc.id)
-    })
+    // Remove connections involving localhost
+    const validServiceIds = new Set(services.map(s => s.id))
+    connections = connections.filter(conn => 
+      !isLocalhostId(conn.source_id) && 
+      !isLocalhostId(conn.target_id) &&
+      validServiceIds.has(conn.source_id) &&
+      validServiceIds.has(conn.target_id)
+    )
   }
 
   // 2. Minimum connections filter
@@ -113,37 +113,43 @@ function filterTopology(topology: Topology | null, filters: FilterState): Topolo
     )
   }
 
-  // 3. Collapse external endpoints (aggregate by tech type)
+  // 3. Collapse external endpoints (aggregate by tech type) - STABLE version
   if (filters.collapseExternal) {
     const externalServices = services.filter(s => !s.node || s.node === 'External Network')
     const internalServices = services.filter(s => s.node && s.node !== 'External Network')
     
-    // Group external services by tech type
+    // Group external services by tech type (use stable key)
     const externalByTech = new Map<string, Service[]>()
     externalServices.forEach(svc => {
-      const key = svc.tech || svc.type || 'external'
+      // Use tech or type, normalized to lowercase
+      const key = (svc.tech || svc.type || 'external').toLowerCase().replace(/\s+/g, '-')
       if (!externalByTech.has(key)) {
         externalByTech.set(key, [])
       }
       externalByTech.get(key)!.push(svc)
     })
     
-    // Create aggregated external services
+    // Create aggregated external services with STABLE IDs
     const aggregatedExternal: Service[] = []
     const idMapping = new Map<string, string>() // old id -> new aggregated id
     
-    externalByTech.forEach((svcs, tech) => {
+    // Sort keys for stable ordering
+    const sortedKeys = Array.from(externalByTech.keys()).sort()
+    
+    sortedKeys.forEach(key => {
+      const svcs = externalByTech.get(key)!
       if (svcs.length === 1) {
         // Keep single services as-is
         aggregatedExternal.push(svcs[0])
       } else {
-        // Create aggregated service
-        const aggregatedId = `external-${tech.toLowerCase().replace(/\s+/g, '-')}`
+        // Create aggregated service with STABLE id (don't include count in id)
+        const aggregatedId = `agg-external-${key}`
+        const displayTech = svcs[0].tech || svcs[0].type || 'External'
         const aggregatedSvc: Service = {
           ...svcs[0],
           id: aggregatedId,
-          name: `${tech} (${svcs.length})`,
-          display_name: `${tech} (${svcs.length})`,
+          name: `${displayTech} (${svcs.length})`,
+          display_name: `${displayTech} (${svcs.length})`,
         }
         aggregatedExternal.push(aggregatedSvc)
         
@@ -154,20 +160,34 @@ function filterTopology(topology: Topology | null, filters: FilterState): Topolo
     
     services = [...internalServices, ...aggregatedExternal]
     
-    // Update connection IDs
-    connections = connections.map(conn => ({
-      ...conn,
-      source_id: idMapping.get(conn.source_id) || conn.source_id,
-      target_id: idMapping.get(conn.target_id) || conn.target_id,
-    }))
+    // Update connection source/target IDs
+    connections = connections.map(conn => {
+      const newSourceId = idMapping.get(conn.source_id) || conn.source_id
+      const newTargetId = idMapping.get(conn.target_id) || conn.target_id
+      // Create stable connection ID
+      const newConnId = `${newSourceId}->${newTargetId}:${conn.port}`
+      return {
+        ...conn,
+        id: newConnId,
+        source_id: newSourceId,
+        target_id: newTargetId,
+      }
+    })
     
-    // Deduplicate connections after remapping
+    // Deduplicate connections after remapping (aggregate counts/bytes)
     const uniqueConnections = new Map<string, typeof connections[0]>()
     connections.forEach(conn => {
-      const key = `${conn.source_id}->${conn.target_id}:${conn.port}`
+      const key = conn.id
       const existing = uniqueConnections.get(key)
-      if (!existing || conn.count > existing.count) {
-        uniqueConnections.set(key, conn)
+      if (!existing) {
+        uniqueConnections.set(key, { ...conn })
+      } else {
+        // Merge stats
+        existing.count += conn.count
+        existing.bytes_sent = (existing.bytes_sent || 0) + (conn.bytes_sent || 0)
+        existing.bytes_recv = (existing.bytes_recv || 0) + (conn.bytes_recv || 0)
+        existing.bytes_sent_rate = Math.max(existing.bytes_sent_rate || 0, conn.bytes_sent_rate || 0)
+        existing.bytes_recv_rate = Math.max(existing.bytes_recv_rate || 0, conn.bytes_recv_rate || 0)
       }
     })
     connections = Array.from(uniqueConnections.values())
