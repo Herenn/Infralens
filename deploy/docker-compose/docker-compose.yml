@@ -2,20 +2,21 @@
 # ========================
 # For single-server deployments and development
 #
-# Usage:
+# Usage (build locally):
+#   docker-compose up -d --build
+#
+# Usage (use pre-built images):
 #   docker-compose up -d
 #
 # With AI features:
 #   OPENAI_API_KEY=sk-xxx docker-compose up -d
-
-version: '3.8'
 
 services:
   # ===========================
   # Backend - API & WebSocket Server
   # ===========================
   backend:
-    image: infralens/backend:latest
+    image: ghcr.io/herenn/infralens/backend:latest
     build:
       context: ../../
       dockerfile: Dockerfile.backend
@@ -46,16 +47,14 @@ services:
   # Frontend - React UI
   # ===========================
   frontend:
-    image: infralens/frontend:latest
+    image: ghcr.io/herenn/infralens/frontend:latest
     build:
       context: ../../frontend
       dockerfile: Dockerfile
     container_name: infralens-frontend
     restart: unless-stopped
     ports:
-      - "3000:3000"
-    environment:
-      - VITE_WS_URL=ws://backend:8080/api/v1/ws
+      - "3000:80"
     depends_on:
       - backend
     networks:
@@ -65,9 +64,9 @@ services:
   # Agent - eBPF Network Monitor
   # ===========================
   # NOTE: Agent requires privileged mode for eBPF
-  # Run separately on host for production use
+  # On Linux servers with BTF support (kernel 5.8+)
   agent:
-    image: infralens/agent:latest
+    image: ghcr.io/herenn/infralens/agent:latest
     build:
       context: ../../
       dockerfile: Dockerfile.agent
@@ -77,7 +76,7 @@ services:
     pid: host
     network_mode: host
     command:
-      - --backend=localhost:8080
+      - --backend=http://localhost:8080
       - --node=${HOSTNAME:-docker-host}
       - --inspect
     volumes:
