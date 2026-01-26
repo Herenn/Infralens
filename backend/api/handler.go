@@ -348,6 +348,7 @@ func (h *Handler) processEvent(nodeName string, event TCPEvent) {
 		Icon:         srcInfo.Icon,
 		PodIP:        event.SrcAddr,
 		ResolvedName: srcResolved,
+		Namespace:    extractNamespace(srcResolved),
 		LastSeen:     now,
 	}
 	// Only set Node for outbound (local source) or inbound destination
@@ -366,6 +367,7 @@ func (h *Handler) processEvent(nodeName string, event TCPEvent) {
 		Icon:         dstInfo.Icon,
 		PodIP:        event.DstAddr,
 		ResolvedName: dstResolved,
+		Namespace:    extractNamespace(dstResolved),
 		LastSeen:     now,
 	}
 	// For inbound, the destination is our local service
@@ -409,6 +411,29 @@ func (h *Handler) getServiceName(resolved, fallback string) string {
 		return resolved
 	}
 	return fallback
+}
+
+// extractNamespace extracts the Kubernetes namespace from a resolved name.
+// Format is "Type: namespace/name" -> returns "namespace"
+// Returns empty string if not a K8s resource or no namespace found.
+func extractNamespace(resolved string) string {
+	if !isK8sResource(resolved) {
+		return ""
+	}
+	// Format is "Type: namespace/name"
+	// First, find the ": " separator
+	idx := strings.Index(resolved, ": ")
+	if idx < 0 {
+		return ""
+	}
+	// Get the "namespace/name" part
+	namespaceAndName := resolved[idx+2:]
+	// Split by "/"
+	parts := strings.Split(namespaceAndName, "/")
+	if len(parts) >= 2 {
+		return parts[0] // Return namespace
+	}
+	return ""
 }
 
 // isK8sResource checks if a resolved name is a Kubernetes resource (not just an IP).

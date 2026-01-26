@@ -22,9 +22,9 @@ import ServerNode from './components/ServerNode'
 import ConnectionEdge from './components/ConnectionEdge'
 import ServiceDrawer from './components/ServiceDrawer'
 import Header from './components/Header'
-import { Service, Topology } from './types'
+import { Service, Topology, ViewMode } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
-import { layoutGraph, updateNodeData, updateEdgeData } from './utils/layout'
+import { updateNodeData, updateEdgeData, getLayoutedElements } from './utils/layout'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AppNode = Node<any>
@@ -62,6 +62,7 @@ interface FilterState {
   hideLocalhost: boolean
   minConnections: number
   collapseExternal: boolean
+  namespace: string // 'all' or specific namespace
 }
 
 // Helper to check if an ID is localhost
@@ -196,6 +197,23 @@ function filterTopology(topology: Topology | null, filters: FilterState): Topolo
     connections = Array.from(uniqueConnections.values())
   }
 
+  // 4. Namespace filter - filter services by namespace
+  if (filters.namespace && filters.namespace !== 'all') {
+    services = services.filter(svc => {
+      // Handle external services (no namespace)
+      if (filters.namespace === 'external') {
+        return !svc.namespace || svc.namespace === ''
+      }
+      return svc.namespace === filters.namespace
+    })
+    
+    // Filter connections to only include filtered services
+    const filteredServiceIds = new Set(services.map(s => s.id))
+    connections = connections.filter(conn => 
+      filteredServiceIds.has(conn.source_id) && filteredServiceIds.has(conn.target_id)
+    )
+  }
+
   return {
     ...topology,
     services,
@@ -219,11 +237,14 @@ function App() {
     hideLocalhost: false,
     minConnections: 1,
     collapseExternal: false,
+    namespace: 'all',
   })
+  const [viewMode, setViewMode] = useState<ViewMode>('physical')
   
   // Track node IDs to detect structural changes (only services, not connections)
   const prevNodeIdsRef = useRef<Set<string>>(new Set())
   const prevFiltersRef = useRef<FilterState>(filters)
+  const prevViewModeRef = useRef<ViewMode>(viewMode)
   const lastLayoutTimeRef = useRef<number>(0)
   const storedPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map())
   const MIN_LAYOUT_INTERVAL = 5000 // Minimum 5 seconds between layouts
@@ -241,6 +262,24 @@ function App() {
     services: filteredTopology?.services.length || 0,
     connections: filteredTopology?.connections.length || 0,
   }), [filteredTopology])
+
+  // Extract available namespaces from topology (before filtering)
+  const availableNamespaces = useMemo(() => {
+    if (!topology) return []
+    const nsSet = new Set<string>()
+    topology.services.forEach(svc => {
+      if (svc.namespace && svc.namespace !== '') {
+        nsSet.add(svc.namespace)
+      }
+    })
+    // Check if there are any services without namespace (external)
+    const hasExternal = topology.services.some(svc => !svc.namespace || svc.namespace === '')
+    const namespaces = Array.from(nsSet).sort()
+    if (hasExternal) {
+      namespaces.push('external')
+    }
+    return namespaces
+  }, [topology])
 
   // Update graph when topology changes - ONLY re-layout on structural changes
   useEffect(() => {
@@ -260,9 +299,10 @@ function App() {
 
     // Check if SERVICE structure changed (ignore connection changes - they're too volatile)
     const filtersChanged = JSON.stringify(filters) !== JSON.stringify(prevFiltersRef.current)
+    const viewModeChanged = prevViewModeRef.current !== viewMode
     const nodesAdded = [...allCurrentNodeIds].some(id => !prevNodeIdsRef.current.has(id))
     const nodesRemoved = [...prevNodeIdsRef.current].some(id => !allCurrentNodeIds.has(id))
-    const structureChanged = filtersChanged || nodesAdded || nodesRemoved
+    const structureChanged = filtersChanged || viewModeChanged || nodesAdded || nodesRemoved
     
     // Also check minimum time since last layout (debounce)
     const now = Date.now()
@@ -272,19 +312,24 @@ function App() {
       // Structure changed - run full layout
       console.log('🔄 Structure changed, running layout...', { 
         filtersChanged, 
+        viewModeChanged,
         nodesAdded, 
         nodesRemoved,
-        nodeCount: allCurrentNodeIds.size
+        nodeCount: allCurrentNodeIds.size,
+        viewMode
       })
       try {
-        const { nodes: newNodes, edges: newEdges } = layoutGraph(filteredTopology)
+        // Use getLayoutedElements which respects viewMode
+        const { nodes: newNodes, edges: newEdges } = getLayoutedElements(filteredTopology, viewMode)
         
         // Restore saved positions for existing nodes to minimize jumping
+        // BUT clear positions if view mode changed (need fresh layout)
         const restoredNodes = newNodes.map(node => {
+          if (viewModeChanged) {
+            return node // Don't restore positions when view mode changes
+          }
           const savedPos = storedPositionsRef.current.get(node.id)
           if (savedPos && !nodesAdded) {
-            // Only restore positions if no new nodes were added
-            // (new nodes need fresh layout to find good spots)
             return { ...node, position: savedPos }
           }
           return node
@@ -295,9 +340,13 @@ function App() {
         setEdges(newEdges)
         prevNodeIdsRef.current = allCurrentNodeIds
         prevFiltersRef.current = filters
+        prevViewModeRef.current = viewMode
         lastLayoutTimeRef.current = now
         
-        // Save new positions
+        // Save new positions (clear first if view mode changed)
+        if (viewModeChanged) {
+          storedPositionsRef.current.clear()
+        }
         restoredNodes.forEach(node => {
           storedPositionsRef.current.set(node.id, node.position)
         })
@@ -329,7 +378,7 @@ function App() {
         connections: topology.connections.length,
       })
     }
-  }, [filteredTopology, filters, topology, setNodes, setEdges])
+  }, [filteredTopology, filters, viewMode, topology, setNodes, setEdges])
 
   // Custom nodes change handler that saves positions when dragged
   const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
@@ -536,6 +585,9 @@ function App() {
         filteredStats={filteredStats}
         onExportPng={handleExportPng}
         onExportJson={handleExportJson}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        availableNamespaces={availableNamespaces}
       />
       
       <div className="flex-1 flex overflow-hidden">
