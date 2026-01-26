@@ -1145,7 +1145,7 @@ function AIDocsTab({
         <>
           {/* Generate Docs Button */}
           <button
-            onClick={handleGenerateDocs}
+            onClick={() => handleGenerateDocs()}
             disabled={generating}
             className="w-full py-3 rounded-lg bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 disabled:opacity-50 text-white font-medium text-sm transition-all flex items-center justify-center gap-2"
           >
