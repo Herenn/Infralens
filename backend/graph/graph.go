@@ -179,9 +179,6 @@ func (g *ServiceGraph) AddOrUpdateService(svc Service) {
 		if svc.PodIP != "" {
 			existing.PodIP = svc.PodIP
 		}
-		if svc.Namespace != "" {
-			existing.Namespace = svc.Namespace
-		}
 	} else {
 		// Add new service
 		g.services[svc.ID] = &svc

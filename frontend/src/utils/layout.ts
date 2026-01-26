@@ -1,5 +1,221 @@
 import { Node, Edge } from '@xyflow/react'
-import { Topology, Service, Connection as TopologyConnection, ViewMode } from '../types'
+import { Topology, Service, Connection as TopologyConnection } from '../types'
+
+// ============================================================================
+// Workload Type Definitions
+// ============================================================================
+
+export type WorkloadType = 'Deploy' | 'DS' | 'STS' | 'Job' | 'RS' | 'App' | 'Pod' | 'Svc' | 'External' | 'Unknown'
+
+export interface AggregatedService extends Service {
+  workloadType: WorkloadType
+  podCount: number
+  childServiceIds: string[] // IDs of services aggregated into this one
+  aggregatedBytes?: {
+    sent: number
+    recv: number
+    sentRate: number
+    recvRate: number
+  }
+}
+
+// Workload type display info
+export const WorkloadTypeInfo: Record<WorkloadType, { label: string; shortLabel: string; color: string }> = {
+  Deploy: { label: 'Deployment', shortLabel: 'DP', color: '#3b82f6' },    // Blue
+  DS: { label: 'DaemonSet', shortLabel: 'DS', color: '#8b5cf6' },         // Purple
+  STS: { label: 'StatefulSet', shortLabel: 'SS', color: '#f59e0b' },      // Amber
+  Job: { label: 'Job', shortLabel: 'JB', color: '#06b6d4' },              // Cyan
+  RS: { label: 'ReplicaSet', shortLabel: 'RS', color: '#6366f1' },        // Indigo
+  App: { label: 'Application', shortLabel: 'AP', color: '#22c55e' },      // Green
+  Pod: { label: 'Pod', shortLabel: 'PD', color: '#64748b' },              // Slate
+  Svc: { label: 'Service', shortLabel: 'SV', color: '#ec4899' },          // Pink
+  External: { label: 'External', shortLabel: 'EX', color: '#94a3b8' },    // Slate-400
+  Unknown: { label: 'Unknown', shortLabel: '??', color: '#6b7280' },      // Gray
+}
+
+// ============================================================================
+// Workload Parsing Utilities
+// ============================================================================
+
+/**
+ * Parses the workload type from resolved_name.
+ * Format: "Deploy: namespace/name", "DS: namespace/name", etc.
+ */
+function parseWorkloadType(resolvedName: string | undefined): WorkloadType {
+  if (!resolvedName) return 'Unknown'
+  
+  const prefix = resolvedName.split(':')[0]?.trim()
+  switch (prefix) {
+    case 'Deploy': return 'Deploy'
+    case 'DS': return 'DS'
+    case 'STS': return 'STS'
+    case 'Job': return 'Job'
+    case 'RS': return 'RS'
+    case 'App': return 'App'
+    case 'Pod': return 'Pod'
+    case 'Svc': return 'Svc'
+    default: return 'Unknown'
+  }
+}
+
+/**
+ * Parses the workload name from resolved_name.
+ * Format: "Deploy: namespace/name" -> "name"
+ */
+function parseWorkloadName(resolvedName: string | undefined): string {
+  if (!resolvedName) return ''
+  
+  // Format: "Type: namespace/name"
+  const colonIdx = resolvedName.indexOf(':')
+  if (colonIdx < 0) return resolvedName
+  
+  const namespacePath = resolvedName.slice(colonIdx + 1).trim()
+  const slashIdx = namespacePath.lastIndexOf('/')
+  if (slashIdx >= 0) {
+    return namespacePath.slice(slashIdx + 1)
+  }
+  return namespacePath
+}
+
+/**
+ * Creates an aggregation key for a service.
+ * Services with the same key will be aggregated together.
+ * Key format: "{node}|{resolved_name}"
+ */
+function getAggregationKey(service: Service): string {
+  const node = service.node || 'External'
+  const resolved = service.resolved_name || service.display_name || service.id
+  return `${node}|${resolved}`
+}
+
+/**
+ * Determines if a service should be aggregated (has a K8s workload type).
+ */
+function shouldAggregate(service: Service): boolean {
+  const resolved = service.resolved_name || service.display_name || ''
+  // Only aggregate K8s workload types (not external or unknown)
+  return resolved.match(/^(Deploy|DS|STS|Job|RS|App|Pod|Svc):/) !== null
+}
+
+// ============================================================================
+// Aggregation Logic
+// ============================================================================
+
+interface AggregationResult {
+  services: AggregatedService[]
+  connections: TopologyConnection[]
+  idMapping: Map<string, string> // old ID -> aggregated ID
+}
+
+/**
+ * Aggregates services by workload type within each node.
+ * Returns aggregated services and remapped connections.
+ */
+function aggregateServicesByWorkload(
+  services: Service[],
+  connections: TopologyConnection[]
+): AggregationResult {
+  // Group services by aggregation key
+  const groups = new Map<string, Service[]>()
+  
+  services.forEach(service => {
+    if (shouldAggregate(service)) {
+      const key = getAggregationKey(service)
+      const group = groups.get(key) || []
+      group.push(service)
+      groups.set(key, group)
+    } else {
+      // Non-aggregatable services get their own unique key
+      groups.set(`unique-${service.id}`, [service])
+    }
+  })
+
+  // Create aggregated services
+  const aggregatedServices: AggregatedService[] = []
+  const idMapping = new Map<string, string>() // old ID -> new aggregated ID
+
+  groups.forEach((groupServices, _key) => {
+    if (groupServices.length === 0) return
+
+    const firstService = groupServices[0]
+    const workloadType = parseWorkloadType(firstService.resolved_name || firstService.display_name)
+    const workloadName = parseWorkloadName(firstService.resolved_name || firstService.display_name)
+    
+    // Create stable aggregated ID
+    const aggregatedId = groupServices.length === 1 
+      ? firstService.id  // Keep original ID for single services
+      : `agg-${(firstService.node || 'ext').replace(/[^a-zA-Z0-9]/g, '-')}-${(firstService.resolved_name || firstService.id).replace(/[^a-zA-Z0-9]/g, '-')}`
+
+    // Map all child IDs to the aggregated ID
+    groupServices.forEach(s => {
+      idMapping.set(s.id, aggregatedId)
+    })
+
+    // Aggregate health status (unhealthy if any child is unhealthy)
+    const allHealthy = groupServices.every(s => s.healthy !== false)
+
+    // Combine all pod IPs
+    const podIPs = groupServices.map(s => s.pod_ip).filter(Boolean)
+
+    // Create the aggregated service
+    const aggregatedService: AggregatedService = {
+      ...firstService,
+      id: aggregatedId,
+      name: workloadName || firstService.name,
+      display_name: firstService.resolved_name || firstService.display_name,
+      healthy: allHealthy,
+      pod_ip: podIPs.length === 1 ? podIPs[0] : undefined, // Only show IP if single pod
+      workloadType,
+      podCount: groupServices.length,
+      childServiceIds: groupServices.map(s => s.id),
+    }
+
+    aggregatedServices.push(aggregatedService)
+  })
+
+  // Remap connections to use aggregated IDs
+  const connectionAggregation = new Map<string, TopologyConnection>()
+
+  connections.forEach(conn => {
+    const newSourceId = idMapping.get(conn.source_id) || conn.source_id
+    const newTargetId = idMapping.get(conn.target_id) || conn.target_id
+    
+    // Skip self-loops (can happen when pods of same workload talk to each other)
+    if (newSourceId === newTargetId) return
+
+    // Create stable connection ID
+    const newConnId = `${newSourceId}->${newTargetId}:${conn.port}`
+
+    const existing = connectionAggregation.get(newConnId)
+    if (existing) {
+      // Aggregate connection metrics
+      existing.count += conn.count
+      existing.bytes_sent = (existing.bytes_sent || 0) + (conn.bytes_sent || 0)
+      existing.bytes_recv = (existing.bytes_recv || 0) + (conn.bytes_recv || 0)
+      existing.bytes_sent_rate = Math.max(existing.bytes_sent_rate || 0, conn.bytes_sent_rate || 0)
+      existing.bytes_recv_rate = Math.max(existing.bytes_recv_rate || 0, conn.bytes_recv_rate || 0)
+      existing.packets_sent = (existing.packets_sent || 0) + (conn.packets_sent || 0)
+      existing.packets_recv = (existing.packets_recv || 0) + (conn.packets_recv || 0)
+    } else {
+      connectionAggregation.set(newConnId, {
+        ...conn,
+        id: newConnId,
+        source_id: newSourceId,
+        target_id: newTargetId,
+      })
+    }
+  })
+
+  return {
+    services: aggregatedServices,
+    connections: Array.from(connectionAggregation.values()),
+    idMapping,
+  }
+}
+
+// ============================================================================
+// Layout Constants
+// ============================================================================
 
 // Node dimensions
 const NODE_WIDTH = 200
@@ -9,7 +225,6 @@ const NODE_HEIGHT = 110
 const INTERNAL_PADDING = 30           // Padding inside server container
 const INTERNAL_VERTICAL_SPACING = 100 // Space between stacked nodes
 const SERVER_HEADER_HEIGHT = 160      // Height reserved for server header (includes CPU/RAM bars)
-const NAMESPACE_HEADER_HEIGHT = 80    // Height reserved for namespace header (no CPU/RAM bars)
 
 // Server group container
 const SERVER_PADDING = 50             // Padding around the entire server group
@@ -34,6 +249,7 @@ function getServerDisplayName(serverName: string | undefined): string {
 /**
  * Converts topology data to React Flow nodes and edges with automatic layout.
  * Groups services by their server/node and creates parent containers.
+ * Aggregates services by workload type (Deployment, DaemonSet, etc.)
  */
 export function layoutGraph(topology: Topology): LayoutResult {
   const { services, connections } = topology
@@ -43,16 +259,20 @@ export function layoutGraph(topology: Topology): LayoutResult {
     return { nodes: [], edges: [] }
   }
 
-  // Build adjacency lists for layout
+  // STEP 1: Aggregate services by workload type
+  const { services: aggregatedServices, connections: aggregatedConnections } = 
+    aggregateServicesByWorkload(services, connections)
+
+  // Build adjacency lists for layout (using aggregated data)
   const outgoing = new Map<string, string[]>()
   const incoming = new Map<string, string[]>()
   
-  services.forEach(s => {
+  aggregatedServices.forEach(s => {
     outgoing.set(s.id, [])
     incoming.set(s.id, [])
   })
 
-  connections.forEach(c => {
+  aggregatedConnections.forEach(c => {
     const out = outgoing.get(c.source_id) || []
     out.push(c.target_id)
     outgoing.set(c.source_id, out)
@@ -63,8 +283,8 @@ export function layoutGraph(topology: Topology): LayoutResult {
   })
 
   // Group services by server node (using display name)
-  const serverGroups = new Map<string, typeof services>()
-  services.forEach(service => {
+  const serverGroups = new Map<string, AggregatedService[]>()
+  aggregatedServices.forEach(service => {
     const serverName = getServerDisplayName(service.node)
     const group = serverGroups.get(serverName) || []
     group.push(service)
@@ -145,11 +365,15 @@ export function layoutGraph(topology: Topology): LayoutResult {
       const outgoingCount = (outgoing.get(service.id) || []).length
 
       // Get listening ports (ports this service receives connections on)
-      const listeningPorts = connections
+      const listeningPorts = aggregatedConnections
         .filter(c => c.target_id === service.id)
         .map(c => c.port)
         .filter((v, i, a) => a.indexOf(v) === i) // unique
         .sort((a, b) => a - b)
+
+      // Use workload name as label if available
+      const workloadName = parseWorkloadName(service.resolved_name || service.display_name)
+      const displayLabel = workloadName || service.display_name || service.name || service.id
 
       allNodes.push({
         id: service.id,
@@ -162,12 +386,16 @@ export function layoutGraph(topology: Topology): LayoutResult {
         extent: 'parent',
         expandParent: true,
         data: {
-          label: service.display_name || service.name || service.id,
+          label: displayLabel,
           service,
           incomingCount,
           outgoingCount,
           healthy: service.healthy !== false,
-          ports: listeningPorts, // Listening ports
+          ports: listeningPorts,
+          // Workload aggregation data
+          workloadType: service.workloadType,
+          podCount: service.podCount,
+          childServiceIds: service.childServiceIds,
         },
         style: {
           width: NODE_WIDTH,
@@ -184,7 +412,7 @@ export function layoutGraph(topology: Topology): LayoutResult {
 
   // Create React Flow edges - using smoothstep for clean orthogonal routing
   // Edges have LOW z-index so they render BEHIND nodes
-  const edges: Edge[] = connections.map(conn => ({
+  const edges: Edge[] = aggregatedConnections.map(conn => ({
     id: conn.id,
     source: conn.source_id,
     target: conn.target_id,
@@ -213,246 +441,11 @@ export function layoutGraph(topology: Topology): LayoutResult {
 }
 
 /**
- * Gets the namespace display name.
- * Empty or undefined -> "External"
- */
-function getNamespaceDisplayName(namespace: string | undefined): string {
-  if (!namespace || namespace === '') {
-    return 'External'
-  }
-  return namespace
-}
-
-/**
- * Converts topology data to React Flow nodes and edges with automatic layout.
- * Groups services by their Kubernetes namespace and creates parent containers.
- */
-export function layoutGraphByNamespace(topology: Topology): LayoutResult {
-  const { services, connections } = topology
-
-  // If no services, return empty
-  if (services.length === 0) {
-    return { nodes: [], edges: [] }
-  }
-
-  // Build adjacency lists for layout
-  const outgoing = new Map<string, string[]>()
-  const incoming = new Map<string, string[]>()
-  
-  services.forEach(s => {
-    outgoing.set(s.id, [])
-    incoming.set(s.id, [])
-  })
-
-  connections.forEach(c => {
-    const out = outgoing.get(c.source_id) || []
-    out.push(c.target_id)
-    outgoing.set(c.source_id, out)
-
-    const inc = incoming.get(c.target_id) || []
-    inc.push(c.source_id)
-    incoming.set(c.target_id, inc)
-  })
-
-  // Group services by namespace
-  const namespaceGroups = new Map<string, typeof services>()
-  services.forEach(service => {
-    const nsName = getNamespaceDisplayName(service.namespace)
-    const group = namespaceGroups.get(nsName) || []
-    group.push(service)
-    namespaceGroups.set(nsName, group)
-  })
-
-  const allNodes: Node[] = []
-  const namespacePositions = new Map<string, { x: number; y: number; width: number; height: number }>()
-
-  // Calculate positions for each namespace group
-  let namespaceX = 0
-  let maxNamespaceHeight = 0
-  const namespaceNames = Array.from(namespaceGroups.keys()).sort() // Sort for consistent ordering
-
-  namespaceNames.forEach((nsName, _nsIndex) => {
-    const nsServices = namespaceGroups.get(nsName) || []
-    
-    // Calculate layout for services within this namespace
-    const { positions, width, height } = layoutServicesInGroup(nsServices)
-
-    // Namespace node dimensions - generous padding for clean appearance
-    const nsWidth = Math.max(width + SERVER_PADDING * 2, 340)
-    const nsHeight = height + NAMESPACE_HEADER_HEIGHT + SERVER_PADDING * 2
-
-    // Position this namespace
-    namespacePositions.set(nsName, {
-      x: namespaceX,
-      y: 0,
-      width: nsWidth,
-      height: nsHeight,
-    })
-
-    // Create namespace (group) node
-    const nsNodeId = `ns-${nsName}`
-
-    allNodes.push({
-      id: nsNodeId,
-      type: 'server', // Reuse server node type for now
-      position: { x: namespaceX, y: 0 },
-      data: {
-        label: nsName,
-        serverName: nsName,
-        isNamespace: true, // Flag to indicate this is a namespace group
-        serviceCount: nsServices.length,
-        totalConnections: Math.floor(nsServices.reduce((sum, s) => {
-          return sum + (incoming.get(s.id)?.length || 0) + (outgoing.get(s.id)?.length || 0)
-        }, 0) / 2),
-        // No CPU/RAM metrics for namespace view
-        cpuPercent: undefined,
-        memPercent: undefined,
-        memUsed: undefined,
-        memTotal: undefined,
-      },
-      style: {
-        width: nsWidth,
-        height: nsHeight,
-        pointerEvents: 'none',
-      },
-      zIndex: 5,
-      selectable: false,
-      draggable: false,
-    })
-
-    // Create service nodes within this namespace
-    nsServices.forEach(service => {
-      const pos = positions.get(service.id) || { x: 0, y: 0 }
-      const incomingCount = (incoming.get(service.id) || []).length
-      const outgoingCount = (outgoing.get(service.id) || []).length
-
-      // Get listening ports
-      const listeningPorts = connections
-        .filter(c => c.target_id === service.id)
-        .map(c => c.port)
-        .filter((v, i, a) => a.indexOf(v) === i)
-        .sort((a, b) => a - b)
-
-      allNodes.push({
-        id: service.id,
-        type: 'service',
-        position: {
-          x: pos.x + SERVER_PADDING,
-          y: pos.y + NAMESPACE_HEADER_HEIGHT,
-        },
-        parentId: nsNodeId,
-        extent: 'parent',
-        expandParent: true,
-        data: {
-          label: service.display_name || service.name || service.id,
-          service,
-          server: service.node, // Include server info in data for tooltip
-          namespace: service.namespace,
-          incomingCount,
-          outgoingCount,
-          healthy: service.healthy !== false,
-          ports: listeningPorts,
-        },
-        style: {
-          width: NODE_WIDTH,
-        },
-        zIndex: 100,
-      })
-    })
-
-    // Move to next namespace position
-    namespaceX += nsWidth + SERVER_HORIZONTAL_SPACING
-    maxNamespaceHeight = Math.max(maxNamespaceHeight, nsHeight)
-  })
-
-  // Create React Flow edges
-  const edges: Edge[] = connections.map(conn => ({
-    id: conn.id,
-    source: conn.source_id,
-    target: conn.target_id,
-    type: 'smoothstep',
-    animated: false,
-    zIndex: 0,
-    style: {
-      stroke: '#475569',
-      strokeWidth: 1.5,
-      opacity: 0.7,
-    },
-    data: {
-      port: conn.port,
-      count: conn.count,
-      bytesSent: conn.bytes_sent,
-      bytesRecv: conn.bytes_recv,
-      bytesSentRate: conn.bytes_sent_rate,
-      bytesRecvRate: conn.bytes_recv_rate,
-      packetsSent: conn.packets_sent,
-      packetsRecv: conn.packets_recv,
-      latency: conn.latency_ms,
-    },
-  }))
-
-  return { nodes: allNodes, edges }
-}
-
-/**
- * Layout services within a group (server or namespace) using VERTICAL STACKING.
- */
-function layoutServicesInGroup(
-  services: Service[]
-): { positions: Map<string, { x: number; y: number }>; width: number; height: number } {
-  const positions = new Map<string, { x: number; y: number }>()
-
-  if (services.length === 0) {
-    return { positions, width: 0, height: 0 }
-  }
-
-  // Simple vertical stacking
-  const sortedServices = [...services].sort((a, b) => {
-    const nameA = a.display_name || a.name || a.id
-    const nameB = b.display_name || b.name || b.id
-    return nameA.localeCompare(nameB)
-  })
-
-  const centerX = INTERNAL_PADDING
-  let currentY = INTERNAL_PADDING
-
-  sortedServices.forEach((service) => {
-    positions.set(service.id, { 
-      x: centerX, 
-      y: currentY 
-    })
-    currentY += NODE_HEIGHT + INTERNAL_VERTICAL_SPACING
-  })
-
-  const totalHeight = services.length > 0 
-    ? INTERNAL_PADDING + (services.length * NODE_HEIGHT) + ((services.length - 1) * INTERNAL_VERTICAL_SPACING) + INTERNAL_PADDING
-    : INTERNAL_PADDING * 2
-
-  return { 
-    positions, 
-    width: NODE_WIDTH + INTERNAL_PADDING * 2, 
-    height: totalHeight
-  }
-}
-
-/**
- * Main entry point for layout - selects the appropriate layout based on view mode.
- * @param topology The topology data
- * @param viewMode 'physical' for server grouping, 'logical' for namespace grouping
- */
-export function getLayoutedElements(topology: Topology, viewMode: ViewMode): LayoutResult {
-  if (viewMode === 'logical') {
-    return layoutGraphByNamespace(topology)
-  }
-  return layoutGraph(topology)
-}
-
-/**
  * Layout services within a server group using VERTICAL STACKING (single column).
  * This creates a clean, list-like layout with edges running behind nodes.
  */
 function layoutServicesInServer(
-  services: Service[],
+  services: AggregatedService[],
   _outgoing: Map<string, string[]>,
   _incoming: Map<string, string[]>
 ): { positions: Map<string, { x: number; y: number }>; width: number; height: number } {
@@ -463,10 +456,10 @@ function layoutServicesInServer(
   }
 
   // Simple vertical stacking - all nodes in a single centered column
-  // Sort services by name for consistent ordering
+  // Sort services by workload name for consistent ordering
   const sortedServices = [...services].sort((a, b) => {
-    const nameA = a.display_name || a.name || a.id
-    const nameB = b.display_name || b.name || b.id
+    const nameA = parseWorkloadName(a.resolved_name || a.display_name) || a.name || a.id
+    const nameB = parseWorkloadName(b.resolved_name || b.display_name) || b.name || b.id
     return nameA.localeCompare(nameB)
   })
 

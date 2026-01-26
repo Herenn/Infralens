@@ -123,9 +123,6 @@ export interface Stats {
   connections: number
 }
 
-// View mode for topology grouping
-export type ViewMode = 'physical' | 'logical'
-
 // ============================================================================
 // AI Documentation Types
 // ============================================================================
