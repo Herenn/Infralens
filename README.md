@@ -292,11 +292,73 @@ InfraLens supports multiple deployment methods. Choose based on your environment
 
 | Method | Best For | Complexity |
 |--------|----------|------------|
+| **Native Scripts** | Linux Servers (Recommended) | ⭐ Easy |
 | **Helm** | Production Kubernetes | ⭐⭐ Medium |
 | **Docker Compose** | Development / Single-node | ⭐ Easy |
 | **Kustomize** | GitOps / Custom K8s | ⭐⭐⭐ Advanced |
 
-### 🎯 Option 1: Helm Chart (Recommended for Production)
+### 🖥️ Option 1: Native Installation (Recommended for Servers)
+
+The easiest way to install InfraLens on Linux servers. One-liner installation with automatic setup.
+
+#### Full Stack (Main Server)
+
+Install the complete InfraLens stack (Agent + Backend + Frontend) on your main monitoring server:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Herenn/Infralens/main/scripts/install-full.sh | sudo bash
+```
+
+This will:
+- Install Go 1.22 and Node.js 20
+- Build Agent, Backend, and Frontend from source
+- Configure Nginx as reverse proxy (port 3001)
+- Create and start systemd services
+- Enable auto-start on boot
+
+**After installation:**
+```bash
+# View the dashboard
+http://YOUR_SERVER_IP:3001
+
+# Configure AI (optional)
+sudo vim /etc/systemd/system/infralens-backend.service
+# Add your API keys to Environment variables
+sudo systemctl daemon-reload && sudo systemctl restart infralens-backend
+
+# View logs
+journalctl -u infralens-backend -f
+journalctl -u infralens-agent -f
+```
+
+#### Agent Only (Additional Servers)
+
+Install just the Agent on additional servers you want to monitor:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Herenn/Infralens/main/scripts/install-agent.sh | sudo bash -s -- --backend=YOUR_BACKEND_IP:8080
+```
+
+**Options:**
+```bash
+--backend=IP:PORT   # Backend server address (required)
+--node=NAME         # Custom node name (default: hostname)
+```
+
+**Example:**
+```bash
+# Install agent pointing to main server at 192.168.1.100
+curl -sSL https://raw.githubusercontent.com/Herenn/Infralens/main/scripts/install-agent.sh | \
+  sudo bash -s -- --backend=192.168.1.100:8080 --node=web-server-1
+```
+
+#### Uninstall
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Herenn/Infralens/main/scripts/uninstall.sh | sudo bash
+```
+
+### 🎯 Option 2: Helm Chart (Recommended for Kubernetes)
 
 ```bash
 # Add the InfraLens Helm repository (if published)
@@ -348,7 +410,9 @@ backend:
       cpu: 500m
 ```
 
-### 🐳 Option 2: Docker Compose (Development / Single-Node)
+### 🐳 Option 3: Docker Compose (Development Only)
+
+> ⚠️ **Note:** Docker Compose is recommended for development/testing only. The agent container has limited visibility into host processes. For production, use [Native Installation](#️-option-1-native-installation-recommended-for-servers).
 
 ```bash
 cd deploy/docker-compose
@@ -378,7 +442,7 @@ DEFAULT_LLM_PROVIDER=openai
 
 Access the dashboard at `http://localhost:3000`
 
-### ☸️ Option 3: Kustomize (GitOps)
+### ☸️ Option 4: Kustomize (GitOps)
 
 ```bash
 # Deploy all components

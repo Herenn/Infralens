@@ -342,6 +342,25 @@ function App() {
     }
   }, [topology, filteredTopology])
 
+  // Handle edge click - highlight source and target services
+  const onEdgeClick = useCallback((_: React.MouseEvent, edge: Edge) => {
+    // Find the source service for the edge
+    const sourceService = topology?.services.find((s) => s.id === edge.source) || 
+                          filteredTopology?.services.find((s) => s.id === edge.source)
+    
+    if (sourceService) {
+      const edgePort = edge.data?.port as number | undefined
+      setSelectedNode({
+        type: 'service',
+        service: sourceService,
+        serverData: null,
+        ports: edgePort ? [edgePort] : [],
+      })
+      setSelectedServiceId(edge.source) // Highlight edges connected to source
+      setDrawerOpen(true)
+    }
+  }, [topology, filteredTopology])
+
   // Handle pane click - close drawer and clear selection
   const onPaneClick = useCallback(() => {
     setDrawerOpen(false)
@@ -480,10 +499,13 @@ function App() {
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeClick={onNodeClick}
+            onEdgeClick={onEdgeClick}
             onPaneClick={onPaneClick}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             fitView
+            edgesFocusable
+            selectNodesOnDrag={false}
             attributionPosition="bottom-left"
             className="grid-bg"
             defaultEdgeOptions={{
