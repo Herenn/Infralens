@@ -245,7 +245,9 @@ func (w *Watcher) updatePodCache(pod *corev1.Pod) {
 		return
 	}
 
-	name := fmt.Sprintf("Pod: %s/%s", pod.Namespace, pod.Name)
+	// Try to find the workload owner (Deployment, StatefulSet, DaemonSet, Job)
+	// This aggregates all pods of the same deployment together
+	name := w.getWorkloadName(pod)
 
 	w.mu.Lock()
 	w.podCache[pod.Status.PodIP] = name
@@ -259,9 +261,88 @@ func (w *Watcher) updatePodCache(pod *corev1.Pod) {
 	w.mu.Unlock()
 
 	log.WithFields(log.Fields{
-		"pod": name,
-		"ip":  pod.Status.PodIP,
+		"workload": name,
+		"pod":      pod.Name,
+		"ip":       pod.Status.PodIP,
 	}).Debug("Pod added to cache")
+}
+
+// getWorkloadName finds the top-level workload that owns this pod.
+// It traverses owner references to find Deployment, StatefulSet, DaemonSet, or Job.
+// Falls back to pod name if no workload owner is found.
+func (w *Watcher) getWorkloadName(pod *corev1.Pod) string {
+	// Check owner references
+	for _, owner := range pod.OwnerReferences {
+		switch owner.Kind {
+		case "ReplicaSet":
+			// ReplicaSet is usually owned by a Deployment
+			// Extract deployment name by removing the hash suffix
+			// nginx-deployment-abc123 -> nginx-deployment
+			rsName := owner.Name
+			deployName := extractDeploymentName(rsName)
+			if deployName != "" {
+				return fmt.Sprintf("Deploy: %s/%s", pod.Namespace, deployName)
+			}
+			return fmt.Sprintf("RS: %s/%s", pod.Namespace, rsName)
+		case "StatefulSet":
+			return fmt.Sprintf("STS: %s/%s", pod.Namespace, owner.Name)
+		case "DaemonSet":
+			return fmt.Sprintf("DS: %s/%s", pod.Namespace, owner.Name)
+		case "Job":
+			return fmt.Sprintf("Job: %s/%s", pod.Namespace, owner.Name)
+		}
+	}
+
+	// Check common labels for workload identity
+	if labels := pod.Labels; labels != nil {
+		// Try app.kubernetes.io/name first (standard label)
+		if appName, ok := labels["app.kubernetes.io/name"]; ok {
+			return fmt.Sprintf("App: %s/%s", pod.Namespace, appName)
+		}
+		// Try app label (common convention)
+		if appName, ok := labels["app"]; ok {
+			return fmt.Sprintf("App: %s/%s", pod.Namespace, appName)
+		}
+		// Try name label
+		if name, ok := labels["name"]; ok {
+			return fmt.Sprintf("App: %s/%s", pod.Namespace, name)
+		}
+	}
+
+	// Fallback to pod name
+	return fmt.Sprintf("Pod: %s/%s", pod.Namespace, pod.Name)
+}
+
+// extractDeploymentName extracts the deployment name from a ReplicaSet name.
+// ReplicaSet names follow the pattern: {deployment-name}-{hash}
+// e.g., "nginx-deployment-5d8b9f7c4" -> "nginx-deployment"
+func extractDeploymentName(rsName string) string {
+	// Find the last dash followed by alphanumeric hash (usually 9-10 chars)
+	lastDash := -1
+	for i := len(rsName) - 1; i >= 0; i-- {
+		if rsName[i] == '-' {
+			// Check if remaining part looks like a hash (alphanumeric, 5-10 chars)
+			suffix := rsName[i+1:]
+			if len(suffix) >= 5 && len(suffix) <= 10 && isAlphanumeric(suffix) {
+				lastDash = i
+				break
+			}
+		}
+	}
+	if lastDash > 0 {
+		return rsName[:lastDash]
+	}
+	return ""
+}
+
+// isAlphanumeric checks if a string contains only alphanumeric characters.
+func isAlphanumeric(s string) bool {
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *Watcher) removePodFromCache(pod *corev1.Pod) {

@@ -271,16 +271,38 @@ func (h *Handler) processEvent(nodeName string, event TCPEvent) {
 	// Resolve destination IP to Kubernetes resource name
 	dstResolved := h.k8sWatcher.Resolve(event.DstAddr)
 
-	// Create service IDs - include process name to differentiate services on same host
+	// Check if IPs resolved to K8s resources (not just returned as-is)
+	srcIsK8s := isK8sResource(srcResolved)
+	dstIsK8s := isK8sResource(dstResolved)
+
+	// Create service IDs
+	// For K8s resources, use the resolved name as ID to aggregate all pods of same deployment
+	// For non-K8s, use IP + process name
 	var srcID, dstID string
 	if event.Direction == DirectionOutbound {
 		// Outbound: source is local process, dest is remote
-		srcID = makeServiceIDWithProcess(event.SrcAddr, event.Comm)
-		dstID = makeServiceIDWithPort(event.DstAddr, event.DstPort)
+		if srcIsK8s {
+			srcID = srcResolved // Use K8s name as ID (aggregates pods)
+		} else {
+			srcID = makeServiceIDWithProcess(event.SrcAddr, event.Comm)
+		}
+		if dstIsK8s {
+			dstID = dstResolved
+		} else {
+			dstID = makeServiceIDWithPort(event.DstAddr, event.DstPort)
+		}
 	} else {
 		// Inbound: source is remote (external), dest is local process
-		srcID = makeServiceID(event.SrcAddr) // External - no process info
-		dstID = makeServiceIDWithProcess(event.DstAddr, event.Comm)
+		if srcIsK8s {
+			srcID = srcResolved
+		} else {
+			srcID = makeServiceID(event.SrcAddr) // External - no process info
+		}
+		if dstIsK8s {
+			dstID = dstResolved
+		} else {
+			dstID = makeServiceIDWithProcess(event.DstAddr, event.Comm)
+		}
 	}
 
 	// Build connection ID (same format regardless of direction)
@@ -373,16 +395,33 @@ func (h *Handler) processEvent(nodeName string, event TCPEvent) {
 // getServiceName returns a human-readable service name.
 // If the resolved name is a K8s resource, use it; otherwise use the fallback.
 func (h *Handler) getServiceName(resolved, fallback string) string {
-	// If it's resolved to a K8s resource, use that
-	if strings.HasPrefix(resolved, "Pod:") || strings.HasPrefix(resolved, "Svc:") {
-		// Extract just the name part for display
+	// If it's resolved to a K8s resource, extract just the name
+	if isK8sResource(resolved) {
+		// Format is "Type: namespace/name" -> extract just "name"
 		parts := strings.Split(resolved, "/")
 		if len(parts) > 1 {
 			return parts[len(parts)-1] // Return just the resource name
 		}
+		// If no slash, remove the type prefix
+		if idx := strings.Index(resolved, ": "); idx > 0 {
+			return resolved[idx+2:]
+		}
 		return resolved
 	}
 	return fallback
+}
+
+// isK8sResource checks if a resolved name is a Kubernetes resource (not just an IP).
+func isK8sResource(resolved string) bool {
+	// K8s resources are prefixed with: Deploy:, STS:, DS:, Job:, App:, Pod:, Svc:, RS:
+	return strings.HasPrefix(resolved, "Deploy:") ||
+		strings.HasPrefix(resolved, "STS:") ||
+		strings.HasPrefix(resolved, "DS:") ||
+		strings.HasPrefix(resolved, "Job:") ||
+		strings.HasPrefix(resolved, "App:") ||
+		strings.HasPrefix(resolved, "Pod:") ||
+		strings.HasPrefix(resolved, "Svc:") ||
+		strings.HasPrefix(resolved, "RS:")
 }
 
 // makeServiceID creates a service ID from an IP address.
