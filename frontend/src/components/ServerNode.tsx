@@ -1,9 +1,8 @@
 import { memo } from 'react'
-import { NodeProps } from '@xyflow/react'
 import { Server, Cpu, Network, Globe, MemoryStick } from 'lucide-react'
 import { formatBytes } from '../types'
 
-interface ServerNodeData {
+export interface ServerNodeData {
   label: string
   serverName: string
   serviceCount: number
@@ -12,6 +11,10 @@ interface ServerNodeData {
   memPercent?: number
   memUsed?: number
   memTotal?: number
+}
+
+interface ServerNodeProps {
+  data: ServerNodeData
 }
 
 /**
@@ -32,7 +35,7 @@ function getUsageTextColor(percent: number | undefined): string {
   return 'text-red-400'
 }
 
-function ServerNode({ data }: NodeProps<ServerNodeData>) {
+function ServerNode({ data }: ServerNodeProps) {
   const { 
     label, 
     serverName, 
@@ -45,7 +48,8 @@ function ServerNode({ data }: NodeProps<ServerNodeData>) {
   } = data
   
   const isExternal = serverName === 'External Network'
-  const hasMetrics = cpuPercent !== undefined || memPercent !== undefined
+  // Note: hasMetrics can be used for conditional rendering if needed
+  // const hasMetrics = cpuPercent !== undefined || memPercent !== undefined
 
   return (
     <div

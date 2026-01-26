@@ -15,7 +15,6 @@ import {
   Shield, 
   Activity as ActivityIcon,
   Sparkles,
-  Code2,
   MemoryStick,
   Network,
   FileCode,
@@ -368,7 +367,7 @@ function ServerOverview({ serverData }: { serverData?: ServiceDrawerProps['serve
 // Service Overview Tab
 function ServiceOverview({ 
   service, 
-  connections,
+  connections: _connections,
   ports,
   outgoingConnections,
   incomingConnections,
@@ -725,10 +724,10 @@ function InspectionSection({ inspection }: { inspection: ServiceInspection }) {
   )
 }
 
-// AI Docs Tab (Placeholder)
+// AI Docs Tab
 function AIDocsTab({ 
   service, 
-  serverData, 
+  serverData: _serverData, 
   nodeType 
 }: { 
   service?: Service | null
@@ -736,7 +735,7 @@ function AIDocsTab({
   nodeType: 'service' | 'server' | null
 }) {
   const [aiStatus, setAiStatus] = useState<{ enabled: boolean; providers: Record<string, boolean> } | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [_loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [docs, setDocs] = useState<string | null>(null)
   const [provider, setProvider] = useState<string | null>(null)
@@ -753,7 +752,8 @@ function AIDocsTab({
   })
   const [savingConfig, setSavingConfig] = useState(false)
 
-  const name = nodeType === 'server' ? serverData?.serverName : service?.name
+  // Name for display (used in AI prompts internally)
+  // const name = nodeType === 'server' ? serverData?.serverName : service?.name
   const serviceId = service?.id
 
   // Fetch AI status on mount
@@ -1214,34 +1214,10 @@ function ConnectionCard({ connection, direction }: { connection: Connection; dir
   )
 }
 
-function FeatureCard({ 
-  icon, 
-  title, 
-  description, 
-  status 
-}: { 
-  icon: React.ReactNode
-  title: string
-  description: string
-  status: 'available' | 'coming_soon'
-}) {
-  return (
-    <div className="flex items-start gap-3 p-3 bg-slate-800/30 rounded-lg border border-slate-700/20">
-      <div className="p-2 rounded-md bg-slate-800">{icon}</div>
-      <div className="flex-1">
-        <div className="flex items-center gap-2">
-          <h4 className="text-sm font-medium text-slate-200">{title}</h4>
-          {status === 'coming_soon' && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400">
-              Soon
-            </span>
-          )}
-        </div>
-        <p className="text-xs text-slate-500 mt-0.5">{description}</p>
-      </div>
-    </div>
-  )
-}
+// FeatureCard component - reserved for future use
+// function FeatureCard({ icon, title, description, status }: { 
+//   icon: React.ReactNode; title: string; description: string; status: 'available' | 'coming_soon' 
+// }) { ... }
 
 // Service Type Icon Component
 function ServiceTypeIcon({ type, size = 20 }: { type?: string; size?: number }) {

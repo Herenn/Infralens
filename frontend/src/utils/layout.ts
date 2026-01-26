@@ -78,7 +78,7 @@ export function layoutGraph(topology: Topology): LayoutResult {
   let maxServerHeight = 0
   const serverNames = Array.from(serverGroups.keys())
 
-  serverNames.forEach((serverName, serverIndex) => {
+  serverNames.forEach((serverName, _serverIndex) => {
     const serverServices = serverGroups.get(serverName) || []
     
     // Calculate layout for services within this server
@@ -216,7 +216,7 @@ export function layoutGraph(topology: Topology): LayoutResult {
  * This creates a clean, list-like layout with edges running behind nodes.
  */
 function layoutServicesInServer(
-  services: typeof Topology.prototype.services,
+  services: Service[],
   _outgoing: Map<string, string[]>,
   _incoming: Map<string, string[]>
 ): { positions: Map<string, { x: number; y: number }>; width: number; height: number } {
@@ -238,7 +238,7 @@ function layoutServicesInServer(
   const centerX = INTERNAL_PADDING // Left-aligned with padding
   let currentY = INTERNAL_PADDING
 
-  sortedServices.forEach((service, index) => {
+  sortedServices.forEach((service) => {
     positions.set(service.id, { 
       x: centerX, 
       y: currentY 

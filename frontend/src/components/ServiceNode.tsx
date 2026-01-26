@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { Handle, Position, NodeProps } from '@xyflow/react'
+import { Handle, Position } from '@xyflow/react'
 import { 
   Server, 
   Database, 
@@ -16,13 +16,18 @@ import {
 } from 'lucide-react'
 import { Service, TypeColors } from '../types'
 
-interface ServiceNodeData {
+export interface ServiceNodeData {
   label: string
   service: Service
   incomingCount: number
   outgoingCount: number
   healthy: boolean
   ports?: number[] // Listening ports
+}
+
+interface ServiceNodeProps {
+  data: ServiceNodeData
+  selected?: boolean
 }
 
 // Get icon component based on service type
@@ -125,7 +130,7 @@ function getK8sDisplayInfo(service: Service): { type: string; namespace: string;
   return null
 }
 
-function ServiceNode({ data, selected }: NodeProps<ServiceNodeData>) {
+function ServiceNode({ data, selected }: ServiceNodeProps) {
   const { label, service, incomingCount, outgoingCount, healthy, ports } = data
 
   const k8sType = isK8sResource(service)

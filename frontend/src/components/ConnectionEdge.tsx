@@ -1,7 +1,7 @@
 import { memo } from 'react'
-import { BaseEdge, EdgeProps, getBezierPath, EdgeLabelRenderer } from '@xyflow/react'
+import { BaseEdge, getBezierPath, EdgeLabelRenderer, Position } from '@xyflow/react'
 
-interface ConnectionEdgeData {
+export interface ConnectionEdgeData {
   port: number
   count: number
   bytesSent?: number
@@ -11,6 +11,18 @@ interface ConnectionEdgeData {
   packetsSent?: number
   packetsRecv?: number
   latency?: number
+}
+
+interface ConnectionEdgeProps {
+  id: string
+  sourceX: number
+  sourceY: number
+  targetX: number
+  targetY: number
+  sourcePosition: Position
+  targetPosition: Position
+  data?: ConnectionEdgeData
+  selected?: boolean
 }
 
 // Format bytes to human readable with /s suffix for rates
@@ -33,7 +45,7 @@ function ConnectionEdge({
   targetPosition,
   data,
   selected,
-}: EdgeProps<ConnectionEdgeData>) {
+}: ConnectionEdgeProps) {
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,

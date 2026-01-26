@@ -7,10 +7,7 @@ import {
   Globe, 
   Shield, 
   Zap, 
-  ClipboardList,
-  AlertTriangle,
-  CheckCircle2,
-  Info
+  ClipboardList
 } from 'lucide-react'
 
 interface MarkdownRendererProps {

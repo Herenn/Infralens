@@ -19,9 +19,14 @@ import ServerNode from './components/ServerNode'
 import ConnectionEdge from './components/ConnectionEdge'
 import ServiceDrawer from './components/ServiceDrawer'
 import Header from './components/Header'
-import { Topology, Service } from './types'
+import { Service } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { layoutGraph, updateNodeData, updateEdgeData } from './utils/layout'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AppNode = Node<any>
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AppEdge = Edge<any>
 
 const nodeTypes = {
   service: ServiceNode,
@@ -51,8 +56,8 @@ interface SelectedNodeState {
 }
 
 function App() {
-  const [nodes, setNodes, onNodesChange] = useNodesState([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  const [nodes, setNodes, onNodesChange] = useNodesState<AppNode>([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState<AppEdge>([])
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedNode, setSelectedNode] = useState<SelectedNodeState>({
     type: null,
