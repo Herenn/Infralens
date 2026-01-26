@@ -221,10 +221,12 @@ function App() {
     collapseExternal: false,
   })
   
-  // Track node IDs to detect structural changes
+  // Track node IDs to detect structural changes (only services, not connections)
   const prevNodeIdsRef = useRef<Set<string>>(new Set())
-  const prevEdgeIdsRef = useRef<Set<string>>(new Set())
   const prevFiltersRef = useRef<FilterState>(filters)
+  const lastLayoutTimeRef = useRef<number>(0)
+  const storedPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map())
+  const MIN_LAYOUT_INTERVAL = 5000 // Minimum 5 seconds between layouts
 
   const { topology, isConnected } = useWebSocket()
 
@@ -249,40 +251,74 @@ function App() {
       connections: filteredTopology.connections.length,
     })
 
-    // Get current service IDs and connection IDs
+    // Get current service IDs (only services, NOT connections - connections change too often)
     const currentServiceIds = new Set(filteredTopology.services.map(s => s.id))
-    const currentConnectionIds = new Set(filteredTopology.connections.map(c => c.id))
     
     // Also count unique server nodes
     const currentServerIds = new Set(filteredTopology.services.map(s => `server-${s.node || 'External Network'}`))
     const allCurrentNodeIds = new Set([...currentServiceIds, ...currentServerIds])
 
-    // Check if structure changed (new nodes/edges appeared or disappeared)
+    // Check if SERVICE structure changed (ignore connection changes - they're too volatile)
     const filtersChanged = JSON.stringify(filters) !== JSON.stringify(prevFiltersRef.current)
-    const structureChanged = 
-      filtersChanged ||
-      allCurrentNodeIds.size !== prevNodeIdsRef.current.size ||
-      currentConnectionIds.size !== prevEdgeIdsRef.current.size ||
-      [...allCurrentNodeIds].some(id => !prevNodeIdsRef.current.has(id)) ||
-      [...currentConnectionIds].some(id => !prevEdgeIdsRef.current.has(id))
+    const nodesAdded = [...allCurrentNodeIds].some(id => !prevNodeIdsRef.current.has(id))
+    const nodesRemoved = [...prevNodeIdsRef.current].some(id => !allCurrentNodeIds.has(id))
+    const structureChanged = filtersChanged || nodesAdded || nodesRemoved
+    
+    // Also check minimum time since last layout (debounce)
+    const now = Date.now()
+    const canLayout = now - lastLayoutTimeRef.current > MIN_LAYOUT_INTERVAL
 
-    if (structureChanged) {
+    if (structureChanged && canLayout) {
       // Structure changed - run full layout
-      console.log('🔄 Structure changed, running layout...')
+      console.log('🔄 Structure changed, running layout...', { 
+        filtersChanged, 
+        nodesAdded, 
+        nodesRemoved,
+        nodeCount: allCurrentNodeIds.size
+      })
       try {
         const { nodes: newNodes, edges: newEdges } = layoutGraph(filteredTopology)
-        console.log('✅ Layout result:', { nodes: newNodes.length, edges: newEdges.length })
-        setNodes(newNodes)
+        
+        // Restore saved positions for existing nodes to minimize jumping
+        const restoredNodes = newNodes.map(node => {
+          const savedPos = storedPositionsRef.current.get(node.id)
+          if (savedPos && !nodesAdded) {
+            // Only restore positions if no new nodes were added
+            // (new nodes need fresh layout to find good spots)
+            return { ...node, position: savedPos }
+          }
+          return node
+        })
+        
+        console.log('✅ Layout result:', { nodes: restoredNodes.length, edges: newEdges.length })
+        setNodes(restoredNodes)
         setEdges(newEdges)
         prevNodeIdsRef.current = allCurrentNodeIds
-        prevEdgeIdsRef.current = currentConnectionIds
         prevFiltersRef.current = filters
+        lastLayoutTimeRef.current = now
+        
+        // Save new positions
+        restoredNodes.forEach(node => {
+          storedPositionsRef.current.set(node.id, node.position)
+        })
       } catch (err) {
         console.error('❌ Layout error:', err)
       }
+    } else if (structureChanged && !canLayout) {
+      // Structure changed but too soon - just update data, layout will happen later
+      console.log('⏳ Structure changed but debouncing...')
+      setNodes(currentNodes => updateNodeData(currentNodes, filteredTopology))
+      setEdges(currentEdges => updateEdgeData(currentEdges, filteredTopology))
     } else {
       // Only data changed - update node/edge data without changing positions
-      setNodes(currentNodes => updateNodeData(currentNodes, filteredTopology))
+      setNodes(currentNodes => {
+        const updated = updateNodeData(currentNodes, filteredTopology)
+        // Save current positions
+        updated.forEach(node => {
+          storedPositionsRef.current.set(node.id, node.position)
+        })
+        return updated
+      })
       setEdges(currentEdges => updateEdgeData(currentEdges, filteredTopology))
     }
 
@@ -294,6 +330,18 @@ function App() {
       })
     }
   }, [filteredTopology, filters, topology, setNodes, setEdges])
+
+  // Custom nodes change handler that saves positions when dragged
+  const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
+    onNodesChange(changes)
+    
+    // Save positions for position changes (from dragging)
+    changes.forEach(change => {
+      if (change.type === 'position' && change.position) {
+        storedPositionsRef.current.set(change.id, change.position)
+      }
+    })
+  }, [onNodesChange])
 
   const onConnect = useCallback(
     (params: Connection) => setEdges((eds) => addEdge(params, eds)),
@@ -495,7 +543,7 @@ function App() {
           <ReactFlow
             nodes={nodes}
             edges={edges}
-            onNodesChange={onNodesChange}
+            onNodesChange={handleNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeClick={onNodeClick}
