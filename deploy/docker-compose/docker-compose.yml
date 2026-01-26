@@ -75,14 +75,16 @@ services:
     privileged: true
     pid: host
     network_mode: host
+    security_opt:
+      - apparmor:unconfined
     command:
       - --backend=http://localhost:8080
       - --node=${HOSTNAME:-docker-host}
       - --inspect
     volumes:
       - /proc:/proc:ro
-      - /sys:/sys:ro
-      - /sys/kernel/debug:/sys/kernel/debug:ro
+      - /sys:/sys:rw
+      - /sys/kernel/debug:/sys/kernel/debug:rw
     depends_on:
       - backend
 
