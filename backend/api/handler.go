@@ -32,9 +32,10 @@ type Handler struct {
 
 // EventBatch represents a batch of events from an agent.
 type EventBatch struct {
-	NodeName  string     `json:"node_name"`
-	Timestamp time.Time  `json:"timestamp"`
-	Events    []TCPEvent `json:"events"`
+	NodeName    string     `json:"node_name"`
+	ClusterName string     `json:"cluster_name,omitempty"` // Groups nodes in UI
+	Timestamp   time.Time  `json:"timestamp"`
+	Events      []TCPEvent `json:"events"`
 }
 
 // Direction constants
@@ -56,6 +57,7 @@ type TCPEvent struct {
 // ThroughputReport represents throughput stats from an agent.
 type ThroughputReport struct {
 	NodeName    string                   `json:"node_name"`
+	ClusterName string                   `json:"cluster_name,omitempty"` // Groups nodes in UI
 	Timestamp   time.Time                `json:"timestamp"`
 	IntervalMs  int64                    `json:"interval_ms"`
 	Connections []ConnectionStatsPayload `json:"connections"`
@@ -79,19 +81,21 @@ type ConnectionStatsPayload struct {
 
 // HostMetricsPayload represents CPU/RAM metrics from an agent.
 type HostMetricsPayload struct {
-	NodeName   string  `json:"node_name"`
-	CPUPercent float64 `json:"cpu_percent"`
-	MemPercent float64 `json:"mem_percent"`
-	MemUsed    uint64  `json:"mem_used"`
-	MemTotal   uint64  `json:"mem_total"`
+	NodeName    string  `json:"node_name"`
+	ClusterName string  `json:"cluster_name,omitempty"` // Groups nodes in UI
+	CPUPercent  float64 `json:"cpu_percent"`
+	MemPercent  float64 `json:"mem_percent"`
+	MemUsed     uint64  `json:"mem_used"`
+	MemTotal    uint64  `json:"mem_total"`
 }
 
 // InspectionReport represents deep inspection data from an agent.
 type InspectionReport struct {
-	NodeName   string              `json:"node_name"`
-	Timestamp  time.Time           `json:"timestamp"`
-	ServiceID  string              `json:"service_id"`
-	Inspection *InspectionPayload  `json:"inspection"`
+	NodeName    string              `json:"node_name"`
+	ClusterName string              `json:"cluster_name,omitempty"` // Groups nodes in UI
+	Timestamp   time.Time           `json:"timestamp"`
+	ServiceID   string              `json:"service_id"`
+	Inspection  *InspectionPayload  `json:"inspection"`
 }
 
 // InspectionPayload contains all inspection data fields.
@@ -229,13 +233,21 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Use cluster name for grouping if provided, otherwise use node name
+	groupName := batch.NodeName
+	if batch.ClusterName != "" {
+		groupName = batch.ClusterName
+	}
+
 	log.WithFields(log.Fields{
-		"node":   batch.NodeName,
-		"events": len(batch.Events),
+		"node":    batch.NodeName,
+		"cluster": batch.ClusterName,
+		"group":   groupName,
+		"events":  len(batch.Events),
 	}).Debug("Received event batch")
 
 	for _, event := range batch.Events {
-		h.processEvent(batch.NodeName, event)
+		h.processEvent(groupName, event)
 	}
 
 	w.WriteHeader(http.StatusAccepted)
@@ -655,15 +667,23 @@ func (h *Handler) handleIngestMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Use cluster name for grouping if provided, otherwise use node name
+	groupName := metrics.NodeName
+	if metrics.ClusterName != "" {
+		groupName = metrics.ClusterName
+	}
+
 	log.WithFields(log.Fields{
-		"node": metrics.NodeName,
-		"cpu":  fmt.Sprintf("%.1f%%", metrics.CPUPercent),
-		"mem":  fmt.Sprintf("%.1f%%", metrics.MemPercent),
+		"node":    metrics.NodeName,
+		"cluster": metrics.ClusterName,
+		"group":   groupName,
+		"cpu":     fmt.Sprintf("%.1f%%", metrics.CPUPercent),
+		"mem":     fmt.Sprintf("%.1f%%", metrics.MemPercent),
 	}).Debug("Received host metrics")
 
-	// Update the graph with node metrics
+	// Update the graph with node metrics (use group name for the node)
 	h.graph.UpdateNodeMetrics(
-		metrics.NodeName,
+		groupName,
 		metrics.CPUPercent,
 		metrics.MemPercent,
 		metrics.MemUsed,

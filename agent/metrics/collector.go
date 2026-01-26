@@ -11,23 +11,33 @@ import (
 
 // HostMetrics contains CPU and memory usage statistics.
 type HostMetrics struct {
-	NodeName   string    `json:"node_name"`
-	Timestamp  time.Time `json:"timestamp"`
-	CPUPercent float64   `json:"cpu_percent"` // 0-100
-	MemPercent float64   `json:"mem_percent"` // 0-100
-	MemUsed    uint64    `json:"mem_used"`    // bytes
-	MemTotal   uint64    `json:"mem_total"`   // bytes
+	NodeName    string    `json:"node_name"`
+	ClusterName string    `json:"cluster_name,omitempty"` // Groups nodes in UI
+	Timestamp   time.Time `json:"timestamp"`
+	CPUPercent  float64   `json:"cpu_percent"` // 0-100
+	MemPercent  float64   `json:"mem_percent"` // 0-100
+	MemUsed     uint64    `json:"mem_used"`    // bytes
+	MemTotal    uint64    `json:"mem_total"`   // bytes
 }
 
 // Collector gathers host metrics periodically.
 type Collector struct {
-	nodeName string
+	nodeName    string
+	clusterName string
 }
 
 // NewCollector creates a new metrics collector.
 func NewCollector(nodeName string) *Collector {
 	return &Collector{
 		nodeName: nodeName,
+	}
+}
+
+// NewCollectorWithCluster creates a new metrics collector with cluster name.
+func NewCollectorWithCluster(nodeName, clusterName string) *Collector {
+	return &Collector{
+		nodeName:    nodeName,
+		clusterName: clusterName,
 	}
 }
 
@@ -53,12 +63,13 @@ func (c *Collector) Collect() (*HostMetrics, error) {
 	}
 
 	return &HostMetrics{
-		NodeName:   c.nodeName,
-		Timestamp:  time.Now(),
-		CPUPercent: cpuPercent,
-		MemPercent: memInfo.UsedPercent,
-		MemUsed:    memInfo.Used,
-		MemTotal:   memInfo.Total,
+		NodeName:    c.nodeName,
+		ClusterName: c.clusterName,
+		Timestamp:   time.Now(),
+		CPUPercent:  cpuPercent,
+		MemPercent:  memInfo.UsedPercent,
+		MemUsed:     memInfo.Used,
+		MemTotal:    memInfo.Total,
 	}, nil
 }
 

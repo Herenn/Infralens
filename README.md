@@ -438,7 +438,8 @@ helm install infralens-agents ./infralens -n infralens --create-namespace \
   --set backend.enabled=false \
   --set frontend.enabled=false \
   --set agent.externalBackend.enabled=true \
-  --set agent.externalBackend.url="http://YOUR_BACKEND_IP:8080"
+  --set agent.externalBackend.url="http://YOUR_BACKEND_IP:8080" \
+  --set agent.clusterName="Production-K8s"
 ```
 
 **Example values file for agent-only deployment:**
@@ -453,6 +454,7 @@ frontend:
 
 agent:
   enabled: true
+  clusterName: "Production-K8s"  # All K8s nodes grouped under this name
   externalBackend:
     enabled: true
     url: "http://192.168.1.100:8080"  # Your backend server
@@ -462,6 +464,10 @@ Then install with:
 ```bash
 helm install infralens-agents ./infralens -n infralens --create-namespace -f values-agents-only.yaml
 ```
+
+**Key Options:**
+- `agent.clusterName` - Groups all K8s nodes under a single name in the UI (default: "Kubernetes")
+- Without cluster name, each K8s node appears as a separate server
 
 This allows you to monitor **both** standalone servers and Kubernetes clusters from a single InfraLens dashboard!
 

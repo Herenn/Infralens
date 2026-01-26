@@ -97,6 +97,10 @@ agent:
     # URL of external backend (e.g., "http://your-server-ip:8080")
     url: ""
   
+  # Cluster name - groups all K8s nodes under this name in the UI
+  # If empty, each node appears separately
+  clusterName: "Kubernetes"
+  
   # Agent runs with elevated privileges for eBPF
   securityContext:
     privileged: true

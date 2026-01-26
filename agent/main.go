@@ -98,14 +98,16 @@ type EventPayload struct {
 
 // EventBatch represents a batch of events sent to the backend
 type EventBatch struct {
-	NodeName  string         `json:"node_name"`
-	Timestamp time.Time      `json:"timestamp"`
-	Events    []EventPayload `json:"events"`
+	NodeName    string         `json:"node_name"`
+	ClusterName string         `json:"cluster_name,omitempty"` // Groups nodes in UI
+	Timestamp   time.Time      `json:"timestamp"`
+	Events      []EventPayload `json:"events"`
 }
 
 // ThroughputReport represents throughput stats sent to the backend
 type ThroughputReport struct {
 	NodeName       string                     `json:"node_name"`
+	ClusterName    string                     `json:"cluster_name,omitempty"` // Groups nodes in UI
 	Timestamp      time.Time                  `json:"timestamp"`
 	IntervalMs     int64                      `json:"interval_ms"`
 	Connections    []ConnectionThroughput     `json:"connections"`
@@ -145,6 +147,7 @@ type prevStats struct {
 var (
 	backendAddr        = flag.String("backend", "", "Backend address (e.g., localhost:8080)")
 	nodeName           = flag.String("node", "", "Node name (defaults to hostname)")
+	clusterName        = flag.String("cluster", "", "Cluster name (groups all nodes under this name in UI)")
 	batchSize          = flag.Int("batch-size", 10, "Number of events to batch before sending")
 	batchTimeout       = flag.Duration("batch-timeout", 1*time.Second, "Max time to wait before sending batch")
 	statsInterval      = flag.Duration("stats-interval", 1*time.Second, "Interval to poll and report throughput stats")
@@ -317,7 +320,7 @@ func main() {
 	// Host metrics ticker (5 seconds - less frequent than throughput)
 	metricsTicker := time.NewTicker(*metricsInterval)
 	defer metricsTicker.Stop()
-	metricsCollector := metrics.NewCollector(*nodeName)
+	metricsCollector := metrics.NewCollectorWithCluster(*nodeName, *clusterName)
 	fmt.Printf("✓ Host metrics collection enabled (every %s)\n", *metricsInterval)
 
 	// Deep process inspector
@@ -589,6 +592,7 @@ func formatBytes(b uint64) string {
 func sendThroughput(ctx context.Context, client *http.Client, backendAddr, nodeName string, stats []ConnectionThroughput) {
 	report := ThroughputReport{
 		NodeName:    nodeName,
+		ClusterName: *clusterName,
 		Timestamp:   time.Now(),
 		IntervalMs:  statsInterval.Milliseconds(),
 		Connections: stats,
@@ -665,9 +669,10 @@ func printEvent(payload EventPayload) {
 
 func sendBatch(ctx context.Context, client *http.Client, backendAddr, nodeName string, events []EventPayload) {
 	batch := EventBatch{
-		NodeName:  nodeName,
-		Timestamp: time.Now(),
-		Events:    events,
+		NodeName:    nodeName,
+		ClusterName: *clusterName,
+		Timestamp:   time.Now(),
+		Events:      events,
 	}
 
 	data, err := json.Marshal(batch)
@@ -781,10 +786,11 @@ func shouldInspect(pid uint32) bool {
 
 // InspectionReport is the JSON structure sent to the backend
 type InspectionReport struct {
-	NodeName   string                      `json:"node_name"`
-	Timestamp  time.Time                   `json:"timestamp"`
-	ServiceID  string                      `json:"service_id"`
-	Inspection *inspector.InspectionResult `json:"inspection"`
+	NodeName    string                      `json:"node_name"`
+	ClusterName string                      `json:"cluster_name,omitempty"` // Groups nodes in UI
+	Timestamp   time.Time                   `json:"timestamp"`
+	ServiceID   string                      `json:"service_id"`
+	Inspection  *inspector.InspectionResult `json:"inspection"`
 }
 
 // inspectAndReport performs deep inspection on a process and sends results to backend
@@ -808,10 +814,11 @@ func inspectAndReport(ctx context.Context, client *http.Client, insp *inspector.
 	}
 
 	report := InspectionReport{
-		NodeName:   *nodeName,
-		Timestamp:  time.Now(),
-		ServiceID:  serviceID,
-		Inspection: result,
+		NodeName:    *nodeName,
+		ClusterName: *clusterName,
+		Timestamp:   time.Now(),
+		ServiceID:   serviceID,
+		Inspection:  result,
 	}
 
 	data, err := json.Marshal(report)

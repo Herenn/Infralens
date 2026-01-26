@@ -29,6 +29,9 @@ spec:
             - --backend=http://{{ include "infralens.fullname" . }}-backend:{{ .Values.backend.service.port }}
             {{- end }}
             - --node=$(NODE_NAME)
+            {{- if .Values.agent.clusterName }}
+            - --cluster={{ .Values.agent.clusterName }}
+            {{- end }}
             - --inspect
           env:
             - name: NODE_NAME
