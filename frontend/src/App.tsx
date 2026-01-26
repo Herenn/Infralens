@@ -207,6 +207,7 @@ function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState<AppNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<AppEdge>([])
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedServiceId, setSelectedServiceId] = useState<string | null>(null)
   const [selectedNode, setSelectedNode] = useState<SelectedNodeState>({
     type: null,
     service: null,
@@ -318,6 +319,7 @@ function App() {
         serverData: data,
         ports: [],
       })
+      setSelectedServiceId(null) // Clear edge highlighting
       setDrawerOpen(true)
     } else if (node.type === 'service') {
       // Service node clicked - find from original topology first, then filtered (for aggregated services)
@@ -335,14 +337,30 @@ function App() {
         serverData: null,
         ports,
       })
+      setSelectedServiceId(node.id) // Highlight connected edges
       setDrawerOpen(true)
     }
   }, [topology, filteredTopology])
 
-  // Handle pane click - close drawer
+  // Handle pane click - close drawer and clear selection
   const onPaneClick = useCallback(() => {
     setDrawerOpen(false)
+    setSelectedServiceId(null)
   }, [])
+
+  // Update edge highlighting when selection changes
+  useEffect(() => {
+    setEdges(currentEdges => currentEdges.map(edge => ({
+      ...edge,
+      data: {
+        ...edge.data,
+        highlighted: selectedServiceId ? 
+          (edge.source === selectedServiceId ? 'outgoing' : 
+           edge.target === selectedServiceId ? 'incoming' : null) 
+          : null,
+      },
+    })))
+  }, [selectedServiceId, setEdges])
 
   // Export topology as high-quality PNG
   const handleExportPng = useCallback(() => {

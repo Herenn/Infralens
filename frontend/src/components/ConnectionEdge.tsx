@@ -11,6 +11,7 @@ export interface ConnectionEdgeData {
   packetsSent?: number
   packetsRecv?: number
   latency?: number
+  highlighted?: 'incoming' | 'outgoing' | null  // For connection highlighting
 }
 
 interface ConnectionEdgeProps {
@@ -58,15 +59,40 @@ function ConnectionEdge({
   const hasThroughput = (data?.bytesSentRate && data.bytesSentRate > 0) || 
                         (data?.bytesRecvRate && data.bytesRecvRate > 0)
 
-  // Calculate edge color intensity based on throughput
+  const isHighlighted = data?.highlighted
+
+  // Calculate edge color based on highlighting and throughput
   const getEdgeColor = () => {
-    if (selected) return '#22c55e'
+    // Highlighted connections
+    if (isHighlighted === 'outgoing') return '#3b82f6' // Blue for outgoing
+    if (isHighlighted === 'incoming') return '#22c55e' // Green for incoming
+    
+    if (selected) return '#a855f7' // Purple for selected
+    
+    // Dim non-highlighted edges when something is selected
+    if (data?.highlighted === null) return '#374151' // Dimmed gray
+    
+    // Normal coloring based on throughput
     if (!hasThroughput) return '#4b5563'
     
     const maxRate = Math.max(data?.bytesSentRate || 0, data?.bytesRecvRate || 0)
     if (maxRate > 1024 * 1024) return '#ef4444' // > 1 MB/s = red (high traffic)
     if (maxRate > 100 * 1024) return '#f59e0b'  // > 100 KB/s = amber
-    return '#3b82f6' // blue (normal)
+    return '#6b7280' // gray (normal)
+  }
+
+  const getStrokeWidth = () => {
+    if (isHighlighted) return 3.5
+    if (selected) return 3
+    if (data?.highlighted === null) return 1.5 // Dim other edges
+    if (hasThroughput) return 2.5
+    return 2
+  }
+
+  const getOpacity = () => {
+    if (isHighlighted) return 1
+    if (data?.highlighted === null) return 0.3 // Dim other edges
+    return 1
   }
 
   return (
@@ -76,9 +102,11 @@ function ConnectionEdge({
         path={edgePath}
         style={{
           stroke: getEdgeColor(),
-          strokeWidth: selected ? 3 : hasThroughput ? 2.5 : 2,
+          strokeWidth: getStrokeWidth(),
+          opacity: getOpacity(),
+          transition: 'stroke 0.2s, stroke-width 0.2s, opacity 0.2s',
         }}
-        className="animated-edge"
+        className={isHighlighted ? 'animated-edge' : ''}
       />
       
       {/* Edge label */}
@@ -88,18 +116,30 @@ function ConnectionEdge({
             position: 'absolute',
             transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
             pointerEvents: 'all',
-            zIndex: 1000,
+            zIndex: isHighlighted ? 2000 : 1000,
+            opacity: data?.highlighted === null ? 0.3 : 1,
+            transition: 'opacity 0.2s',
           }}
           className={`
             px-2 py-1.5 rounded text-xs font-mono
-            bg-dark-800 border border-dark-600 shadow-lg
-            ${selected ? 'border-lens-500' : ''}
+            bg-dark-800 border shadow-lg
+            ${isHighlighted === 'outgoing' ? 'border-blue-500 ring-1 ring-blue-500/30' : ''}
+            ${isHighlighted === 'incoming' ? 'border-green-500 ring-1 ring-green-500/30' : ''}
+            ${!isHighlighted ? 'border-dark-600' : ''}
+            ${selected ? 'border-purple-500' : ''}
             transition-all duration-200
           `}
         >
+          {/* Direction indicator when highlighted */}
+          {isHighlighted && (
+            <div className={`text-[10px] font-semibold mb-1 ${isHighlighted === 'outgoing' ? 'text-blue-400' : 'text-green-400'}`}>
+              {isHighlighted === 'outgoing' ? '→ OUTGOING' : '← INCOMING'}
+            </div>
+          )}
+
           {/* Port and count */}
           <div className="flex items-center gap-1.5">
-            <span className="text-dark-300">:{data?.port}</span>
+            <span className={`${isHighlighted ? 'text-dark-100' : 'text-dark-300'}`}>:{data?.port}</span>
             {data?.count && data.count > 1 && (
               <span className="text-dark-500">×{data.count}</span>
             )}
