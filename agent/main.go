@@ -23,9 +23,9 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/perf"
 	"github.com/cilium/ebpf/rlimit"
-	bpf "github.com/infralens/infralens/agent/ebpf"
-	"github.com/infralens/infralens/agent/inspector"
-	"github.com/infralens/infralens/agent/metrics"
+	bpf "github.com/Herenn/Infralens/agent/ebpf"
+	"github.com/Herenn/Infralens/agent/inspector"
+	"github.com/Herenn/Infralens/agent/metrics"
 )
 
 const (

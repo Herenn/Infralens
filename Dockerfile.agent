@@ -56,7 +56,7 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 # Labels
 LABEL org.opencontainers.image.title="InfraLens Agent"
 LABEL org.opencontainers.image.description="eBPF-based network traffic tracer for Kubernetes"
-LABEL org.opencontainers.image.source="https://github.com/infralens/infralens"
+LABEL org.opencontainers.image.source="https://github.com/Herenn/Infralens"
 
 # Copy the binary
 COPY --from=go-builder /out/infralens-agent /infralens-agent

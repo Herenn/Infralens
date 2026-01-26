@@ -29,7 +29,7 @@ This project and everyone participating in it is governed by our commitment to p
 
 1. **Fork and clone the repository**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/infralens.git
+   git clone https://github.com/YOUR_USERNAME/Infralens.git
    cd infralens
    ```
 

@@ -1,4 +1,4 @@
-module github.com/infralens/infralens
+module github.com/Herenn/Infralens
 
 go 1.22
 

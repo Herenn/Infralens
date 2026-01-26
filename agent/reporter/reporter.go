@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/infralens/infralens/agent/ebpf"
-	"github.com/infralens/infralens/agent/inspector"
-	"github.com/infralens/infralens/agent/metrics"
+	"github.com/Herenn/Infralens/agent/ebpf"
+	"github.com/Herenn/Infralens/agent/inspector"
+	"github.com/Herenn/Infralens/agent/metrics"
 	log "github.com/sirupsen/logrus"
 )
 

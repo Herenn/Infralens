@@ -1,8 +1,8 @@
 # InfraLens 🔍
 
-[![Go Version](https://img.shields.io/github/go-mod/go-version/Herenn/infralens)](https://go.dev/)
-[![License](https://img.shields.io/github/license/Herenn/infralens)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/Herenn/infralens?style=social)](https://github.com/Herenn/infralens)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Herenn/Infralens)](https://go.dev/)
+[![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **Zero-Instrumentation Observability for Kubernetes**
@@ -282,7 +282,7 @@ The agent automatically discovers and reads project files for AI context:
 
 ---
 
-> 💡 **Love InfraLens?** Give us a ⭐ on [GitHub](https://github.com/Herenn/infralens)! It helps the project grow and motivates us to add more features.
+> 💡 **Love InfraLens?** Give us a ⭐ on [GitHub](https://github.com/Herenn/Infralens)! It helps the project grow and motivates us to add more features.
 
 ---
 
@@ -435,7 +435,7 @@ sudo dnf install -y clang llvm libbpf-devel kernel-devel golang
 ### 2. Clone and Setup
 
 ```bash
-git clone https://github.com/infralens/infralens.git
+git clone https://github.com/Herenn/Infralens.git
 cd infralens
 go mod download
 

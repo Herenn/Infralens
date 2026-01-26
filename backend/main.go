@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/infralens/infralens/backend/api"
-	"github.com/infralens/infralens/backend/graph"
-	"github.com/infralens/infralens/backend/k8s"
-	"github.com/infralens/infralens/backend/pkg/llm"
+	"github.com/Herenn/Infralens/backend/api"
+	"github.com/Herenn/Infralens/backend/graph"
+	"github.com/Herenn/Infralens/backend/k8s"
+	"github.com/Herenn/Infralens/backend/pkg/llm"
 	"github.com/rs/cors"
 	log "github.com/sirupsen/logrus"
 )

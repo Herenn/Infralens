@@ -11,9 +11,9 @@ keywords:
   - monitoring
   - service-mesh
   - topology
-home: https://github.com/infralens/infralens
+home: https://github.com/Herenn/Infralens
 sources:
-  - https://github.com/infralens/infralens
+  - https://github.com/Herenn/Infralens
 maintainers:
   - name: InfraLens Team
     email: team@infralens.io

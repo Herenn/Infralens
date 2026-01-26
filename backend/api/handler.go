@@ -11,10 +11,10 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
-	"github.com/infralens/infralens/backend/graph"
-	"github.com/infralens/infralens/backend/k8s"
-	"github.com/infralens/infralens/backend/pkg/fingerprint"
-	"github.com/infralens/infralens/backend/pkg/llm"
+	"github.com/Herenn/Infralens/backend/graph"
+	"github.com/Herenn/Infralens/backend/k8s"
+	"github.com/Herenn/Infralens/backend/pkg/fingerprint"
+	"github.com/Herenn/Infralens/backend/pkg/llm"
 	log "github.com/sirupsen/logrus"
 )
 
