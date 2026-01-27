@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v0.4.2-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.0-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes**
 
@@ -1128,7 +1128,15 @@ sudo ./infralens-agent --log-level=debug
 - [x] `parseEvent()` rewritten with explicit byte offset parsing
 - [x] Unified `src_addr[16]`/`dst_addr[16]` fields for IPv4/IPv6
 
-### Phase 13 (Future)
+### Phase 13 (Agent Modularization) ✅ - v0.5.0
+- [x] Created `agent/collector` package to encapsulate BPF logic
+- [x] Moved `Event`, `ConnStats`, and parsing logic to `collector/types.go`
+- [x] Created `Collector` struct with `Start()` and `PollThroughput()` methods
+- [x] Refactored `main.go` from 945 lines to ~450 lines (clean orchestrator)
+- [x] Deleted dead code: `agent/ebpf/types.go`, `agent/ebpf/doc.go`
+- [x] Added `net.IP` type for addresses (cleaner API)
+
+### Phase 14 (Future)
 - [ ] UDP tracing (`udp_sendmsg`/`udp_recvmsg`)
 - [ ] Anomaly detection (unusual traffic patterns)
 - [ ] Intelligent alerting on topology changes
