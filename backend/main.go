@@ -12,62 +12,78 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gorilla/mux"
 	"github.com/Herenn/Infralens/backend/api"
-	"github.com/Herenn/Infralens/backend/graph"
+	"github.com/Herenn/Infralens/backend/config"
 	"github.com/Herenn/Infralens/backend/k8s"
 	"github.com/Herenn/Infralens/backend/pkg/llm"
-	"github.com/rs/cors"
+	"github.com/Herenn/Infralens/backend/storage/sqlite"
 	log "github.com/sirupsen/logrus"
 )
 
 var (
-	listenAddr = flag.String("listen", ":8080", "HTTP listen address")
-	debug      = flag.Bool("debug", false, "Enable debug logging")
+	listenAddr = flag.String("listen", "", "HTTP listen address (overrides LISTEN_ADDR env)")
+	debug      = flag.Bool("debug", false, "Enable debug logging (overrides DEBUG env)")
 )
 
 func main() {
 	flag.Parse()
 
-	// Configure logging
+	// Load configuration from environment
+	cfg := config.Load()
+
+	// Override from flags if provided
+	if *listenAddr != "" {
+		cfg.Server.ListenAddr = *listenAddr
+	}
 	if *debug {
+		cfg.Server.Debug = true
+	}
+
+	// Configure logging
+	if cfg.Server.Debug {
 		log.SetLevel(log.DebugLevel)
 	}
 	log.SetFormatter(&log.TextFormatter{
 		FullTimestamp: true,
 	})
 
-	log.WithField("addr", *listenAddr).Info("Starting InfraLens backend")
+	log.WithFields(log.Fields{
+		"addr":    cfg.Server.ListenAddr,
+		"debug":   cfg.Server.Debug,
+		"db":      cfg.Storage.DSN,
+		"version": "2.0.0",
+	}).Info("Starting InfraLens backend")
+
+	// Initialize storage
+	store, err := sqlite.New(cfg.Storage)
+	if err != nil {
+		log.WithError(err).Fatal("Failed to initialize storage")
+	}
+	defer store.Close()
+
+	log.Info("Storage initialized successfully")
 
 	// Initialize Kubernetes watcher for service discovery
 	k8sWatcher := k8s.NewWatcher()
-
-	// Start Kubernetes watcher in background
 	go k8sWatcher.Start()
+	defer k8sWatcher.Stop()
 
-	// Initialize the service graph
-	serviceGraph := graph.NewServiceGraph()
-
-	// Create API handler with Kubernetes watcher for IP resolution
-	apiHandler := api.NewHandler(serviceGraph, k8sWatcher)
-
-	// Initialize LLM manager from environment variables
+	// Initialize LLM manager
 	llmConfig := &llm.Config{
-		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
-		OpenAIModel:     os.Getenv("OPENAI_MODEL"),
-		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
-		AnthropicModel:  os.Getenv("ANTHROPIC_MODEL"),
-		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
-		GeminiModel:     os.Getenv("GEMINI_MODEL"),
-		OllamaURL:       os.Getenv("OLLAMA_URL"),
-		OllamaModel:     os.Getenv("OLLAMA_MODEL"),
-		LMStudioURL:     os.Getenv("LMSTUDIO_URL"),
-		LMStudioModel:   os.Getenv("LMSTUDIO_MODEL"),
-		DefaultProvider: llm.Provider(os.Getenv("DEFAULT_LLM_PROVIDER")),
+		OpenAIAPIKey:    cfg.LLM.OpenAIAPIKey,
+		OpenAIModel:     cfg.LLM.OpenAIModel,
+		AnthropicAPIKey: cfg.LLM.AnthropicAPIKey,
+		AnthropicModel:  cfg.LLM.AnthropicModel,
+		GeminiAPIKey:    cfg.LLM.GeminiAPIKey,
+		GeminiModel:     cfg.LLM.GeminiModel,
+		OllamaURL:       cfg.LLM.OllamaURL,
+		OllamaModel:     cfg.LLM.OllamaModel,
+		LMStudioURL:     cfg.LLM.LMStudioURL,
+		LMStudioModel:   cfg.LLM.LMStudioModel,
+		DefaultProvider: llm.Provider(cfg.LLM.DefaultProvider),
 	}
 	llmManager := llm.NewManager(llmConfig)
-	apiHandler.SetLLMManager(llmManager)
-	
+
 	// Log configured providers
 	for provider, enabled := range llmManager.Status() {
 		if enabled {
@@ -75,30 +91,22 @@ func main() {
 		}
 	}
 
-	// Setup router
-	router := mux.NewRouter()
-	apiHandler.RegisterRoutes(router)
-
-	// Setup CORS for frontend
-	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization"},
-		AllowCredentials: true,
-	})
+	// Create API server
+	apiServer := api.NewServer(cfg, store, k8sWatcher, llmManager)
+	defer apiServer.Close()
 
 	// Create HTTP server
 	srv := &http.Server{
-		Addr:         *listenAddr,
-		Handler:      c.Handler(router),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:         cfg.Server.ListenAddr,
+		Handler:      apiServer.Handler(),
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
 	// Start server in goroutine
 	go func() {
-		log.WithField("addr", *listenAddr).Info("HTTP server started")
+		log.WithField("addr", cfg.Server.ListenAddr).Info("HTTP server started")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.WithError(err).Fatal("HTTP server failed")
 		}
@@ -109,9 +117,6 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	log.WithField("signal", sig).Info("Received shutdown signal")
-
-	// Stop Kubernetes watcher
-	k8sWatcher.Stop()
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
