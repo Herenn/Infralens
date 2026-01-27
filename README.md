@@ -4,6 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Release](https://img.shields.io/badge/release-v0.2.0-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes**
 
@@ -32,6 +33,15 @@ InfraLens is a next-generation observability tool that uses eBPF to automaticall
 - **AI Documentation**: Multi-provider AI support with intelligent service documentation
 - **Auto-Update**: Agents automatically check for updates and self-update
 - **Cached AI Docs**: AI documentation persists in browser - no regeneration needed
+
+### v0.2.0 New Features
+
+- **Persistent Storage**: SQLite database for data persistence across restarts
+- **Auto-Pruning**: Automatic cleanup of stale services and connections
+- **API Key Authentication**: Secure agent-to-backend communication
+- **Configurable CORS**: Environment-based CORS origin configuration
+- **Event Bus**: Real-time event system for WebSocket optimization
+- **Modular Architecture**: Clean separation of concerns with service layer
 
 ## 🤖 AI-Powered Documentation
 
@@ -111,8 +121,50 @@ InfraLens includes a powerful AI documentation system that generates comprehensi
 | Component | Description | Technology |
 |-----------|-------------|------------|
 | **Agent** | DaemonSet that runs on every node, traces TCP syscalls (IPv4 + IPv6), collects throughput metrics, host resources, and source code context | Go, cilium/ebpf, bpf2go, gopsutil |
-| **Backend** | Central aggregator that builds the service topology graph, resolves IPs to K8s names, fingerprints services, and provides AI documentation | Go, gorilla/mux, WebSocket, client-go, multi-LLM |
+| **Backend** | Central aggregator with SQLite persistence, service topology graph, IP resolution, fingerprinting, and AI documentation | Go, gorilla/mux, WebSocket, client-go, SQLite, multi-LLM |
 | **Frontend** | React dashboard with grouped server nodes, CPU/RAM bars, throughput labels, port badges, and AI documentation viewer | React, React Flow, TailwindCSS |
+
+### Backend Architecture (v0.2.0)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Backend Server                          │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │                      API Layer                             │ │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │ │
+│  │  │  Event   │ │ Topology │ │ WebSocket│ │    AI    │       │ │
+│  │  │ Handler  │ │ Handler  │ │ Handler  │ │ Handler  │       │ │
+│  │  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘       │ │
+│  └───────┼────────────┼────────────┼────────────┼─────────────┘ │
+│          │            │            │            │               │
+│  ┌───────┴────────────┴────────────┴────────────┴─────────────┐ │
+│  │                     Middleware                             │ │
+│  │  [ Recovery ] [ Logging ] [ CORS ] [ API Key Auth ]        │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                              │                                  │
+│  ┌───────────────────────────┴────────────────────────────────┐ │
+│  │                    Service Layer                           │ │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐            │ │
+│  │  │  Topology  │  │   Event    │  │  EventBus  │◀─┐         │ │
+│  │  │  Service   │  │ Processor  │  │ (Pub/Sub)  │  │ WebSocket│
+│  │  └────┬───────┘  └────┬───────┘  └────────────┘  │         │ │
+│  └───────┼───────────────┼──────────────────────────┼─────────┘ │
+│          │               │                          │           │
+│  ┌───────┴───────────────┴──────────────────────────┴─────────┐ │
+│  │                   Storage Layer                            │ │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐                  │ │
+│  │  │ Service  │  │Connection│  │ Metrics  │                  │ │
+│  │  │  Repo    │  │   Repo   │  │   Repo   │                  │ │
+│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘                  │ │
+│  │       └─────────────┼─────────────┘                        │ │
+│  │                     ▼                                      │ │
+│  │              ┌────────────┐                                │ │
+│  │              │   SQLite   │  (Auto-migrate, Auto-prune)    │ │
+│  │              │ infralens.db│                               │ │
+│  │              └────────────┘                                │ │
+│  └────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## 📁 Project Structure
 
@@ -137,12 +189,32 @@ infralens/
 │   └── reporter/            # Backend communication
 │       └── reporter.go      # Event & metrics reporting
 │
-├── backend/                  # Backend Aggregator
+├── backend/                  # Backend Aggregator (v0.2.0 Architecture)
 │   ├── main.go              # HTTP server entry point
-│   ├── api/
-│   │   └── handler.go       # REST API & WebSocket endpoints
-│   ├── graph/
-│   │   └── graph.go         # Thread-safe in-memory topology graph
+│   ├── config/              # Configuration management
+│   │   └── config.go        # Environment-based config loader
+│   ├── api/                 # API Layer
+│   │   ├── router.go        # Route registration & server setup
+│   │   ├── handlers/        # Request handlers (split by domain)
+│   │   │   ├── event_handler.go    # Agent ingestion (/events, /stats, /metrics)
+│   │   │   ├── topology_handler.go # Graph queries (/topology, /services)
+│   │   │   ├── websocket_handler.go # Real-time updates (/ws)
+│   │   │   ├── ai_handler.go       # AI documentation (/ai/*)
+│   │   │   └── health_handler.go   # Health checks (/health, /ready)
+│   │   └── middleware/      # HTTP middleware
+│   │       ├── auth.go      # API key authentication
+│   │       ├── cors.go      # Configurable CORS
+│   │       └── logging.go   # Request logging & panic recovery
+│   ├── service/             # Business Logic Layer
+│   │   ├── topology.go      # Graph operations & coordination
+│   │   ├── processor.go     # Event processing logic
+│   │   └── eventbus.go      # Pub/sub for real-time updates
+│   ├── storage/             # Persistence Layer
+│   │   ├── repository.go    # Repository interfaces
+│   │   └── sqlite/          # SQLite implementation
+│   │       └── sqlite.go    # CRUD operations, migrations, pruning
+│   ├── graph/               # Legacy (kept for compatibility)
+│   │   └── graph.go         # In-memory graph (deprecated)
 │   ├── k8s/
 │   │   └── watcher.go       # K8s Pod/Service informers for IP resolution
 │   └── pkg/
@@ -618,23 +690,96 @@ cd agent && sudo ./infralens-agent --backend=localhost:8080 --node=server1
 sudo ./infralens-agent --backend=<server1-ip>:8080 --node=server2
 ```
 
-## 🤖 AI Configuration
+## ⚙️ Configuration (v0.2.0)
 
-### Environment Variables
+### All Environment Variables
 
 ```bash
-# Cloud Providers
-export OPENAI_API_KEY="sk-..."
-export ANTHROPIC_API_KEY="sk-ant-..."
-export GEMINI_API_KEY="AIza..."
+# ═══════════════════════════════════════════════════════════════════
+# SERVER CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════
+LISTEN_ADDR=:8080              # HTTP listen address
+DEBUG=false                    # Enable debug logging
+READ_TIMEOUT=15s               # HTTP read timeout
+WRITE_TIMEOUT=15s              # HTTP write timeout
 
-# Local Providers
-export OLLAMA_URL="http://localhost:11434"
-export LMSTUDIO_URL="http://localhost:1234"
+# ═══════════════════════════════════════════════════════════════════
+# DATABASE (SQLite)
+# ═══════════════════════════════════════════════════════════════════
+DB_DRIVER=sqlite               # Database driver (sqlite only for now)
+DB_DSN=infralens.db            # Database file path
+DB_AUTO_MIGRATE=true           # Run migrations on startup
 
-# Default Provider
-export DEFAULT_LLM_PROVIDER="openai"  # or anthropic, gemini, ollama, lmstudio
+# ═══════════════════════════════════════════════════════════════════
+# DATA PRUNING (Auto-cleanup of stale data)
+# ═══════════════════════════════════════════════════════════════════
+PRUNE_INTERVAL=5m              # How often to prune (0 to disable)
+PRUNE_MAX_AGE=30m              # Delete data older than this
+
+# ═══════════════════════════════════════════════════════════════════
+# SECURITY
+# ═══════════════════════════════════════════════════════════════════
+API_KEY=                       # API key for agent auth (empty = disabled)
+API_KEY_HEADER=X-API-Key       # Header name for API key
+CORS_ORIGINS=*                 # Comma-separated allowed origins
+CORS_CREDENTIALS=true          # Allow credentials in CORS
+
+# ═══════════════════════════════════════════════════════════════════
+# AI PROVIDERS
+# ═══════════════════════════════════════════════════════════════════
+OPENAI_API_KEY=sk-...          # OpenAI API key
+OPENAI_MODEL=gpt-3.5-turbo     # OpenAI model
+ANTHROPIC_API_KEY=sk-ant-...   # Anthropic API key
+ANTHROPIC_MODEL=claude-3-haiku-20240307
+GEMINI_API_KEY=AIza...         # Google Gemini API key
+GEMINI_MODEL=gemini-pro
+OLLAMA_URL=http://localhost:11434  # Ollama server URL
+OLLAMA_MODEL=llama2
+LMSTUDIO_URL=http://localhost:1234 # LM Studio server URL
+LMSTUDIO_MODEL=
+DEFAULT_LLM_PROVIDER=openai    # Default AI provider
 ```
+
+### Security Configuration
+
+#### API Key Authentication
+
+Protect agent ingestion endpoints with API key authentication:
+
+```bash
+# Generate a secure API key
+export API_KEY=$(openssl rand -hex 32)
+
+# Configure backend
+export API_KEY="your-secret-api-key"
+
+# Configure agents to use the key
+sudo ./infralens-agent --backend=server:8080 --api-key="your-secret-api-key"
+```
+
+**Protected endpoints (when API_KEY is set):**
+- `POST /api/v1/events`
+- `POST /api/v1/stats`
+- `POST /api/v1/metrics`
+- `POST /api/v1/inspection`
+
+**Public endpoints (always accessible):**
+- `GET /api/v1/topology`
+- `GET /api/v1/services`
+- `GET /api/v1/ws` (WebSocket)
+- `GET /health`, `GET /ready`
+
+#### CORS Configuration
+
+```bash
+# Development (allow all)
+export CORS_ORIGINS="*"
+
+# Production (specific origins)
+export CORS_ORIGINS="https://infralens.example.com,https://admin.example.com"
+```
+
+## 🤖 AI Configuration
 
 ### UI Configuration
 
@@ -859,13 +1004,25 @@ sudo ./infralens-agent --log-level=debug
 - [x] Helm chart for production deployment
 - [x] Docker Compose for development
 
-### Phase 4 (Future)
+### Phase 4 (Production Ready) ✅ - v0.2.0
+- [x] **Persistent storage** - SQLite with auto-migrations
+- [x] **Automatic pruning** - Cleanup stale data on configurable interval
+- [x] **API Key authentication** - Secure agent-to-backend communication
+- [x] **Configurable CORS** - Environment-based origin whitelist
+- [x] **Event Bus architecture** - Pub/sub for real-time WebSocket updates
+- [x] **Modular handlers** - Clean separation of API concerns
+- [x] **Service layer** - Business logic abstraction
+- [x] **Repository pattern** - Swappable storage backends
+
+### Phase 5 (Future)
+- [ ] PostgreSQL adapter (for high-volume deployments)
 - [ ] UDP tracing (`udp_sendmsg`/`udp_recvmsg`)
-- [ ] Persistent storage (PostgreSQL/TimescaleDB)
 - [ ] Prometheus metrics (`/metrics` endpoint)
 - [ ] Anomaly detection (unusual traffic patterns)
 - [ ] Intelligent alerting on topology changes
 - [ ] Service dependency graph export (Mermaid, DOT)
+- [ ] Delta-based WebSocket updates (only send changes)
+- [ ] Horizontal scaling with shared database
 
 ## 🤝 Contributing
 

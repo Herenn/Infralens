@@ -51,7 +51,7 @@ func main() {
 		"addr":    cfg.Server.ListenAddr,
 		"debug":   cfg.Server.Debug,
 		"db":      cfg.Storage.DSN,
-		"version": "2.0.0",
+		"version": "0.2.0",
 	}).Info("Starting InfraLens backend")
 
 	// Initialize storage

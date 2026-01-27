@@ -19,7 +19,7 @@ import (
 )
 
 // Version is the backend version (set at build time)
-var Version = "dev"
+var Version = "0.2.0"
 
 // Handler provides HTTP API endpoints.
 type Handler struct {
