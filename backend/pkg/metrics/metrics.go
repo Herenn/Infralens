@@ -1,4 +1,39 @@
 // Package metrics provides Prometheus metrics for InfraLens observability.
+//
+// # Metric Categories
+//
+// This package exposes the following metric categories:
+//   - HTTP metrics: Request counts, latency, and sizes
+//   - Database metrics: Query duration and counts
+//   - Event processing metrics: Agent event throughput
+//   - Topology metrics: Service and connection counts
+//   - WebSocket metrics: Active connections and messages
+//
+// # Customizing Histogram Buckets
+//
+// The default histogram buckets are optimized for typical web service latencies.
+// To customize buckets for your environment, modify the Buckets field in the
+// respective histogram definitions below before the metrics are registered.
+//
+// Example custom buckets for high-latency environments:
+//
+//	[]float64{0.1, 0.5, 1, 2, 5, 10, 30, 60}
+//
+// Example custom buckets for low-latency environments:
+//
+//	[]float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05}
+//
+// # Default Bucket Configurations
+//
+// HTTP Request Duration: 1ms to 10s (suitable for API calls)
+// DB Query Duration: 0.1ms to 1s (suitable for database operations)
+// Event Processing: 0.1ms to 100ms (suitable for stream processing)
+//
+// # Environment Variable Support (Future)
+//
+// To enable runtime bucket configuration via environment variables,
+// set METRICS_HTTP_BUCKETS or METRICS_DB_BUCKETS with comma-separated values.
+// This feature requires application restart to take effect.
 package metrics
 
 import (
@@ -9,6 +44,21 @@ import (
 const (
 	namespace = "infralens"
 	subsystem = "backend"
+)
+
+// Default histogram buckets - modify these for your environment
+var (
+	// DefaultHTTPBuckets are latency buckets for HTTP requests (in seconds).
+	// Range: 1ms to 10s, suitable for typical API response times.
+	DefaultHTTPBuckets = []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10}
+
+	// DefaultDBBuckets are latency buckets for database queries (in seconds).
+	// Range: 0.1ms to 1s, suitable for indexed database operations.
+	DefaultDBBuckets = []float64{.0001, .0005, .001, .005, .01, .025, .05, .1, .25, .5, 1}
+
+	// DefaultEventBuckets are latency buckets for event processing (in seconds).
+	// Range: 0.1ms to 100ms, suitable for stream processing.
+	DefaultEventBuckets = []float64{.0001, .0005, .001, .005, .01, .025, .05, .1}
 )
 
 // HTTP metrics
@@ -31,7 +81,7 @@ var (
 			Subsystem: subsystem,
 			Name:      "http_request_duration_seconds",
 			Help:      "HTTP request latency in seconds.",
-			Buckets:   []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
+			Buckets:   DefaultHTTPBuckets,
 		},
 		[]string{"method", "path"},
 	)
@@ -80,7 +130,7 @@ var (
 			Subsystem: subsystem,
 			Name:      "db_query_duration_seconds",
 			Help:      "Database query latency in seconds.",
-			Buckets:   []float64{.0001, .0005, .001, .005, .01, .025, .05, .1, .25, .5, 1},
+			Buckets:   DefaultDBBuckets,
 		},
 		[]string{"operation", "table"},
 	)
@@ -137,7 +187,7 @@ var (
 			Subsystem: subsystem,
 			Name:      "event_processing_duration_seconds",
 			Help:      "Event processing duration in seconds.",
-			Buckets:   []float64{.0001, .0005, .001, .005, .01, .025, .05, .1},
+			Buckets:   DefaultEventBuckets,
 		},
 		[]string{"type"},
 	)

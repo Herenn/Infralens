@@ -30,6 +30,12 @@ func newTestStore(t *testing.T) *Store {
 	return store
 }
 
+// TestSQLiteStoreSuite runs the shared storage test suite against SQLite.
+func TestSQLiteStoreSuite(t *testing.T) {
+	store := newTestStore(t)
+	storage.StoreSuite(t, store)
+}
+
 // =============================================================================
 // ServiceRepository Tests
 // =============================================================================
