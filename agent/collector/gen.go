@@ -1,14 +1,14 @@
-// Package ebpf contains the go:generate directive for compiling the eBPF program.
+// Package collector provides eBPF-based network event collection for the InfraLens agent.
 //
 // IMPORTANT: After modifying agent/bpf/traffic.c, you MUST regenerate the Go bindings!
 //
-// To regenerate the eBPF bindings, run from the agent/ebpf/ directory:
+// To regenerate the eBPF bindings, run from the agent/collector/ directory:
 //
 //	go generate
 //
 // Or from the repository root:
 //
-//	cd agent/ebpf && go generate
+//	cd agent/collector && go generate
 //
 // Prerequisites:
 //   - clang (LLVM 14+) must be installed and in PATH
@@ -28,7 +28,7 @@
 // Current BPF programs in traffic.c:
 //   - kprobe/tcp_v4_connect      - Outbound IPv4 connections
 //   - kretprobe/tcp_v4_connect   - Capture IPv4 connection details
-//   - kprobe/tcp_v6_connect      - Outbound IPv6 connections  
+//   - kprobe/tcp_v6_connect      - Outbound IPv6 connections
 //   - kretprobe/tcp_v6_connect   - Capture IPv6 connection details
 //   - kprobe/tcp_sendmsg         - Track bytes sent
 //   - kprobe/tcp_recvmsg         - Store socket for recv tracking
@@ -36,6 +36,6 @@
 //   - kprobe/tcp_close           - Connection cleanup
 //   - kretprobe/inet_csk_accept  - Inbound connections (accept)
 
-package ebpf
+package collector
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64,arm64 -type event_t -type conn_key_t -type conn_stats_t bpf ../bpf/traffic.c -- -I../bpf/headers

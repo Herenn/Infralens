@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v0.5.0-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.1-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes**
 
@@ -1136,7 +1136,14 @@ sudo ./infralens-agent --log-level=debug
 - [x] Deleted dead code: `agent/ebpf/types.go`, `agent/ebpf/doc.go`
 - [x] Added `net.IP` type for addresses (cleaner API)
 
-### Phase 14 (Future)
+### Phase 14 (Legacy Purge) ✅ - v0.5.1
+- [x] Deleted entire `agent/ebpf/` directory (moved to collector)
+- [x] Moved `go:generate` directive to `collector/gen.go`
+- [x] Collector now directly uses generated `bpfObjects` (no wrapper)
+- [x] Zero references to old ebpf package in codebase
+- [x] Single source of truth: `agent/collector/` for all BPF logic
+
+### Phase 15 (Future)
 - [ ] UDP tracing (`udp_sendmsg`/`udp_recvmsg`)
 - [ ] Anomaly detection (unusual traffic patterns)
 - [ ] Intelligent alerting on topology changes

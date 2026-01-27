@@ -1,11 +1,3 @@
-// Package collector provides eBPF-based network event collection for the InfraLens agent.
-//
-// IMPORTANT: This package requires regenerated BPF bindings. If you see build errors
-// about undefined fields (KprobeTcpV6Connect, ConnStats, etc.), run:
-//
-//	cd agent/ebpf && go generate
-//
-// This requires clang/LLVM on a Linux machine.
 package collector
 
 import (
@@ -20,13 +12,11 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/perf"
 	"github.com/cilium/ebpf/rlimit"
-
-	bpf "github.com/Herenn/Infralens/agent/ebpf"
 )
 
 // Collector manages eBPF program loading, attaching, and event collection.
 type Collector struct {
-	objs   *bpf.Objects
+	objs   *bpfObjects
 	reader *perf.Reader
 	links  []link.Link
 
@@ -59,14 +49,18 @@ func New() (*Collector, error) {
 		fmt.Printf("Warning: Failed to remove memlock limit: %v\n", err)
 	}
 
-	// Load BPF objects
-	objs, err := bpf.LoadObjects()
-	if err != nil {
+	// Load BPF objects (generated code)
+	var objs bpfObjects
+	if err := loadBpfObjects(&objs, nil); err != nil {
+		var ve *ebpf.VerifierError
+		if errors.As(err, &ve) {
+			return nil, fmt.Errorf("BPF verifier error: %+v", ve)
+		}
 		return nil, fmt.Errorf("loading BPF objects: %w", err)
 	}
 
 	c := &Collector{
-		objs:          objs,
+		objs:          &objs,
 		links:         make([]link.Link, 0, 10),
 		previousStats: make(map[connTrackKey]prevStats),
 		lastPollTime:  time.Now(),
@@ -374,7 +368,3 @@ func (c *Collector) Close() error {
 	return nil
 }
 
-// ConnStatsMap returns the connection stats BPF map for direct access.
-func (c *Collector) ConnStatsMap() *ebpf.Map {
-	return c.objs.ConnStats
-}
