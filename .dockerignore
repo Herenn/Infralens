@@ -11,8 +11,8 @@ dist/
 *.dylib
 
 # Generated eBPF files (will be regenerated in container)
-agent/ebpf/bpf_*.go
-agent/ebpf/bpf_*.o
+agent/collector/bpf_*.go
+agent/collector/bpf_*.o
 
 # IDE and editor
 .idea/

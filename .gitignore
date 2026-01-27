@@ -19,8 +19,8 @@ tools/demo/demo-traffic
 go.work
 
 # Generated eBPF files
-agent/ebpf/bpf_*.go
-agent/ebpf/bpf_*.o
+agent/collector/bpf_*.go
+agent/collector/bpf_*.o
 
 # IDE
 .idea/

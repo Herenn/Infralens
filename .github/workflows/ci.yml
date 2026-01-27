@@ -85,7 +85,7 @@ jobs:
 
       - name: Generate eBPF bindings
         run: |
-          cd agent/ebpf
+          cd agent/collector
           go generate ./...
 
       - name: Build Agent

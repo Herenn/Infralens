@@ -49,7 +49,7 @@ This project and everyone participating in it is governed by our commitment to p
 
 4. **Generate eBPF bindings**
    ```bash
-   cd agent/ebpf
+   cd agent/collector
    go generate ./...
    ```
 

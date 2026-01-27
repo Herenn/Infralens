@@ -15,7 +15,7 @@ import (
 )
 
 // Version is the current agent version (set at build time)
-var Version = "0.5.1"
+var Version = "1.0.0"
 
 // VersionInfo represents version information from the backend
 type VersionInfo struct {

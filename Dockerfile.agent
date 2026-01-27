@@ -34,7 +34,7 @@ RUN go install github.com/cilium/ebpf/cmd/bpf2go@v0.12.3
 COPY . .
 
 # Generate eBPF Go bindings from C code
-WORKDIR /app/agent/ebpf
+WORKDIR /app/agent/collector
 RUN go generate ./...
 
 # Build arguments for cross-compilation

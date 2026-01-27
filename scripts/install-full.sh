@@ -121,7 +121,7 @@ go install github.com/cilium/ebpf/cmd/bpf2go@v0.12.3
 export PATH=$PATH:$(go env GOPATH)/bin
 
 # Generate eBPF bindings
-cd ebpf
+cd collector
 go generate ./...
 
 # Build agent
