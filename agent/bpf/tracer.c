@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // InfraLens eBPF TCP Tracer (Dual-Stack IPv4/IPv6)
 // Traces TCP connect and accept syscalls to detect service-to-service traffic.
+// Supports both IPv4 and IPv6 with unified 128-bit address storage.
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -19,32 +20,32 @@
 // TCP states we care about
 #define TCP_ESTABLISHED 1
 
-// Event structure sent to userspace (Dual-Stack: supports both IPv4 and IPv6)
-// Layout (72 bytes total):
+// Event structure sent to userspace (Dual-Stack: unified 128-bit address storage)
+// For IPv4, the address is stored in the first 4 bytes (indices 0-3).
+// For IPv6, all 16 bytes are used.
+//
+// Layout (64 bytes total):
 //   offset 0:  type        (1 byte)
-//   offset 1:  af          (1 byte) - AF_INET (2) or AF_INET6 (10)
-//   offset 2:  _pad        (2 bytes)
+//   offset 1:  _pad1       (3 bytes)
 //   offset 4:  pid         (4 bytes)
 //   offset 8:  comm        (16 bytes)
-//   offset 24: src_addr_v4 (4 bytes)
-//   offset 28: dst_addr_v4 (4 bytes)
-//   offset 32: src_addr_v6 (16 bytes)
-//   offset 48: dst_addr_v6 (16 bytes)
-//   offset 64: src_port    (2 bytes)
-//   offset 66: dst_port    (2 bytes)
-//   offset 68: timestamp   (8 bytes) - but we'll keep it simple for now
+//   offset 24: src_addr    (16 bytes) - unified IPv4/IPv6 storage
+//   offset 40: dst_addr    (16 bytes) - unified IPv4/IPv6 storage
+//   offset 56: family      (2 bytes)  - AF_INET (2) or AF_INET6 (10)
+//   offset 58: src_port    (2 bytes)
+//   offset 60: dst_port    (2 bytes)
+//   offset 62: _pad2       (2 bytes)
 struct tcp_event {
     __u8  type;              // EVENT_TYPE_CONNECT or EVENT_TYPE_ACCEPT
-    __u8  af;                // Address family: AF_INET (2) or AF_INET6 (10)
-    __u8  _pad[2];           // Padding for alignment
+    __u8  _pad1[3];          // Padding for alignment
     __u32 pid;               // Process ID
-    char  comm[TASK_COMM_LEN]; // Process name
-    __u32 src_addr_v4;       // Source IPv4 address
-    __u32 dst_addr_v4;       // Destination IPv4 address
-    __u8  src_addr_v6[16];   // Source IPv6 address
-    __u8  dst_addr_v6[16];   // Destination IPv6 address
+    char  comm[TASK_COMM_LEN]; // Process name (16 bytes)
+    __u8  src_addr[16];      // Unified source address (v4 in [0:4], v6 in [0:16])
+    __u8  dst_addr[16];      // Unified destination address
+    __u16 family;            // Address family: AF_INET (2) or AF_INET6 (10)
     __u16 src_port;          // Source port
     __u16 dst_port;          // Destination port
+    __u8  _pad2[2];          // Padding for 8-byte alignment
 };
 
 // Ring buffer for sending events to userspace
@@ -77,20 +78,23 @@ static __always_inline int emit_tcp_event(void *ctx, struct sock *sk, __u8 event
 
     // Fill common event data
     event->type = event_type;
-    event->af = (__u8)family;
+    event->family = family;
     event->pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
     event->src_port = BPF_CORE_READ(sk, __sk_common.skc_num);
     event->dst_port = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
 
-    // Fill address data based on family
+    // Fill address data based on family (unified storage)
     if (family == AF_INET) {
-        event->src_addr_v4 = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-        event->dst_addr_v4 = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+        // IPv4: Store 4-byte address in first 4 bytes of unified field
+        __u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+        __u32 daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+        __builtin_memcpy(event->src_addr, &saddr, 4);
+        __builtin_memcpy(event->dst_addr, &daddr, 4);
     } else {
-        // IPv6
-        BPF_CORE_READ_INTO(&event->src_addr_v6, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-        BPF_CORE_READ_INTO(&event->dst_addr_v6, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+        // IPv6: Store full 16-byte address
+        BPF_CORE_READ_INTO(event->src_addr, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+        BPF_CORE_READ_INTO(event->dst_addr, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
     }
 
     // Submit event
@@ -123,21 +127,23 @@ int trace_tcp_connect(struct trace_event_raw_inet_sock_set_state *ctx) {
     __builtin_memset(event, 0, sizeof(*event));
 
     event->type = EVENT_TYPE_CONNECT;
-    event->af = (__u8)family;
+    event->family = family;
     event->pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
     event->src_port = ctx->sport;
     event->dst_port = ctx->dport;
 
-    // Read addresses from tracepoint args based on family
+    // Read addresses from tracepoint args based on family (unified storage)
     if (family == AF_INET) {
-        event->src_addr_v4 = ctx->saddr[0];
-        event->dst_addr_v4 = ctx->daddr[0];
+        // IPv4: saddr[0] contains the 4-byte address
+        __u32 saddr = ctx->saddr[0];
+        __u32 daddr = ctx->daddr[0];
+        __builtin_memcpy(event->src_addr, &saddr, 4);
+        __builtin_memcpy(event->dst_addr, &daddr, 4);
     } else {
         // IPv6: saddr and daddr are 4 x __u32 arrays representing 128-bit addresses
-        // Copy all 16 bytes (4 x 4 bytes)
-        __builtin_memcpy(event->src_addr_v6, ctx->saddr, 16);
-        __builtin_memcpy(event->dst_addr_v6, ctx->daddr, 16);
+        __builtin_memcpy(event->src_addr, ctx->saddr, 16);
+        __builtin_memcpy(event->dst_addr, ctx->daddr, 16);
     }
 
     bpf_ringbuf_submit(event, 0);

@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v0.4.0-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v0.4.1-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes**
 
@@ -1113,7 +1113,14 @@ sudo ./infralens-agent --log-level=debug
 - [x] Frontend Service type extended with `original_id` and `aggregated_count`
 - [x] Helper methods `IsIPv4()`, `IsIPv6()` added to Event struct
 
-### Phase 11 (Future)
+### Phase 11 (BPF Cleanup) ✅ - v0.4.1
+- [x] Unified 16-byte address storage in `tracer.c` (replaces separate v4/v6 fields)
+- [x] Delete deprecated `agent/ebpf/tracer.go` (dead code removal)
+- [x] Delete unused `agent/reporter/reporter.go` (dead code removal)
+- [x] Self-contained `agent/ebpf/types.go` with Event struct and helpers
+- [x] BPF struct uses `family` field instead of `af` for clarity
+
+### Phase 12 (Future)
 - [ ] UDP tracing (`udp_sendmsg`/`udp_recvmsg`)
 - [ ] Anomaly detection (unusual traffic patterns)
 - [ ] Intelligent alerting on topology changes
