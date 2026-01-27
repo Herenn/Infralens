@@ -9,7 +9,7 @@ import (
 )
 
 // Version is the backend version (set at build time)
-var Version = "0.2.0"
+var Version = "0.2.2"
 
 // HealthHandler handles health and status endpoints.
 type HealthHandler struct {

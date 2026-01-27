@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v0.2.0-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v0.2.2-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes**
 
@@ -704,11 +704,14 @@ READ_TIMEOUT=15s               # HTTP read timeout
 WRITE_TIMEOUT=15s              # HTTP write timeout
 
 # ═══════════════════════════════════════════════════════════════════
-# DATABASE (SQLite)
+# DATABASE
 # ═══════════════════════════════════════════════════════════════════
-DB_DRIVER=sqlite               # Database driver (sqlite only for now)
-DB_DSN=infralens.db            # Database file path
+DB_DRIVER=sqlite               # Database driver: sqlite or postgres
+DB_DSN=infralens.db            # SQLite: file path, Postgres: connection string
 DB_AUTO_MIGRATE=true           # Run migrations on startup
+DB_MAX_OPEN_CONNS=25           # Max open connections (default: 1 for SQLite, 25 for Postgres)
+DB_MAX_IDLE_CONNS=5            # Max idle connections
+DB_CONN_MAX_LIFETIME=5m        # Connection max lifetime
 
 # ═══════════════════════════════════════════════════════════════════
 # DATA PRUNING (Auto-cleanup of stale data)
@@ -777,6 +780,42 @@ export CORS_ORIGINS="*"
 
 # Production (specific origins)
 export CORS_ORIGINS="https://infralens.example.com,https://admin.example.com"
+```
+
+### Database Configuration
+
+InfraLens supports SQLite (default) and PostgreSQL.
+
+#### SQLite (Default - Development/Single-Node)
+
+```bash
+export DB_DRIVER=sqlite
+export DB_DSN=infralens.db
+```
+
+#### PostgreSQL (Production/High-Volume)
+
+```bash
+export DB_DRIVER=postgres
+export DB_DSN="postgres://user:password@localhost:5432/infralens?sslmode=disable"
+export DB_MAX_OPEN_CONNS=25
+export DB_MAX_IDLE_CONNS=5
+```
+
+**PostgreSQL Docker Quick Start:**
+
+```bash
+# Start PostgreSQL container
+docker run -d --name infralens-db \
+  -e POSTGRES_USER=infralens \
+  -e POSTGRES_PASSWORD=secret \
+  -e POSTGRES_DB=infralens \
+  -p 5432:5432 \
+  postgres:16-alpine
+
+# Configure InfraLens
+export DB_DRIVER=postgres
+export DB_DSN="postgres://infralens:secret@localhost:5432/infralens?sslmode=disable"
 ```
 
 ## 🤖 AI Configuration
@@ -1014,8 +1053,12 @@ sudo ./infralens-agent --log-level=debug
 - [x] **Service layer** - Business logic abstraction
 - [x] **Repository pattern** - Swappable storage backends
 
-### Phase 5 (Future)
-- [ ] PostgreSQL adapter (for high-volume deployments)
+### Phase 5 (Scalability) ✅ - v0.2.2
+- [x] **PostgreSQL adapter** - Production-ready for high-volume deployments
+- [x] **golang-migrate integration** - Professional database migrations
+- [x] **Legacy code cleanup** - Removed zombie graph package and old handler
+
+### Phase 6 (Future)
 - [ ] UDP tracing (`udp_sendmsg`/`udp_recvmsg`)
 - [ ] Prometheus metrics (`/metrics` endpoint)
 - [ ] Anomaly detection (unusual traffic patterns)

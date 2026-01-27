@@ -1,6 +1,6 @@
-// Package sqlite provides a SQLite implementation of the storage interfaces.
-// It uses modernc.org/sqlite for pure Go SQLite support (no CGO required).
-package sqlite
+// Package postgres provides a PostgreSQL implementation of the storage interfaces.
+// It uses lib/pq for PostgreSQL connectivity.
+package postgres
 
 import (
 	"context"
@@ -8,51 +8,37 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/sqlite"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	_ "modernc.org/sqlite"
+	_ "github.com/lib/pq"
 
-	"github.com/Herenn/Infralens/backend/migrations"
 	"github.com/Herenn/Infralens/backend/storage"
+	"github.com/Herenn/Infralens/backend/storage/postgres/pgmigrations"
 	log "github.com/sirupsen/logrus"
 )
 
-// Store implements storage.Store using SQLite.
+// Store implements storage.Store using PostgreSQL.
 type Store struct {
-	db            *sql.DB
-	config        storage.Config
-	services      *ServiceRepo
-	connections   *ConnectionRepo
-	metrics       *MetricsRepo
-	pruneStop     chan struct{}
-	pruneWg       sync.WaitGroup
+	db          *sql.DB
+	config      storage.Config
+	services    *ServiceRepo
+	connections *ConnectionRepo
+	metrics     *MetricsRepo
+	pruneStop   chan struct{}
+	pruneWg     sync.WaitGroup
 }
 
-// New creates a new SQLite store.
+// New creates a new PostgreSQL store.
 func New(cfg storage.Config) (*Store, error) {
-	if cfg.Driver == "" {
-		cfg.Driver = "sqlite"
+	if cfg.DSN == "" {
+		return nil, fmt.Errorf("PostgreSQL DSN is required")
 	}
 
-	dsn := cfg.DSN
-	if dsn == "" {
-		dsn = "infralens.db"
-	}
-
-	// Add SQLite pragmas for better performance
-	if !strings.Contains(dsn, "?") {
-		dsn += "?"
-	} else {
-		dsn += "&"
-	}
-	dsn += "_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_cache_size=-20000"
-
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("postgres", cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -61,17 +47,21 @@ func New(cfg storage.Config) (*Store, error) {
 	if cfg.MaxOpenConns > 0 {
 		db.SetMaxOpenConns(cfg.MaxOpenConns)
 	} else {
-		db.SetMaxOpenConns(1) // SQLite works best with single connection
+		db.SetMaxOpenConns(25) // Default for PostgreSQL
 	}
 	if cfg.MaxIdleConns > 0 {
 		db.SetMaxIdleConns(cfg.MaxIdleConns)
+	} else {
+		db.SetMaxIdleConns(5)
 	}
 	if cfg.ConnMaxLifetime > 0 {
 		db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+	} else {
+		db.SetConnMaxLifetime(5 * time.Minute)
 	}
 
 	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
@@ -103,9 +93,8 @@ func New(cfg storage.Config) (*Store, error) {
 	}
 
 	log.WithFields(log.Fields{
-		"driver": cfg.Driver,
-		"dsn":    cfg.DSN,
-	}).Info("SQLite store initialized")
+		"driver": "postgres",
+	}).Info("PostgreSQL store initialized")
 
 	return store, nil
 }
@@ -113,19 +102,19 @@ func New(cfg storage.Config) (*Store, error) {
 // migrate runs database migrations using golang-migrate with embedded SQL files.
 func (s *Store) migrate(ctx context.Context) error {
 	// Create migration source from embedded files
-	source, err := iofs.New(migrations.FS, ".")
+	source, err := iofs.New(pgmigrations.FS, ".")
 	if err != nil {
 		return fmt.Errorf("creating migration source: %w", err)
 	}
 
-	// Create migration driver for SQLite
-	driver, err := sqlite.WithInstance(s.db, &sqlite.Config{})
+	// Create migration driver for PostgreSQL
+	driver, err := postgres.WithInstance(s.db, &postgres.Config{})
 	if err != nil {
 		return fmt.Errorf("creating migration driver: %w", err)
 	}
 
 	// Create migrator
-	m, err := migrate.NewWithInstance("iofs", source, "sqlite", driver)
+	m, err := migrate.NewWithInstance("iofs", source, "postgres", driver)
 	if err != nil {
 		return fmt.Errorf("creating migrator: %w", err)
 	}
@@ -143,7 +132,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		log.WithFields(log.Fields{
 			"version": version,
 			"dirty":   dirty,
-		}).Info("Database migrations completed")
+		}).Info("PostgreSQL migrations completed")
 	}
 
 	return nil
@@ -328,22 +317,22 @@ func (r *ServiceRepo) Upsert(ctx context.Context, svc *storage.Service) error {
 	query := `
 		INSERT INTO services (id, name, display_name, resolved_name, type, tech, icon, 
 			namespace, node, pod_ip, labels, last_seen, healthy, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT(id) DO UPDATE SET
-			name = COALESCE(NULLIF(excluded.name, ''), services.name),
-			display_name = COALESCE(NULLIF(excluded.display_name, ''), services.display_name),
-			resolved_name = COALESCE(NULLIF(excluded.resolved_name, ''), services.resolved_name),
-			type = COALESCE(NULLIF(excluded.type, ''), services.type),
-			tech = COALESCE(NULLIF(excluded.tech, ''), services.tech),
-			icon = COALESCE(NULLIF(excluded.icon, ''), services.icon),
-			namespace = COALESCE(NULLIF(excluded.namespace, ''), services.namespace),
-			node = COALESCE(NULLIF(excluded.node, ''), services.node),
-			pod_ip = COALESCE(NULLIF(excluded.pod_ip, ''), services.pod_ip),
-			labels = CASE WHEN excluded.labels != '{}' AND excluded.labels != 'null' 
-				THEN excluded.labels ELSE services.labels END,
-			last_seen = excluded.last_seen,
-			healthy = excluded.healthy,
-			updated_at = excluded.updated_at
+			name = COALESCE(NULLIF(EXCLUDED.name, ''), services.name),
+			display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), services.display_name),
+			resolved_name = COALESCE(NULLIF(EXCLUDED.resolved_name, ''), services.resolved_name),
+			type = COALESCE(NULLIF(EXCLUDED.type, ''), services.type),
+			tech = COALESCE(NULLIF(EXCLUDED.tech, ''), services.tech),
+			icon = COALESCE(NULLIF(EXCLUDED.icon, ''), services.icon),
+			namespace = COALESCE(NULLIF(EXCLUDED.namespace, ''), services.namespace),
+			node = COALESCE(NULLIF(EXCLUDED.node, ''), services.node),
+			pod_ip = COALESCE(NULLIF(EXCLUDED.pod_ip, ''), services.pod_ip),
+			labels = CASE WHEN EXCLUDED.labels != '{}' AND EXCLUDED.labels != 'null' 
+				THEN EXCLUDED.labels ELSE services.labels END,
+			last_seen = EXCLUDED.last_seen,
+			healthy = EXCLUDED.healthy,
+			updated_at = EXCLUDED.updated_at
 	`
 
 	_, err := r.executor(ctx).ExecContext(ctx, query,
@@ -355,7 +344,7 @@ func (r *ServiceRepo) Upsert(ctx context.Context, svc *storage.Service) error {
 func (r *ServiceRepo) Get(ctx context.Context, id string) (*storage.Service, error) {
 	query := `SELECT id, name, display_name, resolved_name, type, tech, icon, 
 		namespace, node, pod_ip, labels, last_seen, healthy, created_at, updated_at
-		FROM services WHERE id = ?`
+		FROM services WHERE id = $1`
 
 	var svc storage.Service
 	var labelsJSON string
@@ -381,22 +370,27 @@ func (r *ServiceRepo) List(ctx context.Context, filter storage.ServiceFilter) ([
 		namespace, node, pod_ip, labels, last_seen, healthy, created_at, updated_at
 		FROM services WHERE 1=1`
 	args := []interface{}{}
+	argIdx := 1
 
 	if filter.Node != "" {
-		query += " AND node = ?"
+		query += fmt.Sprintf(" AND node = $%d", argIdx)
 		args = append(args, filter.Node)
+		argIdx++
 	}
 	if filter.Namespace != "" {
-		query += " AND namespace = ?"
+		query += fmt.Sprintf(" AND namespace = $%d", argIdx)
 		args = append(args, filter.Namespace)
+		argIdx++
 	}
 	if filter.Type != "" {
-		query += " AND type = ?"
+		query += fmt.Sprintf(" AND type = $%d", argIdx)
 		args = append(args, filter.Type)
+		argIdx++
 	}
 	if filter.LastSeenAfter != nil {
-		query += " AND last_seen > ?"
+		query += fmt.Sprintf(" AND last_seen > $%d", argIdx)
 		args = append(args, *filter.LastSeenAfter)
+		argIdx++
 	}
 
 	query += " ORDER BY name"
@@ -433,12 +427,12 @@ func (r *ServiceRepo) List(ctx context.Context, filter storage.ServiceFilter) ([
 }
 
 func (r *ServiceRepo) Delete(ctx context.Context, id string) error {
-	_, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM services WHERE id = ?", id)
+	_, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM services WHERE id = $1", id)
 	return err
 }
 
 func (r *ServiceRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
-	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM services WHERE last_seen < ?", before)
+	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM services WHERE last_seen < $1", before)
 	if err != nil {
 		return 0, err
 	}
@@ -456,21 +450,21 @@ func (r *ServiceRepo) UpsertInspection(ctx context.Context, insp *storage.Servic
 		INSERT INTO service_inspections (service_id, pid, process_name, command_line, working_dir,
 			env_var_names, listen_ports, config_files, dependencies, http_info, db_info, 
 			k8s_metadata, code_context, inspected_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT(service_id) DO UPDATE SET
-			pid = excluded.pid,
-			process_name = excluded.process_name,
-			command_line = excluded.command_line,
-			working_dir = excluded.working_dir,
-			env_var_names = excluded.env_var_names,
-			listen_ports = excluded.listen_ports,
-			config_files = excluded.config_files,
-			dependencies = excluded.dependencies,
-			http_info = excluded.http_info,
-			db_info = excluded.db_info,
-			k8s_metadata = excluded.k8s_metadata,
-			code_context = excluded.code_context,
-			inspected_at = excluded.inspected_at
+			pid = EXCLUDED.pid,
+			process_name = EXCLUDED.process_name,
+			command_line = EXCLUDED.command_line,
+			working_dir = EXCLUDED.working_dir,
+			env_var_names = EXCLUDED.env_var_names,
+			listen_ports = EXCLUDED.listen_ports,
+			config_files = EXCLUDED.config_files,
+			dependencies = EXCLUDED.dependencies,
+			http_info = EXCLUDED.http_info,
+			db_info = EXCLUDED.db_info,
+			k8s_metadata = EXCLUDED.k8s_metadata,
+			code_context = EXCLUDED.code_context,
+			inspected_at = EXCLUDED.inspected_at
 	`
 	_, err := r.executor(ctx).ExecContext(ctx, query,
 		insp.ServiceID, insp.PID, insp.ProcessName, insp.CommandLine, insp.WorkingDir,
@@ -483,7 +477,7 @@ func (r *ServiceRepo) GetInspection(ctx context.Context, serviceID string) (*sto
 	query := `SELECT service_id, pid, process_name, command_line, working_dir,
 		env_var_names, listen_ports, config_files, dependencies, http_info, db_info,
 		k8s_metadata, code_context, inspected_at
-		FROM service_inspections WHERE service_id = ?`
+		FROM service_inspections WHERE service_id = $1`
 
 	var insp storage.ServiceInspection
 	err := r.executor(ctx).QueryRowContext(ctx, query, serviceID).Scan(
@@ -522,18 +516,18 @@ func (r *ConnectionRepo) Upsert(ctx context.Context, conn *storage.Connection) e
 		INSERT INTO connections (id, source_id, target_id, port, count, bytes_sent, bytes_recv,
 			bytes_sent_rate, bytes_recv_rate, packets_sent, packets_recv, last_seen, latency_ms,
 			created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT(id) DO UPDATE SET
 			count = connections.count + 1,
-			bytes_sent = CASE WHEN excluded.bytes_sent > 0 THEN excluded.bytes_sent ELSE connections.bytes_sent END,
-			bytes_recv = CASE WHEN excluded.bytes_recv > 0 THEN excluded.bytes_recv ELSE connections.bytes_recv END,
-			bytes_sent_rate = excluded.bytes_sent_rate,
-			bytes_recv_rate = excluded.bytes_recv_rate,
-			packets_sent = CASE WHEN excluded.packets_sent > 0 THEN excluded.packets_sent ELSE connections.packets_sent END,
-			packets_recv = CASE WHEN excluded.packets_recv > 0 THEN excluded.packets_recv ELSE connections.packets_recv END,
-			last_seen = excluded.last_seen,
-			latency_ms = CASE WHEN excluded.latency_ms > 0 THEN excluded.latency_ms ELSE connections.latency_ms END,
-			updated_at = excluded.updated_at
+			bytes_sent = CASE WHEN EXCLUDED.bytes_sent > 0 THEN EXCLUDED.bytes_sent ELSE connections.bytes_sent END,
+			bytes_recv = CASE WHEN EXCLUDED.bytes_recv > 0 THEN EXCLUDED.bytes_recv ELSE connections.bytes_recv END,
+			bytes_sent_rate = EXCLUDED.bytes_sent_rate,
+			bytes_recv_rate = EXCLUDED.bytes_recv_rate,
+			packets_sent = CASE WHEN EXCLUDED.packets_sent > 0 THEN EXCLUDED.packets_sent ELSE connections.packets_sent END,
+			packets_recv = CASE WHEN EXCLUDED.packets_recv > 0 THEN EXCLUDED.packets_recv ELSE connections.packets_recv END,
+			last_seen = EXCLUDED.last_seen,
+			latency_ms = CASE WHEN EXCLUDED.latency_ms > 0 THEN EXCLUDED.latency_ms ELSE connections.latency_ms END,
+			updated_at = EXCLUDED.updated_at
 	`
 	_, err := r.executor(ctx).ExecContext(ctx, query,
 		conn.ID, conn.SourceID, conn.TargetID, conn.Port, conn.Count,
@@ -545,7 +539,7 @@ func (r *ConnectionRepo) Upsert(ctx context.Context, conn *storage.Connection) e
 func (r *ConnectionRepo) Get(ctx context.Context, id string) (*storage.Connection, error) {
 	query := `SELECT id, source_id, target_id, port, count, bytes_sent, bytes_recv,
 		bytes_sent_rate, bytes_recv_rate, packets_sent, packets_recv, last_seen, latency_ms,
-		created_at, updated_at FROM connections WHERE id = ?`
+		created_at, updated_at FROM connections WHERE id = $1`
 
 	var conn storage.Connection
 	err := r.executor(ctx).QueryRowContext(ctx, query, id).Scan(
@@ -564,22 +558,27 @@ func (r *ConnectionRepo) List(ctx context.Context, filter storage.ConnectionFilt
 		bytes_sent_rate, bytes_recv_rate, packets_sent, packets_recv, last_seen, latency_ms,
 		created_at, updated_at FROM connections WHERE 1=1`
 	args := []interface{}{}
+	argIdx := 1
 
 	if filter.SourceID != "" {
-		query += " AND source_id = ?"
+		query += fmt.Sprintf(" AND source_id = $%d", argIdx)
 		args = append(args, filter.SourceID)
+		argIdx++
 	}
 	if filter.TargetID != "" {
-		query += " AND target_id = ?"
+		query += fmt.Sprintf(" AND target_id = $%d", argIdx)
 		args = append(args, filter.TargetID)
+		argIdx++
 	}
 	if filter.Port > 0 {
-		query += " AND port = ?"
+		query += fmt.Sprintf(" AND port = $%d", argIdx)
 		args = append(args, filter.Port)
+		argIdx++
 	}
 	if filter.LastSeenAfter != nil {
-		query += " AND last_seen > ?"
+		query += fmt.Sprintf(" AND last_seen > $%d", argIdx)
 		args = append(args, *filter.LastSeenAfter)
+		argIdx++
 	}
 
 	if filter.Limit > 0 {
@@ -611,12 +610,12 @@ func (r *ConnectionRepo) List(ctx context.Context, filter storage.ConnectionFilt
 }
 
 func (r *ConnectionRepo) Delete(ctx context.Context, id string) error {
-	_, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM connections WHERE id = ?", id)
+	_, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM connections WHERE id = $1", id)
 	return err
 }
 
 func (r *ConnectionRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
-	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM connections WHERE last_seen < ?", before)
+	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM connections WHERE last_seen < $1", before)
 	if err != nil {
 		return 0, err
 	}
@@ -631,7 +630,7 @@ func (r *ConnectionRepo) Count(ctx context.Context) (int64, error) {
 
 func (r *ConnectionRepo) IncrementCount(ctx context.Context, id string) error {
 	_, err := r.executor(ctx).ExecContext(ctx,
-		"UPDATE connections SET count = count + 1, last_seen = ?, updated_at = ? WHERE id = ?",
+		"UPDATE connections SET count = count + 1, last_seen = $1, updated_at = $2 WHERE id = $3",
 		time.Now(), time.Now(), id)
 	return err
 }
@@ -641,11 +640,11 @@ func (r *ConnectionRepo) UpdateStats(ctx context.Context, id string, bytesSent, 
 	now := time.Now()
 	_, err := r.executor(ctx).ExecContext(ctx,
 		`UPDATE connections SET 
-			bytes_sent = ?, bytes_recv = ?, 
-			bytes_sent_rate = ?, bytes_recv_rate = ?,
-			packets_sent = ?, packets_recv = ?,
-			last_seen = ?, updated_at = ?
-		WHERE id = ?`,
+			bytes_sent = $1, bytes_recv = $2, 
+			bytes_sent_rate = $3, bytes_recv_rate = $4,
+			packets_sent = $5, packets_recv = $6,
+			last_seen = $7, updated_at = $8
+		WHERE id = $9`,
 		bytesSent, bytesRecv, bytesSentRate, bytesRecvRate, packetsSent, packetsRecv, now, now, id)
 	return err
 }
@@ -674,14 +673,14 @@ func (r *MetricsRepo) Upsert(ctx context.Context, metrics *storage.NodeMetrics) 
 	now := time.Now()
 	query := `
 		INSERT INTO node_metrics (node_name, cpu_percent, mem_percent, mem_used, mem_total, last_seen, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT(node_name) DO UPDATE SET
-			cpu_percent = excluded.cpu_percent,
-			mem_percent = excluded.mem_percent,
-			mem_used = excluded.mem_used,
-			mem_total = excluded.mem_total,
-			last_seen = excluded.last_seen,
-			updated_at = excluded.updated_at
+			cpu_percent = EXCLUDED.cpu_percent,
+			mem_percent = EXCLUDED.mem_percent,
+			mem_used = EXCLUDED.mem_used,
+			mem_total = EXCLUDED.mem_total,
+			last_seen = EXCLUDED.last_seen,
+			updated_at = EXCLUDED.updated_at
 	`
 	_, err := r.executor(ctx).ExecContext(ctx, query,
 		metrics.NodeName, metrics.CPUPercent, metrics.MemPercent, metrics.MemUsed, metrics.MemTotal, now, now)
@@ -690,7 +689,7 @@ func (r *MetricsRepo) Upsert(ctx context.Context, metrics *storage.NodeMetrics) 
 
 func (r *MetricsRepo) Get(ctx context.Context, nodeName string) (*storage.NodeMetrics, error) {
 	query := `SELECT node_name, cpu_percent, mem_percent, mem_used, mem_total, last_seen, updated_at
-		FROM node_metrics WHERE node_name = ?`
+		FROM node_metrics WHERE node_name = $1`
 
 	var m storage.NodeMetrics
 	err := r.executor(ctx).QueryRowContext(ctx, query, nodeName).Scan(
@@ -722,12 +721,12 @@ func (r *MetricsRepo) List(ctx context.Context) ([]storage.NodeMetrics, error) {
 }
 
 func (r *MetricsRepo) Delete(ctx context.Context, nodeName string) error {
-	_, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM node_metrics WHERE node_name = ?", nodeName)
+	_, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM node_metrics WHERE node_name = $1", nodeName)
 	return err
 }
 
 func (r *MetricsRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
-	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM node_metrics WHERE last_seen < ?", before)
+	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM node_metrics WHERE last_seen < $1", before)
 	if err != nil {
 		return 0, err
 	}

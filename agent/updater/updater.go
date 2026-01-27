@@ -15,7 +15,7 @@ import (
 )
 
 // Version is the current agent version (set at build time)
-var Version = "0.2.0"
+var Version = "0.2.2"
 
 // VersionInfo represents version information from the backend
 type VersionInfo struct {
@@ -67,7 +67,7 @@ func (u *Updater) CheckVersion() (*VersionInfo, bool, error) {
 
 	// Compare versions
 	needsUpdate := info.Version != "" && info.Version != Version && info.Version != "dev"
-	
+
 	return &info, needsUpdate, nil
 }
 
@@ -190,13 +190,13 @@ func (u *Updater) SelfUpdate() error {
 // RestartSelf restarts the agent process using systemctl
 func RestartSelf() error {
 	log.Info("Restarting agent via systemctl...")
-	
+
 	cmd := exec.Command("systemctl", "restart", "infralens-agent")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("restart failed: %v - %s", err, string(output))
 	}
-	
+
 	return nil
 }
 

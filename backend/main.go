@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +17,8 @@ import (
 	"github.com/Herenn/Infralens/backend/config"
 	"github.com/Herenn/Infralens/backend/k8s"
 	"github.com/Herenn/Infralens/backend/pkg/llm"
+	"github.com/Herenn/Infralens/backend/storage"
+	"github.com/Herenn/Infralens/backend/storage/postgres"
 	"github.com/Herenn/Infralens/backend/storage/sqlite"
 	log "github.com/sirupsen/logrus"
 )
@@ -51,17 +54,18 @@ func main() {
 		"addr":    cfg.Server.ListenAddr,
 		"debug":   cfg.Server.Debug,
 		"db":      cfg.Storage.DSN,
-		"version": "0.2.0",
+		"driver":  cfg.Storage.Driver,
+		"version": "0.2.2",
 	}).Info("Starting InfraLens backend")
 
-	// Initialize storage
-	store, err := sqlite.New(cfg.Storage)
+	// Initialize storage based on driver
+	store, err := initStorage(cfg.Storage)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to initialize storage")
 	}
 	defer store.Close()
 
-	log.Info("Storage initialized successfully")
+	log.WithField("driver", cfg.Storage.Driver).Info("Storage initialized successfully")
 
 	// Initialize Kubernetes watcher for service discovery
 	k8sWatcher := k8s.NewWatcher()
@@ -127,4 +131,25 @@ func main() {
 	}
 
 	log.Info("Backend shutdown complete")
+}
+
+// initStorage initializes the appropriate storage backend based on configuration.
+func initStorage(cfg storage.Config) (storage.Store, error) {
+	switch cfg.Driver {
+	case "postgres", "postgresql":
+		// Adjust defaults for PostgreSQL
+		if cfg.MaxOpenConns == 1 {
+			cfg.MaxOpenConns = 25
+		}
+		if cfg.MaxIdleConns == 1 {
+			cfg.MaxIdleConns = 5
+		}
+		return postgres.New(cfg)
+
+	case "sqlite", "sqlite3", "":
+		return sqlite.New(cfg)
+
+	default:
+		return nil, fmt.Errorf("unsupported database driver: %s (supported: sqlite, postgres)", cfg.Driver)
+	}
 }
