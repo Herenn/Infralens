@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v0.4.1-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v0.4.2-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes**
 
@@ -1120,7 +1120,15 @@ sudo ./infralens-agent --log-level=debug
 - [x] Self-contained `agent/ebpf/types.go` with Event struct and helpers
 - [x] BPF struct uses `family` field instead of `af` for clarity
 
-### Phase 12 (Future)
+### Phase 12 (Struct Alignment Fix) ✅ - v0.4.2
+- [x] Unified 64-byte event struct in `traffic.c` (production BPF program)
+- [x] Fixed C/Go struct alignment mismatch (ABI compatibility)
+- [x] `EventT` struct updated with explicit padding and correct offsets
+- [x] `ConnStatsT` struct updated to match new C layout (104 bytes)
+- [x] `parseEvent()` rewritten with explicit byte offset parsing
+- [x] Unified `src_addr[16]`/`dst_addr[16]` fields for IPv4/IPv6
+
+### Phase 13 (Future)
 - [ ] UDP tracing (`udp_sendmsg`/`udp_recvmsg`)
 - [ ] Anomaly detection (unusual traffic patterns)
 - [ ] Intelligent alerting on topology changes

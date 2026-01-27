@@ -25,17 +25,29 @@
 #define DIRECTION_INBOUND  1  // Server accepted (accept)
 
 // Event structure sent to userspace (for new connections)
+// UNIFIED 64-byte layout with consistent address storage for IPv4/IPv6
+// Layout:
+//   offset 0:  direction   (1 byte)
+//   offset 1:  _pad1       (3 bytes)
+//   offset 4:  pid         (4 bytes)
+//   offset 8:  comm        (16 bytes)
+//   offset 24: src_addr    (16 bytes) - IPv4 in [0:4], IPv6 in [0:16]
+//   offset 40: dst_addr    (16 bytes) - IPv4 in [0:4], IPv6 in [0:16]
+//   offset 56: family      (2 bytes)  - AF_INET (2) or AF_INET6 (10)
+//   offset 58: src_port    (2 bytes)
+//   offset 60: dst_port    (2 bytes)
+//   offset 62: _pad2       (2 bytes)
 struct event_t {
-    __u32 pid;                  // Process ID
-    __u32 af;                   // Address family (AF_INET or AF_INET6)
-    __u32 saddr_v4;             // Source IPv4 address
-    __u32 daddr_v4;             // Destination IPv4 address
-    __u8  saddr_v6[16];         // Source IPv6 address
-    __u8  daddr_v6[16];         // Destination IPv6 address
-    __u16 dport;                // Destination port (network byte order)
     __u8  direction;            // 0 = outbound (connect), 1 = inbound (accept)
-    __u8  _pad;                 // Padding for alignment
-    char comm[TASK_COMM_LEN];   // Process name
+    __u8  _pad1[3];             // Padding for alignment
+    __u32 pid;                  // Process ID
+    char  comm[TASK_COMM_LEN];  // Process name (16 bytes)
+    __u8  src_addr[16];         // Source address (unified v4/v6)
+    __u8  dst_addr[16];         // Destination address (unified v4/v6)
+    __u16 family;               // Address family: AF_INET (2) or AF_INET6 (10)
+    __u16 src_port;             // Source port
+    __u16 dst_port;             // Destination port (network byte order)
+    __u8  _pad2[2];             // Padding to reach 64 bytes
 };
 
 // Connection key for stats tracking (using sock pointer as unique ID)
@@ -43,21 +55,20 @@ struct conn_key_t {
     __u64 sock_ptr;             // Socket pointer (unique identifier)
 };
 
-// Connection stats aggregated in kernel
+// Connection stats aggregated in kernel (unified address storage)
 struct conn_stats_t {
     __u64 bytes_sent;           // Total bytes sent
     __u64 bytes_recv;           // Total bytes received
     __u64 packets_sent;         // Packet count sent
     __u64 packets_recv;         // Packet count received
     __u32 pid;                  // Process ID
-    __u32 af;                   // Address family
-    __u32 saddr_v4;             // Source IPv4
-    __u32 daddr_v4;             // Destination IPv4
-    __u8  saddr_v6[16];         // Source IPv6
-    __u8  daddr_v6[16];         // Destination IPv6
-    __u16 dport;                // Destination port
-    __u16 sport;                // Source port
-    char comm[TASK_COMM_LEN];   // Process name
+    __u16 family;               // Address family (AF_INET or AF_INET6)
+    __u16 src_port;             // Source port
+    __u16 dst_port;             // Destination port
+    __u16 _pad;                 // Padding
+    __u8  src_addr[16];         // Source address (unified v4/v6)
+    __u8  dst_addr[16];         // Destination address (unified v4/v6)
+    char  comm[TASK_COMM_LEN];  // Process name
     __u64 last_update;          // Last update timestamp (ns)
 };
 
@@ -101,21 +112,25 @@ static __always_inline void init_conn_stats(struct conn_stats_t *stats, struct s
     __builtin_memset(stats, 0, sizeof(*stats));
     
     stats->pid = pid;
-    stats->af = BPF_CORE_READ(sk, __sk_common.skc_family);
+    stats->family = BPF_CORE_READ(sk, __sk_common.skc_family);
     stats->last_update = bpf_ktime_get_ns();
     
     bpf_get_current_comm(&stats->comm, sizeof(stats->comm));
     
-    if (stats->af == AF_INET) {
-        stats->saddr_v4 = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-        stats->daddr_v4 = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-    } else if (stats->af == AF_INET6) {
-        BPF_CORE_READ_INTO(&stats->saddr_v6, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-        BPF_CORE_READ_INTO(&stats->daddr_v6, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    if (stats->family == AF_INET) {
+        // Store IPv4 in first 4 bytes of unified field
+        __u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+        __u32 daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+        __builtin_memcpy(stats->src_addr, &saddr, 4);
+        __builtin_memcpy(stats->dst_addr, &daddr, 4);
+    } else if (stats->family == AF_INET6) {
+        // Store full 16-byte IPv6 address
+        BPF_CORE_READ_INTO(stats->src_addr, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+        BPF_CORE_READ_INTO(stats->dst_addr, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
     }
     
-    stats->dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
-    stats->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+    stats->dst_port = BPF_CORE_READ(sk, __sk_common.skc_dport);
+    stats->src_port = BPF_CORE_READ(sk, __sk_common.skc_num);
 }
 
 // ============================================================================
@@ -148,15 +163,20 @@ int BPF_KRETPROBE(kretprobe_tcp_v4_connect, int ret)
     // Only report successful connections (0 = success, -115 = EINPROGRESS)
     if (ret != 0 && ret != -115) return 0;
 
-    // Send connection event
-    event.af = AF_INET;
+    // Send connection event (unified format)
+    event.family = AF_INET;
     event.pid = pid_tgid >> 32;
-    event.direction = DIRECTION_OUTBOUND;  // Outgoing connection
+    event.direction = DIRECTION_OUTBOUND;
     bpf_get_current_comm(&event.comm, sizeof(event.comm));
     
-    event.saddr_v4 = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-    event.daddr_v4 = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-    event.dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
+    // Store IPv4 in first 4 bytes of unified address fields
+    __u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    __u32 daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    __builtin_memcpy(event.src_addr, &saddr, 4);
+    __builtin_memcpy(event.dst_addr, &daddr, 4);
+    
+    event.src_port = BPF_CORE_READ(sk, __sk_common.skc_num);
+    event.dst_port = BPF_CORE_READ(sk, __sk_common.skc_dport);
 
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
 
@@ -199,15 +219,18 @@ int BPF_KRETPROBE(kretprobe_tcp_v6_connect, int ret)
     // Only report successful connections
     if (ret != 0 && ret != -115) return 0;
 
-    // Send connection event
-    event.af = AF_INET6;
+    // Send connection event (unified format)
+    event.family = AF_INET6;
     event.pid = pid_tgid >> 32;
-    event.direction = DIRECTION_OUTBOUND;  // Outgoing connection
+    event.direction = DIRECTION_OUTBOUND;
     bpf_get_current_comm(&event.comm, sizeof(event.comm));
     
-    BPF_CORE_READ_INTO(&event.saddr_v6, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-    BPF_CORE_READ_INTO(&event.daddr_v6, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
-    event.dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
+    // Store full 16-byte IPv6 address
+    BPF_CORE_READ_INTO(event.src_addr, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+    BPF_CORE_READ_INTO(event.dst_addr, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    
+    event.src_port = BPF_CORE_READ(sk, __sk_common.skc_num);
+    event.dst_port = BPF_CORE_READ(sk, __sk_common.skc_dport);
 
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
 
@@ -351,28 +374,26 @@ int kretprobe_inet_csk_accept(struct pt_regs *ctx)
     struct event_t event = {};
     event.pid = pid_tgid >> 32;
     event.direction = DIRECTION_INBOUND;  // Incoming connection (accepted)
+    event.family = family;
     bpf_get_current_comm(&event.comm, sizeof(event.comm));
 
     if (family == AF_INET) {
-        event.af = AF_INET;
         // For accepted connections, skc_rcv_saddr is our local address (dst from client's view)
         // skc_daddr is the remote peer (src from client's view)
         // We swap them so the event looks like: remote -> local
-        event.saddr_v4 = BPF_CORE_READ(newsk, __sk_common.skc_daddr);       // Remote (peer/client)
-        event.daddr_v4 = BPF_CORE_READ(newsk, __sk_common.skc_rcv_saddr);   // Local (us/server)
-        event.dport = BPF_CORE_READ(newsk, __sk_common.skc_num);            // Our listening port
+        __u32 saddr = BPF_CORE_READ(newsk, __sk_common.skc_daddr);       // Remote (peer/client)
+        __u32 daddr = BPF_CORE_READ(newsk, __sk_common.skc_rcv_saddr);   // Local (us/server)
+        __builtin_memcpy(event.src_addr, &saddr, 4);
+        __builtin_memcpy(event.dst_addr, &daddr, 4);
+        event.dst_port = __builtin_bswap16(BPF_CORE_READ(newsk, __sk_common.skc_num));
     } else if (family == AF_INET6) {
-        event.af = AF_INET6;
         // Same swap for IPv6
-        BPF_CORE_READ_INTO(&event.saddr_v6, newsk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
-        BPF_CORE_READ_INTO(&event.daddr_v6, newsk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-        event.dport = BPF_CORE_READ(newsk, __sk_common.skc_num);
+        BPF_CORE_READ_INTO(event.src_addr, newsk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+        BPF_CORE_READ_INTO(event.dst_addr, newsk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+        event.dst_port = __builtin_bswap16(BPF_CORE_READ(newsk, __sk_common.skc_num));
     } else {
         return 0;  // Unsupported address family
     }
-
-    // Convert port to network byte order (to match connect events)
-    event.dport = __builtin_bswap16(event.dport);
 
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
 

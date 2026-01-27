@@ -39,43 +39,45 @@ const (
 )
 
 // EventT matches the C struct event_t in traffic.c
-// EventT matches the C struct event_t in traffic.c
-// Layout (68 bytes total):
-//   offset 0:  pid       (4 bytes)
-//   offset 4:  af        (4 bytes)
-//   offset 8:  saddr_v4  (4 bytes)
-//   offset 12: daddr_v4  (4 bytes)
-//   offset 16: saddr_v6  (16 bytes)
-//   offset 32: daddr_v6  (16 bytes)
-//   offset 48: dport     (2 bytes)
-//   offset 50: direction (1 byte)
-//   offset 51: _pad      (1 byte)
-//   offset 52: comm      (16 bytes)
+// UNIFIED 64-byte layout with consistent address storage for IPv4/IPv6
+// Layout:
+//   offset 0:  direction  (1 byte)
+//   offset 1:  _pad1      (3 bytes)
+//   offset 4:  pid        (4 bytes)
+//   offset 8:  comm       (16 bytes)
+//   offset 24: src_addr   (16 bytes) - IPv4 in [0:4], IPv6 in [0:16]
+//   offset 40: dst_addr   (16 bytes) - IPv4 in [0:4], IPv6 in [0:16]
+//   offset 56: family     (2 bytes)  - AF_INET (2) or AF_INET6 (10)
+//   offset 58: src_port   (2 bytes)
+//   offset 60: dst_port   (2 bytes)
+//   offset 62: _pad2      (2 bytes)
 type EventT struct {
-	Pid       uint32
-	Af        uint32      // Address family (AF_INET or AF_INET6)
-	SaddrV4   uint32      // Source IPv4
-	DaddrV4   uint32      // Destination IPv4
-	SaddrV6   [16]byte    // Source IPv6
-	DaddrV6   [16]byte    // Destination IPv6
-	Dport     uint16      // Destination port (network byte order)
 	Direction uint8       // 0 = outbound (connect), 1 = inbound (accept)
-	Pad       uint8
-	Comm      [16]int8
+	_pad1     [3]byte     // Padding for alignment
+	Pid       uint32      // Process ID
+	Comm      [16]byte    // Process name
+	SrcAddr   [16]byte    // Source address (unified v4/v6)
+	DstAddr   [16]byte    // Destination address (unified v4/v6)
+	Family    uint16      // Address family: AF_INET (2) or AF_INET6 (10)
+	SrcPort   uint16      // Source port
+	DstPort   uint16      // Destination port (network byte order)
+	_pad2     [2]byte     // Padding to reach 64 bytes
 }
 
-// Event struct layout offsets (must match C struct in traffic.c)
+// Event struct layout offsets (must match C struct event_t in traffic.c)
+// UNIFIED 64-byte layout
 const (
-	eventSize         = 68
-	eventOffsetPid    = 0
-	eventOffsetAf     = 4
-	eventOffsetSaddrV4 = 8
-	eventOffsetDaddrV4 = 12
-	eventOffsetSaddrV6 = 16
-	eventOffsetDaddrV6 = 32
-	eventOffsetDport   = 48
-	eventOffsetDir     = 50
-	eventOffsetComm    = 52
+	eventSize          = 64
+	eventOffsetDir     = 0   // direction (1 byte)
+	eventOffsetPad1    = 1   // _pad1 (3 bytes)
+	eventOffsetPid     = 4   // pid (4 bytes)
+	eventOffsetComm    = 8   // comm (16 bytes)
+	eventOffsetSrcAddr = 24  // src_addr (16 bytes)
+	eventOffsetDstAddr = 40  // dst_addr (16 bytes)
+	eventOffsetFamily  = 56  // family (2 bytes)
+	eventOffsetSrcPort = 58  // src_port (2 bytes)
+	eventOffsetDstPort = 60  // dst_port (2 bytes)
+	eventOffsetPad2    = 62  // _pad2 (2 bytes)
 	eventCommLen       = 16
 )
 
@@ -87,23 +89,19 @@ func parseEvent(data []byte) (*EventT, error) {
 	}
 
 	event := &EventT{
-		Pid:       binary.LittleEndian.Uint32(data[eventOffsetPid:]),
-		Af:        binary.LittleEndian.Uint32(data[eventOffsetAf:]),
-		SaddrV4:   binary.LittleEndian.Uint32(data[eventOffsetSaddrV4:]),
-		DaddrV4:   binary.LittleEndian.Uint32(data[eventOffsetDaddrV4:]),
-		Dport:     binary.LittleEndian.Uint16(data[eventOffsetDport:]),
 		Direction: data[eventOffsetDir],
-		Pad:       data[eventOffsetDir+1],
+		Pid:       binary.LittleEndian.Uint32(data[eventOffsetPid:]),
+		Family:    binary.LittleEndian.Uint16(data[eventOffsetFamily:]),
+		SrcPort:   binary.LittleEndian.Uint16(data[eventOffsetSrcPort:]),
+		DstPort:   binary.LittleEndian.Uint16(data[eventOffsetDstPort:]),
 	}
-
-	// Copy IPv6 addresses
-	copy(event.SaddrV6[:], data[eventOffsetSaddrV6:eventOffsetSaddrV6+16])
-	copy(event.DaddrV6[:], data[eventOffsetDaddrV6:eventOffsetDaddrV6+16])
 
 	// Copy comm (process name)
-	for i := 0; i < eventCommLen; i++ {
-		event.Comm[i] = int8(data[eventOffsetComm+i])
-	}
+	copy(event.Comm[:], data[eventOffsetComm:eventOffsetComm+eventCommLen])
+
+	// Copy unified addresses (16 bytes each)
+	copy(event.SrcAddr[:], data[eventOffsetSrcAddr:eventOffsetSrcAddr+16])
+	copy(event.DstAddr[:], data[eventOffsetDstAddr:eventOffsetDstAddr+16])
 
 	return event, nil
 }
@@ -114,22 +112,37 @@ type ConnKeyT struct {
 }
 
 // ConnStatsT matches the C struct conn_stats_t in traffic.c
-// Note: Must match C struct layout including padding for 8-byte alignment
+// UNIFIED layout with consistent address storage for IPv4/IPv6
+// Layout:
+//   offset 0:  bytes_sent   (8 bytes)
+//   offset 8:  bytes_recv   (8 bytes)
+//   offset 16: packets_sent (8 bytes)
+//   offset 24: packets_recv (8 bytes)
+//   offset 32: pid          (4 bytes)
+//   offset 36: family       (2 bytes)
+//   offset 38: src_port     (2 bytes)
+//   offset 40: dst_port     (2 bytes)
+//   offset 42: _pad         (2 bytes)
+//   offset 44: src_addr     (16 bytes)
+//   offset 60: dst_addr     (16 bytes)
+//   offset 76: comm         (16 bytes)
+//   offset 92: _pad2        (4 bytes) - for 8-byte alignment
+//   offset 96: last_update  (8 bytes)
+//   Total: 104 bytes
 type ConnStatsT struct {
 	BytesSent   uint64
 	BytesRecv   uint64
 	PacketsSent uint64
 	PacketsRecv uint64
 	Pid         uint32
-	Af          uint32
-	SaddrV4     uint32
-	DaddrV4     uint32
-	SaddrV6     [16]byte
-	DaddrV6     [16]byte
-	Dport       uint16
-	Sport       uint16
-	Comm        [16]int8
-	_           [4]byte  // Padding for 8-byte alignment of LastUpdate
+	Family      uint16
+	SrcPort     uint16
+	DstPort     uint16
+	_pad        uint16
+	SrcAddr     [16]byte
+	DstAddr     [16]byte
+	Comm        [16]byte
+	_pad2       [4]byte  // Padding for 8-byte alignment of LastUpdate
 	LastUpdate  uint64
 }
 
@@ -523,13 +536,15 @@ func pollThroughput(m *ebpf.Map) []ConnectionThroughput {
 	iter := m.Iterate()
 	for iter.Next(&key, &value) {
 		var srcAddr, dstAddr string
-		switch value.Af {
+		switch value.Family {
 		case AF_INET:
-			srcAddr = intToIPv4(value.SaddrV4)
-			dstAddr = intToIPv4(value.DaddrV4)
+			// IPv4: stored in first 4 bytes of unified address field
+			srcAddr = net.IP(value.SrcAddr[:4]).String()
+			dstAddr = net.IP(value.DstAddr[:4]).String()
 		case AF_INET6:
-			srcAddr = net.IP(value.SaddrV6[:]).String()
-			dstAddr = net.IP(value.DaddrV6[:]).String()
+			// IPv6: uses all 16 bytes
+			srcAddr = net.IP(value.SrcAddr[:]).String()
+			dstAddr = net.IP(value.DstAddr[:]).String()
 		default:
 			continue
 		}
@@ -537,7 +552,7 @@ func pollThroughput(m *ebpf.Map) []ConnectionThroughput {
 		ck := connKey{
 			srcAddr: srcAddr,
 			dstAddr: dstAddr,
-			dstPort: ntohs(value.Dport),
+			dstPort: ntohs(value.DstPort),
 		}
 		currentStats[ck] = value
 	}
@@ -584,10 +599,10 @@ func pollThroughput(m *ebpf.Map) []ConnectionThroughput {
 
 			throughputs = append(throughputs, ConnectionThroughput{
 				PID:           current.Pid,
-				Comm:          commToString(current.Comm),
+				Comm:          commToStringNew(current.Comm),
 				SrcAddr:       ck.srcAddr,
 				DstAddr:       ck.dstAddr,
-				SrcPort:       current.Sport,
+				SrcPort:       current.SrcPort,
 				DstPort:       ck.dstPort,
 				BytesSent:     current.BytesSent,
 				BytesRecv:     current.BytesRecv,
@@ -685,20 +700,22 @@ func sendThroughput(ctx context.Context, client *http.Client, backendAddr, nodeN
 
 func eventToPayload(event *EventT) EventPayload {
 	var srcAddr, dstAddr string
-	port := ntohs(event.Dport)
+	port := ntohs(event.DstPort)
 
-	switch event.Af {
+	switch event.Family {
 	case AF_INET:
-		srcAddr = intToIPv4(event.SaddrV4)
-		dstAddr = intToIPv4(event.DaddrV4)
+		// IPv4: stored in first 4 bytes of unified address field
+		srcAddr = net.IP(event.SrcAddr[:4]).String()
+		dstAddr = net.IP(event.DstAddr[:4]).String()
 	case AF_INET6:
-		srcAddr = net.IP(event.SaddrV6[:]).String()
-		dstAddr = net.IP(event.DaddrV6[:]).String()
+		// IPv6: uses all 16 bytes
+		srcAddr = net.IP(event.SrcAddr[:]).String()
+		dstAddr = net.IP(event.DstAddr[:]).String()
 	}
 
 	return EventPayload{
 		PID:       event.Pid,
-		Comm:      commToString(event.Comm),
+		Comm:      commToStringNew(event.Comm),
 		SrcAddr:   srcAddr,
 		DstAddr:   dstAddr,
 		DstPort:   port,
@@ -769,7 +786,7 @@ func intToIPv4(ip uint32) string {
 		byte(ip>>24))
 }
 
-// commToString converts the comm array to a Go string
+// commToString converts the comm array to a Go string (legacy int8 version)
 func commToString(comm [16]int8) string {
 	var buf bytes.Buffer
 	for _, c := range comm {
@@ -779,6 +796,20 @@ func commToString(comm [16]int8) string {
 		buf.WriteByte(byte(c))
 	}
 	return buf.String()
+}
+
+// commToStringNew converts the comm byte array to a Go string
+func commToStringNew(comm [16]byte) string {
+	// Find null terminator
+	n := 0
+	for i, c := range comm {
+		if c == 0 {
+			n = i
+			break
+		}
+		n = i + 1
+	}
+	return string(comm[:n])
 }
 
 // ntohs converts a uint16 from network byte order to host byte order
