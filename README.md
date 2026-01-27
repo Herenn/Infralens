@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v0.2.3-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v0.2.4-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes**
 
@@ -1052,6 +1052,13 @@ sudo ./infralens-agent --log-level=debug
 - [x] **Modular handlers** - Clean separation of API concerns
 - [x] **Service layer** - Business logic abstraction
 - [x] **Repository pattern** - Swappable storage backends
+
+### Phase 7 (Production Hardening) ✅ - v0.2.4
+- [x] Prometheus cardinality fix with robust path normalization
+- [x] Unified storage test suite (DRY principle)
+- [x] Concurrency stress tests (20 goroutines)
+- [x] PostgreSQL test runner with env var pattern
+- [x] Configurable metrics histogram buckets
 
 ### Phase 6 (Observability & Testing) ✅ - v0.2.3
 - [x] Prometheus metrics package (`/metrics` endpoint)
