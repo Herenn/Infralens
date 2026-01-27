@@ -387,11 +387,12 @@ func ConcurrencySuite(t *testing.T, store Store) {
 			Healthy: true,
 		})
 
-		// Spawn 20 goroutines doing concurrent upserts
+		// Spawn goroutines doing concurrent upserts
+		const numServiceGoroutines = 20
 		var wg sync.WaitGroup
-		errChan := make(chan error, 20)
+		errChan := make(chan error, numServiceGoroutines)
 
-		for i := 0; i < 20; i++ {
+		for i := 0; i < numServiceGoroutines; i++ {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -440,10 +441,10 @@ func ConcurrencySuite(t *testing.T, store Store) {
 			Count:    0,
 		})
 
-		// Spawn 20 goroutines doing concurrent updates
+		// Spawn goroutines doing concurrent updates
+		const numGoroutines = 20
 		var wg sync.WaitGroup
-		errChan := make(chan error, 20)
-		numGoroutines := 20
+		errChan := make(chan error, numGoroutines)
 
 		for i := 0; i < numGoroutines; i++ {
 			wg.Add(1)
@@ -496,8 +497,15 @@ func ConcurrencySuite(t *testing.T, store Store) {
 	t.Run("ConcurrentReadsAndWrites", func(t *testing.T) {
 		prefix := fmt.Sprintf("rw-%d", time.Now().UnixNano())
 
+		// Configuration
+		const (
+			numServices = 5
+			numReaders  = 10
+			numWriters  = 10
+		)
+
 		// Create some initial data
-		for i := 0; i < 5; i++ {
+		for i := 0; i < numServices; i++ {
 			store.Services().Upsert(ctx, &Service{
 				ID:      fmt.Sprintf("%s-svc-%d", prefix, i),
 				Name:    fmt.Sprintf("service-%d", i),
@@ -507,10 +515,10 @@ func ConcurrencySuite(t *testing.T, store Store) {
 
 		// Mix of readers and writers
 		var wg sync.WaitGroup
-		errChan := make(chan error, 40)
+		errChan := make(chan error, numReaders+numWriters)
 
-		// 10 readers
-		for i := 0; i < 10; i++ {
+		// Readers
+		for i := 0; i < numReaders; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -521,13 +529,13 @@ func ConcurrencySuite(t *testing.T, store Store) {
 			}()
 		}
 
-		// 10 writers
-		for i := 0; i < 10; i++ {
+		// Writers
+		for i := 0; i < numWriters; i++ {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
 				svc := &Service{
-					ID:      fmt.Sprintf("%s-svc-%d", prefix, idx%5),
+					ID:      fmt.Sprintf("%s-svc-%d", prefix, idx%numServices),
 					Name:    fmt.Sprintf("updated-service-%d", idx),
 					Healthy: true,
 				}
@@ -545,7 +553,7 @@ func ConcurrencySuite(t *testing.T, store Store) {
 		}
 
 		// Cleanup
-		for i := 0; i < 5; i++ {
+		for i := 0; i < numServices; i++ {
 			store.Services().Delete(ctx, fmt.Sprintf("%s-svc-%d", prefix, i))
 		}
 	})

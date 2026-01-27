@@ -22,6 +22,17 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// SQLite performance tuning constants.
+// Adjust these values based on your workload characteristics.
+const (
+	// sqlitePragmas configures SQLite for optimal performance:
+	// - WAL mode: Better concurrency for read-heavy workloads
+	// - NORMAL sync: Good durability with improved write speed
+	// - 5s busy timeout: Prevents "database is locked" under contention
+	// - 20MB cache: Keeps hot data in memory (negative = KB)
+	sqlitePragmas = "_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_cache_size=-20000"
+)
+
 // Store implements storage.Store using SQLite.
 type Store struct {
 	db            *sql.DB
@@ -50,7 +61,7 @@ func New(cfg storage.Config) (*Store, error) {
 	} else {
 		dsn += "&"
 	}
-	dsn += "_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_cache_size=-20000"
+	dsn += sqlitePragmas
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
