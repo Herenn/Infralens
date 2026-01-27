@@ -16,7 +16,7 @@ InfraLens is a next-generation observability tool that uses eBPF to automaticall
 
 - **Zero Instrumentation**: No sidecars, no code changes, no SDK integration required
 - **Real-time Topology**: Live visualization of service dependencies using React Flow
-- **eBPF-Powered**: Efficient kernel-level tracing with minimal overhead using `cilium/ebpf`
+- **eBPF-Powered**: Efficient kernel-level tracing with <1% CPU overhead using `cilium/ebpf`
 - **IPv4 + IPv6**: Full support for both IPv4 (`tcp_v4_connect`) and IPv6 (`tcp_v6_connect`)
 - **Ingress Visibility**: Detect external incoming connections via `inet_csk_accept` tracing
 - **Network Throughput**: Real-time bytes/packets sent/received with rate calculations
@@ -54,6 +54,8 @@ InfraLens includes a powerful AI documentation system that generates comprehensi
 - **Deep Inspection**: Protocol-level service detection
 - **Runtime Metrics**: CPU, memory, and throughput data
 
+> 🔒 **Privacy First**: Only specific non-sensitive files (README, Dockerfile, package.json) are analyzed for context. Source code is sent to AI only on-demand and is **never stored permanently**. Sensitive data like `.env` files and secrets are automatically excluded.
+
 ### Generated Documentation Includes
 
 | Section | Description |
@@ -78,6 +80,44 @@ InfraLens includes a powerful AI documentation system that generates comprehensi
 | **LM Studio** | Local | Any compatible | Server URL |
 
 ## 🏗️ Architecture
+
+```mermaid
+flowchart TB
+    subgraph infra["Your Infrastructure"]
+        A[Service A] --> B[Service B]
+        B --> C[Service C]
+        A --> C
+    end
+
+    subgraph ebpf["Kernel Space"]
+        trace[eBPF Probes<br/>tcp_connect / accept / send / recv]
+    end
+
+    subgraph agent["InfraLens Agent"]
+        collector[Collector<br/>Event Parsing]
+        inspector[Deep Inspector]
+        metrics[Host Metrics]
+    end
+
+    subgraph backend["InfraLens Backend"]
+        api[REST API]
+        ws[WebSocket]
+        db[(SQLite/Postgres)]
+        ai[AI Providers]
+    end
+
+    subgraph frontend["InfraLens Frontend"]
+        react[React Flow<br/>Topology View]
+    end
+
+    infra -.->|kernel tracing| ebpf
+    ebpf --> agent
+    agent -->|HTTP POST| backend
+    backend <-->|real-time| frontend
+```
+
+<details>
+<summary>ASCII Diagram (for non-GitHub viewers)</summary>
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -106,6 +146,8 @@ InfraLens includes a powerful AI documentation system that generates comprehensi
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+</details>
 
 ## 🚀 Quick Start
 
@@ -358,7 +400,9 @@ The agent automatically discovers and reads project files for AI context:
 
 ### Prerequisites
 
-- Linux kernel 5.8+ with BTF support
+- **Linux kernel 5.8+** with **BTF enabled** (`CONFIG_DEBUG_INFO_BTF=y`)
+  - ⚠️ Check BTF: `ls /sys/kernel/btf/vmlinux` - file must exist
+  - Ubuntu 20.04+, Debian 11+, Fedora 31+ have BTF by default
 - Go 1.24+
 - clang/LLVM (for BPF compilation)
 - Node.js 18+ (for frontend)
