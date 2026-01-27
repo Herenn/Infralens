@@ -12,7 +12,6 @@
 package ebpf
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -143,43 +142,72 @@ func (t *Tracer) readLoop(ctx context.Context) {
 	}
 }
 
+// Event byte offsets matching the C struct tcp_event in tracer.c
+// This avoids relying on Go struct alignment matching C compiler behavior.
+//
+// C struct layout (72 bytes):
+//   offset 0:  type        (1 byte)
+//   offset 1:  af          (1 byte)
+//   offset 2:  _pad        (2 bytes)
+//   offset 4:  pid         (4 bytes)
+//   offset 8:  comm        (16 bytes)
+//   offset 24: src_addr_v4 (4 bytes)
+//   offset 28: dst_addr_v4 (4 bytes)
+//   offset 32: src_addr_v6 (16 bytes)
+//   offset 48: dst_addr_v6 (16 bytes)
+//   offset 64: src_port    (2 bytes)
+//   offset 66: dst_port    (2 bytes)
+const (
+	eventMinSize       = 68 // Minimum bytes needed to parse an event
+	offsetType         = 0
+	offsetAF           = 1
+	offsetPID          = 4
+	offsetComm         = 8
+	offsetSrcAddrV4    = 24
+	offsetDstAddrV4    = 28
+	offsetSrcAddrV6    = 32
+	offsetDstAddrV6    = 48
+	offsetSrcPort      = 64
+	offsetDstPort      = 66
+	commLen            = 16
+)
+
 // parseEvent parses raw bytes from the perf buffer into an Event.
+// Uses explicit byte offsets to be safe against C compiler alignment differences.
 func parseEvent(data []byte) (*Event, error) {
-	if len(data) < 26 { // 4 + 4 + 4 + 2 + 16 = 30, but padding may differ
-		return nil, fmt.Errorf("data too short: %d bytes", len(data))
+	if len(data) < eventMinSize {
+		return nil, fmt.Errorf("data too short: got %d bytes, need at least %d", len(data), eventMinSize)
 	}
 
-	reader := bytes.NewReader(data)
+	// Read fields at explicit offsets (no struct alignment assumptions)
+	// eventType := data[offsetType]  // Currently unused in Event struct
+	// af := data[offsetAF]           // Address family (2=IPv4, 10=IPv6)
+	pid := binary.LittleEndian.Uint32(data[offsetPID:])
+	saddr := binary.LittleEndian.Uint32(data[offsetSrcAddrV4:])
+	daddr := binary.LittleEndian.Uint32(data[offsetDstAddrV4:])
+	dport := binary.LittleEndian.Uint16(data[offsetDstPort:])
 
-	var raw struct {
-		PID   uint32
-		SAddr uint32
-		DAddr uint32
-		DPort uint16
-		_     [2]byte // padding
-		Comm  [16]byte
-	}
-
-	if err := binary.Read(reader, binary.LittleEndian, &raw); err != nil {
-		return nil, fmt.Errorf("binary read: %w", err)
-	}
-
-	// Convert null-terminated comm to string
-	comm := string(raw.Comm[:])
-	for i, b := range raw.Comm {
-		if b == 0 {
-			comm = string(raw.Comm[:i])
-			break
-		}
-	}
+	// Extract null-terminated comm string
+	commBytes := data[offsetComm : offsetComm+commLen]
+	comm := extractNullTerminatedString(commBytes)
 
 	return &Event{
-		PID:   raw.PID,
-		SAddr: raw.SAddr,
-		DAddr: raw.DAddr,
-		DPort: raw.DPort,
+		PID:   pid,
+		SAddr: saddr,
+		DAddr: daddr,
+		DPort: dport,
 		Comm:  comm,
 	}, nil
+}
+
+// extractNullTerminatedString extracts a string from a null-terminated byte slice.
+func extractNullTerminatedString(data []byte) string {
+	for i, b := range data {
+		if b == 0 {
+			return string(data[:i])
+		}
+	}
+	return string(data)
 }
 
 // Events returns a channel that receives parsed events.
