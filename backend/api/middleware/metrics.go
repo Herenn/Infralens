@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gorilla/mux"
+
 	"github.com/Herenn/Infralens/backend/pkg/metrics"
 )
 
@@ -43,7 +45,25 @@ func (w *metricsResponseWriter) Flush() {
 	}
 }
 
+// getPathTemplate extracts the route template from gorilla/mux.
+// This is more efficient than regex-based path normalization and
+// guarantees low cardinality labels for Prometheus metrics.
+func getPathTemplate(r *http.Request) string {
+	route := mux.CurrentRoute(r)
+	if route == nil {
+		return "unmatched"
+	}
+
+	pathTemplate, err := route.GetPathTemplate()
+	if err != nil || pathTemplate == "" {
+		return "unmatched"
+	}
+
+	return pathTemplate
+}
+
 // Metrics creates a middleware that collects Prometheus metrics for HTTP requests.
+// It uses gorilla/mux route templates for path labels, ensuring low cardinality.
 func Metrics() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -59,27 +79,29 @@ func Metrics() func(http.Handler) http.Handler {
 			metrics.HTTPActiveRequests.Inc()
 			defer metrics.HTTPActiveRequests.Dec()
 
-			// Record request size
-			if r.ContentLength > 0 {
-				metrics.HTTPRequestSize.WithLabelValues(r.Method, metrics.NormalizePath(r.URL.Path)).Observe(float64(r.ContentLength))
-			}
-
 			// Wrap response writer
 			wrapped := &metricsResponseWriter{
 				ResponseWriter: w,
 				statusCode:     http.StatusOK,
 			}
 
-			// Call next handler
+			// Call next handler (route matching happens here)
 			next.ServeHTTP(wrapped, r)
 
-			// Record metrics
-			duration := time.Since(start).Seconds()
-			path := metrics.NormalizePath(r.URL.Path)
+			// Get path template AFTER routing (so mux.CurrentRoute works)
+			pathTemplate := getPathTemplate(r)
 
-			metrics.HTTPRequestDuration.WithLabelValues(r.Method, path).Observe(duration)
-			metrics.HTTPRequestsTotal.WithLabelValues(r.Method, path, strconv.Itoa(wrapped.statusCode)).Inc()
-			metrics.HTTPResponseSize.WithLabelValues(r.Method, path).Observe(float64(wrapped.size))
+			// Record request size (use template for low cardinality)
+			if r.ContentLength > 0 {
+				metrics.HTTPRequestSize.WithLabelValues(r.Method, pathTemplate).Observe(float64(r.ContentLength))
+			}
+
+			// Record metrics using the route template (not the actual path)
+			duration := time.Since(start).Seconds()
+
+			metrics.HTTPRequestDuration.WithLabelValues(r.Method, pathTemplate).Observe(duration)
+			metrics.HTTPRequestsTotal.WithLabelValues(r.Method, pathTemplate, strconv.Itoa(wrapped.statusCode)).Inc()
+			metrics.HTTPResponseSize.WithLabelValues(r.Method, pathTemplate).Observe(float64(wrapped.size))
 		})
 	}
 }

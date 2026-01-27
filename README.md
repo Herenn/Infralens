@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v0.2.4-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v0.2.5-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes**
 
@@ -204,22 +204,26 @@ infralens/
 │   │   └── middleware/      # HTTP middleware
 │   │       ├── auth.go      # API key authentication
 │   │       ├── cors.go      # Configurable CORS
-│   │       └── logging.go   # Request logging & panic recovery
+│   │       ├── logging.go   # Request logging & panic recovery
+│   │       └── metrics.go   # Prometheus instrumentation
 │   ├── service/             # Business Logic Layer
 │   │   ├── topology.go      # Graph operations & coordination
 │   │   ├── processor.go     # Event processing logic
 │   │   └── eventbus.go      # Pub/sub for real-time updates
 │   ├── storage/             # Persistence Layer
 │   │   ├── repository.go    # Repository interfaces
-│   │   └── sqlite/          # SQLite implementation
-│   │       └── sqlite.go    # CRUD operations, migrations, pruning
-│   ├── graph/               # Legacy (kept for compatibility)
-│   │   └── graph.go         # In-memory graph (deprecated)
+│   │   ├── testing.go       # Shared test suite for all DB drivers
+│   │   ├── sqlite/          # SQLite implementation
+│   │   │   └── sqlite.go    # CRUD operations, migrations, pruning
+│   │   └── postgres/        # PostgreSQL implementation
+│   │       └── postgres.go  # Production-ready for high volume
 │   ├── k8s/
 │   │   └── watcher.go       # K8s Pod/Service informers for IP resolution
 │   └── pkg/
 │       ├── fingerprint/     # Service type detection
 │       │   └── fingerprint.go  # Port/process → technology mapping
+│       ├── metrics/         # Prometheus observability
+│       │   └── metrics.go   # Metric definitions & helpers
 │       └── llm/             # AI documentation system
 │           ├── provider.go  # Provider interface & manager
 │           ├── openai.go    # OpenAI integration
@@ -879,6 +883,8 @@ GET /api/v1/ai/providers
 | `/api/v1/ai/docs` | POST | Generate AI documentation |
 | `/api/v1/ai/ask` | POST | Ask AI questions about services |
 | `/api/v1/ai/providers` | GET | List available AI providers |
+| `/api/v1/version` | GET | Backend version info |
+| `/metrics` | GET | Prometheus metrics endpoint |
 | `/health` | GET | Health check |
 | `/ready` | GET | Readiness check |
 
@@ -1053,12 +1059,10 @@ sudo ./infralens-agent --log-level=debug
 - [x] **Service layer** - Business logic abstraction
 - [x] **Repository pattern** - Swappable storage backends
 
-### Phase 7 (Production Hardening) ✅ - v0.2.4
-- [x] Prometheus cardinality fix with robust path normalization
-- [x] Unified storage test suite (DRY principle)
-- [x] Concurrency stress tests (20 goroutines)
-- [x] PostgreSQL test runner with env var pattern
-- [x] Configurable metrics histogram buckets
+### Phase 5 (Scalability) ✅ - v0.2.1 / v0.2.2
+- [x] **PostgreSQL adapter** - Production-ready for high-volume deployments
+- [x] **golang-migrate integration** - Professional database migrations
+- [x] **Legacy code cleanup** - Removed zombie graph package and old handler
 
 ### Phase 6 (Observability & Testing) ✅ - v0.2.3
 - [x] Prometheus metrics package (`/metrics` endpoint)
@@ -1069,14 +1073,21 @@ sudo ./infralens-agent --log-level=debug
 - [x] Integration tests for API handlers (15 tests)
 - [x] Service layer hygiene enforcement
 
-### Phase 5 (Scalability) ✅ - v0.2.2
-- [x] **PostgreSQL adapter** - Production-ready for high-volume deployments
-- [x] **golang-migrate integration** - Professional database migrations
-- [x] **Legacy code cleanup** - Removed zombie graph package and old handler
+### Phase 7 (Production Hardening) ✅ - v0.2.4
+- [x] Prometheus cardinality fix with path normalization
+- [x] Unified storage test suite (DRY principle)
+- [x] Concurrency stress tests (20 goroutines)
+- [x] PostgreSQL test runner with env var pattern
+- [x] Configurable metrics histogram buckets
 
-### Phase 6 (Future)
+### Phase 8 (Performance Optimization) ✅ - v0.2.5
+- [x] Use gorilla/mux route templates for metrics (zero regex overhead)
+- [x] Remove complex NormalizePath helper code (~200 LOC deleted)
+- [x] Verify atomic database counter increments (zero data loss)
+- [x] Strict concurrency test assertions
+
+### Phase 9 (Future)
 - [ ] UDP tracing (`udp_sendmsg`/`udp_recvmsg`)
-- [ ] Prometheus metrics (`/metrics` endpoint)
 - [ ] Anomaly detection (unusual traffic patterns)
 - [ ] Intelligent alerting on topology changes
 - [ ] Service dependency graph export (Mermaid, DOT)

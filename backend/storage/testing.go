@@ -480,14 +480,15 @@ func ConcurrencySuite(t *testing.T, store Store) {
 			t.Fatal("Connection disappeared after concurrent updates")
 		}
 
-		// Count should be numGoroutines + 1 (initial upsert)
-		// Note: Due to race conditions with ON CONFLICT, the exact count might vary
-		// The important thing is no errors and the connection still exists
-		if conn.Count < 1 {
-			t.Errorf("Connection count = %d, expected > 0", conn.Count)
+		// Count MUST be exactly numGoroutines (initial insert sets count=0, each upsert adds +1)
+		// This strict assertion ensures our atomic ON CONFLICT logic is working correctly.
+		// If this test ever fails, it indicates a race condition in the database layer.
+		expectedCount := int64(numGoroutines)
+		if conn.Count != expectedCount {
+			t.Errorf("Connection count = %d, expected exactly %d (atomic increment failure)", conn.Count, expectedCount)
 		}
 
-		t.Logf("Final connection count after %d concurrent upserts: %d", numGoroutines, conn.Count)
+		t.Logf("Verified atomic counter: %d concurrent upserts resulted in count = %d", numGoroutines, conn.Count)
 
 		store.Connections().Delete(ctx, connID)
 	})
