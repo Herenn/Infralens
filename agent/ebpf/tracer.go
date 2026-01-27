@@ -1,3 +1,14 @@
+// Package ebpf provides eBPF-based network tracing for the InfraLens agent.
+//
+// DEPRECATED: This file (tracer.go) contains legacy code that is no longer used.
+// The main agent implementation in agent/main.go directly loads and attaches
+// BPF programs using the generated bpfObjects from bpf_bpfel_*.go.
+//
+// To regenerate the BPF bindings after modifying traffic.c, run:
+//
+//	cd agent/ebpf && go generate
+//
+// This requires clang/LLVM to be installed.
 package ebpf
 
 import (

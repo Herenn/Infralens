@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v0.2.5-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.0-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes**
 
@@ -139,7 +139,7 @@ InfraLens includes a powerful AI documentation system that generates comprehensi
 │          │            │            │            │               │
 │  ┌───────┴────────────┴────────────┴────────────┴─────────────┐ │
 │  │                     Middleware                             │ │
-│  │  [ Recovery ] [ Logging ] [ CORS ] [ API Key Auth ]        │ │
+│  │  [ Recovery ] [ Metrics ] [ Logging ] [ CORS ] [ Auth ]    │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                              │                                  │
 │  ┌───────────────────────────┴────────────────────────────────┐ │
@@ -797,6 +797,16 @@ export DB_DRIVER=sqlite
 export DB_DSN=infralens.db
 ```
 
+**SQLite Performance Tuning:**
+
+SQLite is automatically configured with optimal pragmas for performance:
+- `_journal_mode=WAL` - Better concurrency for read-heavy workloads
+- `_synchronous=NORMAL` - Good durability with improved write speed
+- `_busy_timeout=5000` - Prevents "database is locked" under contention
+- `_cache_size=-20000` - 20MB cache keeps hot data in memory
+
+To customize, edit the `sqlitePragmas` constant in `backend/storage/sqlite/sqlite.go`.
+
 #### PostgreSQL (Production/High-Volume)
 
 ```bash
@@ -1085,8 +1095,17 @@ sudo ./infralens-agent --log-level=debug
 - [x] Remove complex NormalizePath helper code (~200 LOC deleted)
 - [x] Verify atomic database counter increments (zero data loss)
 - [x] Strict concurrency test assertions
+- [x] SQLite pragmas extracted to tunable constants
+- [x] Dynamic channel buffering in stress tests (no deadlock risk)
 
-### Phase 9 (Future)
+### Phase 9 (Agent Hardening) ✅ - v0.3.0
+- [x] Harden binary event parsing with explicit byte offsets (architecture-safe)
+- [x] Document BPF regeneration process (`go generate`)
+- [x] Mark legacy tracer.go as deprecated
+- [x] Add dual-stack (IPv4/IPv6) startup indicator
+- [x] Verify traffic.c has full IPv6 support (tcp_v6_connect hooks)
+
+### Phase 10 (Future)
 - [ ] UDP tracing (`udp_sendmsg`/`udp_recvmsg`)
 - [ ] Anomaly detection (unusual traffic patterns)
 - [ ] Intelligent alerting on topology changes

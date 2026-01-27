@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -39,6 +38,18 @@ const (
 )
 
 // EventT matches the C struct event_t in traffic.c
+// EventT matches the C struct event_t in traffic.c
+// Layout (68 bytes total):
+//   offset 0:  pid       (4 bytes)
+//   offset 4:  af        (4 bytes)
+//   offset 8:  saddr_v4  (4 bytes)
+//   offset 12: daddr_v4  (4 bytes)
+//   offset 16: saddr_v6  (16 bytes)
+//   offset 32: daddr_v6  (16 bytes)
+//   offset 48: dport     (2 bytes)
+//   offset 50: direction (1 byte)
+//   offset 51: _pad      (1 byte)
+//   offset 52: comm      (16 bytes)
 type EventT struct {
 	Pid       uint32
 	Af        uint32      // Address family (AF_INET or AF_INET6)
@@ -50,6 +61,50 @@ type EventT struct {
 	Direction uint8       // 0 = outbound (connect), 1 = inbound (accept)
 	Pad       uint8
 	Comm      [16]int8
+}
+
+// Event struct layout offsets (must match C struct in traffic.c)
+const (
+	eventSize         = 68
+	eventOffsetPid    = 0
+	eventOffsetAf     = 4
+	eventOffsetSaddrV4 = 8
+	eventOffsetDaddrV4 = 12
+	eventOffsetSaddrV6 = 16
+	eventOffsetDaddrV6 = 32
+	eventOffsetDport   = 48
+	eventOffsetDir     = 50
+	eventOffsetComm    = 52
+	eventCommLen       = 16
+)
+
+// parseEvent safely parses raw bytes into EventT using explicit offsets.
+// This avoids relying on Go struct alignment matching C struct layout.
+func parseEvent(data []byte) (*EventT, error) {
+	if len(data) < eventSize {
+		return nil, fmt.Errorf("event data too short: got %d bytes, need %d", len(data), eventSize)
+	}
+
+	event := &EventT{
+		Pid:       binary.LittleEndian.Uint32(data[eventOffsetPid:]),
+		Af:        binary.LittleEndian.Uint32(data[eventOffsetAf:]),
+		SaddrV4:   binary.LittleEndian.Uint32(data[eventOffsetSaddrV4:]),
+		DaddrV4:   binary.LittleEndian.Uint32(data[eventOffsetDaddrV4:]),
+		Dport:     binary.LittleEndian.Uint16(data[eventOffsetDport:]),
+		Direction: data[eventOffsetDir],
+		Pad:       data[eventOffsetDir+1],
+	}
+
+	// Copy IPv6 addresses
+	copy(event.SaddrV6[:], data[eventOffsetSaddrV6:eventOffsetSaddrV6+16])
+	copy(event.DaddrV6[:], data[eventOffsetDaddrV6:eventOffsetDaddrV6+16])
+
+	// Copy comm (process name)
+	for i := 0; i < eventCommLen; i++ {
+		event.Comm[i] = int8(data[eventOffsetComm+i])
+	}
+
+	return event, nil
 }
 
 // ConnKeyT matches the C struct conn_key_t in traffic.c
@@ -199,6 +254,7 @@ func main() {
 	}
 	defer objs.Close()
 	fmt.Println("✓ BPF objects loaded successfully")
+	fmt.Println("🌐 Dual-Stack (IPv4/IPv6) Monitoring Enabled")
 
 	// 2. Attach IPv4 probes (tcp_v4_connect)
 	kpV4, err := link.Kprobe("tcp_v4_connect", objs.KprobeTcpV4Connect, nil)
@@ -373,13 +429,13 @@ func main() {
 				continue
 			}
 
-			var event EventT
-			if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &event); err != nil {
+			event, err := parseEvent(record.RawSample)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to parse event: %v\n", err)
 				continue
 			}
 
-			payload := eventToPayload(&event)
+			payload := eventToPayload(event)
 			printEvent(payload)
 
 			select {
