@@ -7,7 +7,7 @@
 # Stage 1: Go Builder
 # Compile eBPF C code and build Go binary
 # -----------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS go-builder
 
 # Install BPF compilation dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

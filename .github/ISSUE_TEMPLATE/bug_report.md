@@ -26,7 +26,7 @@ If applicable, add screenshots to help explain your problem.
 ## Environment
 - **OS**: [e.g., Ubuntu 22.04]
 - **Kernel Version**: [e.g., 5.15.0-generic] (run `uname -r`)
-- **Go Version**: [e.g., 1.22.0]
+- **Go Version**: [e.g., 1.24.0]
 - **Node Version**: [e.g., 20.10.0]
 - **Deployment Method**: [Docker Compose / Kubernetes / Local]
 

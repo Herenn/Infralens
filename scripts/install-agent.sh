@@ -106,10 +106,10 @@ case $OS in
 esac
 
 # ============================================
-# Install Go 1.22
+# Install Go 1.24
 # ============================================
-if ! command -v go &> /dev/null || [[ $(go version | grep -oP '\d+\.\d+' | head -1) < "1.22" ]]; then
-    log_info "Installing Go 1.22..."
+if ! command -v go &> /dev/null || [[ $(go version | grep -oP '\d+\.\d+' | head -1) < "1.24" ]]; then
+    log_info "Installing Go 1.24..."
     
     ARCH=$(uname -m)
     case $ARCH in
@@ -118,7 +118,7 @@ if ! command -v go &> /dev/null || [[ $(go version | grep -oP '\d+\.\d+' | head 
         *) log_error "Unsupported architecture: $ARCH"; exit 1 ;;
     esac
     
-    wget -q "https://go.dev/dl/go1.22.0.linux-${GO_ARCH}.tar.gz" -O /tmp/go.tar.gz
+    wget -q "https://go.dev/dl/go1.24.0.linux-${GO_ARCH}.tar.gz" -O /tmp/go.tar.gz
     rm -rf /usr/local/go
     tar -C /usr/local -xzf /tmp/go.tar.gz
     rm /tmp/go.tar.gz

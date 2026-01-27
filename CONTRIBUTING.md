@@ -20,7 +20,7 @@ This project and everyone participating in it is governed by our commitment to p
 ### Prerequisites
 
 - **Linux** with kernel 5.8+ (for eBPF support)
-- **Go 1.22+**
+- **Go 1.24+**
 - **Node.js 18+**
 - **clang/LLVM** (for compiling eBPF programs)
 - **Docker** (optional, for containerized development)

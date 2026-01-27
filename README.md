@@ -279,7 +279,7 @@ infralens/
 │
 ├── Dockerfile.agent         # Root-level agent Dockerfile
 ├── Dockerfile.backend       # Root-level backend Dockerfile
-├── go.mod                   # Go 1.22+ module
+├── go.mod                   # Go 1.24+ module
 ├── Makefile                 # Build automation
 └── README.md
 ```
@@ -400,7 +400,7 @@ curl -sSL https://raw.githubusercontent.com/Herenn/Infralens/main/scripts/instal
 ```
 
 This will:
-- Install Go 1.22 and Node.js 20
+- Install Go 1.24 and Node.js 20
 - Build Agent, Backend, and Frontend from source
 - Configure Nginx as reverse proxy (port 3001)
 - Create and start systemd services
@@ -611,7 +611,7 @@ docker push infralens/frontend:latest
 
 - **Operating System:** Linux (kernel 5.8+ with BTF support)
   - ⚠️ **macOS/Windows:** eBPF requires Linux - see [Testing on macOS](#-macos-testing-limitations)
-- **Go 1.22+**
+- **Go 1.24+**
 - **clang/LLVM** (for compiling eBPF C code)
 - **Kernel BTF:** Check with `ls /sys/kernel/btf/vmlinux`
 - Node.js 18+ (for frontend)
@@ -621,7 +621,7 @@ docker push infralens/frontend:latest
 **On Ubuntu/Debian:**
 ```bash
 sudo apt-get update
-sudo apt-get install -y clang llvm libbpf-dev linux-headers-$(uname -r) golang-1.22
+sudo apt-get install -y clang llvm libbpf-dev linux-headers-$(uname -r) golang-1.24
 ```
 
 **On Fedora/RHEL:**
@@ -911,7 +911,7 @@ ls /sys/kernel/btf/vmlinux
    
    # Install dependencies
    sudo apt-get update
-   sudo apt-get install -y clang llvm libbpf-dev golang-1.22
+   sudo apt-get install -y clang llvm libbpf-dev golang-1.24
    
    # Build and run
    cd agent/ebpf && go generate
