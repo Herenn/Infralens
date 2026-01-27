@@ -230,6 +230,16 @@ func (ts *TopologyService) GetNodeMetrics(ctx context.Context, nodeName string) 
 	return ts.store.Metrics().Get(ctx, nodeName)
 }
 
+// ListServices returns all services matching the given filter.
+func (ts *TopologyService) ListServices(ctx context.Context, filter storage.ServiceFilter) ([]storage.Service, error) {
+	return ts.store.Services().List(ctx, filter)
+}
+
+// ListConnections returns all connections matching the given filter.
+func (ts *TopologyService) ListConnections(ctx context.Context, filter storage.ConnectionFilter) ([]storage.Connection, error) {
+	return ts.store.Connections().List(ctx, filter)
+}
+
 // GetTopology returns a snapshot of the current topology.
 func (ts *TopologyService) GetTopology(ctx context.Context) (*storage.Topology, error) {
 	return ts.store.GetTopology(ctx)

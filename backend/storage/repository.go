@@ -5,7 +5,20 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
+)
+
+// Common errors
+var (
+	// ErrNotFound is returned when a requested item is not found.
+	ErrNotFound = errors.New("not found")
+
+	// ErrAlreadyExists is returned when attempting to create a duplicate.
+	ErrAlreadyExists = errors.New("already exists")
+
+	// ErrInvalidInput is returned when input validation fails.
+	ErrInvalidInput = errors.New("invalid input")
 )
 
 // Service represents a service (process) in the topology.

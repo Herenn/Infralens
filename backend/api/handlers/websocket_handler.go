@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+
+	"github.com/Herenn/Infralens/backend/pkg/metrics"
 	"github.com/Herenn/Infralens/backend/service"
 	log "github.com/sirupsen/logrus"
 )
@@ -42,6 +44,10 @@ func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer conn.Close()
+
+	// Track WebSocket connection metrics
+	metrics.RecordWebSocketConnect()
+	defer metrics.RecordWebSocketDisconnect()
 
 	// Generate unique subscriber ID
 	subID := uuid.New().String()

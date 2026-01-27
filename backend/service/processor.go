@@ -74,10 +74,15 @@ func (p *EventProcessor) ProcessTCPEvent(ctx context.Context, nodeName string, e
 	now := time.Now()
 
 	// Resolve source IP to Kubernetes resource name
-	srcResolved := p.k8sWatcher.Resolve(event.SrcAddr)
-
-	// Resolve destination IP to Kubernetes resource name
-	dstResolved := p.k8sWatcher.Resolve(event.DstAddr)
+	var srcResolved, dstResolved string
+	if p.k8sWatcher != nil {
+		srcResolved = p.k8sWatcher.Resolve(event.SrcAddr)
+		dstResolved = p.k8sWatcher.Resolve(event.DstAddr)
+	} else {
+		// No K8s watcher, use raw IP addresses
+		srcResolved = event.SrcAddr
+		dstResolved = event.DstAddr
+	}
 
 	// Check if IPs resolved to K8s resources
 	srcIsK8s := isK8sResource(srcResolved)
@@ -206,8 +211,14 @@ func (p *EventProcessor) ProcessTCPEvent(ctx context.Context, nodeName string, e
 // ProcessThroughputStats processes throughput statistics.
 func (p *EventProcessor) ProcessThroughputStats(ctx context.Context, nodeName string, stats ThroughputStats) error {
 	// Build connection ID
-	srcResolved := p.k8sWatcher.Resolve(stats.SrcAddr)
-	dstResolved := p.k8sWatcher.Resolve(stats.DstAddr)
+	var srcResolved, dstResolved string
+	if p.k8sWatcher != nil {
+		srcResolved = p.k8sWatcher.Resolve(stats.SrcAddr)
+		dstResolved = p.k8sWatcher.Resolve(stats.DstAddr)
+	} else {
+		srcResolved = stats.SrcAddr
+		dstResolved = stats.DstAddr
+	}
 
 	srcIsK8s := isK8sResource(srcResolved)
 	dstIsK8s := isK8sResource(dstResolved)

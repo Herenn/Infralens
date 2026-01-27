@@ -3,13 +3,17 @@ package api
 
 import (
 	"net/http"
+	"runtime"
 
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/Herenn/Infralens/backend/api/handlers"
 	"github.com/Herenn/Infralens/backend/api/middleware"
 	"github.com/Herenn/Infralens/backend/config"
 	"github.com/Herenn/Infralens/backend/k8s"
 	"github.com/Herenn/Infralens/backend/pkg/llm"
+	"github.com/Herenn/Infralens/backend/pkg/metrics"
 	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
 )
@@ -53,6 +57,9 @@ func NewServer(
 		llmManager: llmManager,
 	}
 
+	// Set build info for metrics
+	metrics.SetBuildInfo(handlers.Version, runtime.Version())
+
 	s.setupRoutes()
 	return s
 }
@@ -61,7 +68,7 @@ func NewServer(
 func (s *Server) setupRoutes() {
 	// Create handlers
 	eventHandler := handlers.NewEventHandler(s.processor)
-	topologyHandler := handlers.NewTopologyHandler(s.topology, s.store)
+	topologyHandler := handlers.NewTopologyHandler(s.topology)
 	wsHandler := handlers.NewWebSocketHandler(s.topology, s.eventBus)
 	healthHandler := handlers.NewHealthHandler(s.store, s.k8sWatcher)
 	aiHandler := handlers.NewAIHandler(s.topology, s.llmManager)
@@ -100,13 +107,18 @@ func (s *Server) setupRoutes() {
 
 	// Version endpoint
 	api.HandleFunc("/version", healthHandler.HandleVersion).Methods("GET")
+
+	// Prometheus metrics endpoint
+	s.router.Handle("/metrics", promhttp.Handler()).Methods("GET")
 }
 
 // Handler returns the HTTP handler with middleware applied.
 func (s *Server) Handler() http.Handler {
-	// Apply middleware in order: Recovery -> Logging -> CORS -> Auth
+	// Apply middleware in order: Recovery -> Metrics -> Logging -> CORS -> Auth
+	// Note: Metrics is before Logging so we don't double-count
 	handler := middleware.Chain(
 		middleware.Recovery(),
+		middleware.Metrics(),
 		middleware.Logging(),
 		middleware.CORS(s.config.CORS),
 		middleware.Auth(s.config.Auth),

@@ -12,14 +12,12 @@ import (
 // TopologyHandler handles topology query endpoints.
 type TopologyHandler struct {
 	topology *service.TopologyService
-	store    storage.Store
 }
 
 // NewTopologyHandler creates a new topology handler.
-func NewTopologyHandler(topology *service.TopologyService, store storage.Store) *TopologyHandler {
+func NewTopologyHandler(topology *service.TopologyService) *TopologyHandler {
 	return &TopologyHandler{
 		topology: topology,
-		store:    store,
 	}
 }
 
@@ -42,7 +40,7 @@ func (h *TopologyHandler) HandleGetTopology(w http.ResponseWriter, r *http.Reque
 // HandleGetServices returns all services.
 func (h *TopologyHandler) HandleGetServices(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	services, err := h.store.Services().List(ctx, storage.ServiceFilter{})
+	services, err := h.topology.ListServices(ctx, storage.ServiceFilter{})
 	if err != nil {
 		http.Error(w, "Failed to get services", http.StatusInternalServerError)
 		return

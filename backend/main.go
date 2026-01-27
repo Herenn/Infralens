@@ -55,7 +55,7 @@ func main() {
 		"debug":   cfg.Server.Debug,
 		"db":      cfg.Storage.DSN,
 		"driver":  cfg.Storage.Driver,
-		"version": "0.2.2",
+		"version": "0.2.3",
 	}).Info("Starting InfraLens backend")
 
 	// Initialize storage based on driver

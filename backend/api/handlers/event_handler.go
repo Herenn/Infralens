@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Herenn/Infralens/backend/pkg/metrics"
 	"github.com/Herenn/Infralens/backend/service"
 	log "github.com/sirupsen/logrus"
 )
@@ -67,12 +68,17 @@ func (h *EventHandler) HandleEvents(w http.ResponseWriter, r *http.Request) {
 		"events":  len(batch.Events),
 	}).Debug("Received event batch")
 
+	// Record metrics
+	metrics.RecordEventBatch("tcp_event", nodeName, len(batch.Events))
+
 	ctx := r.Context()
+	timer := metrics.NewTimer()
 	for _, event := range batch.Events {
 		if err := h.processor.ProcessTCPEvent(ctx, nodeName, event); err != nil {
 			log.WithError(err).Warn("Failed to process TCP event")
 		}
 	}
+	timer.ObserveEvent("tcp_event")
 
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
@@ -97,12 +103,17 @@ func (h *EventHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
 		"interval_ms": report.IntervalMs,
 	}).Debug("Received throughput report")
 
+	// Record metrics
+	metrics.RecordEventBatch("throughput", nodeName, len(report.Connections))
+
 	ctx := r.Context()
+	timer := metrics.NewTimer()
 	for _, stats := range report.Connections {
 		if err := h.processor.ProcessThroughputStats(ctx, nodeName, stats); err != nil {
 			log.WithError(err).Warn("Failed to process throughput stats")
 		}
 	}
+	timer.ObserveEvent("throughput")
 
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
