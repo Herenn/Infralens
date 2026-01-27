@@ -59,6 +59,8 @@ export interface Service {
   last_seen: string
   healthy?: boolean
   inspection?: ServiceInspection  // Deep inspection data
+  original_id?: string     // Original service ID (for aggregated services)
+  aggregated_count?: number // Number of services aggregated (for display)
 }
 
 // Service type constants

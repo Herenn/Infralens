@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v0.3.0-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v0.4.0-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes**
 
@@ -1105,7 +1105,15 @@ sudo ./infralens-agent --log-level=debug
 - [x] Add dual-stack (IPv4/IPv6) startup indicator
 - [x] Verify traffic.c has full IPv6 support (tcp_v6_connect hooks)
 
-### Phase 10 (Future)
+### Phase 10 (Dual-Stack & Fixes) ✅ - v0.4.0
+- [x] Full IPv6 support in BPF tracer.c (AF_INET6 no longer filtered)
+- [x] Dual-stack `net.IP` parsing in Go (tracer.go supports IPv4 + IPv6)
+- [x] Event struct updated with `IPVer` field for IP version tracking
+- [x] Fix AI documentation for aggregated services (`original_id` preserved)
+- [x] Frontend Service type extended with `original_id` and `aggregated_count`
+- [x] Helper methods `IsIPv4()`, `IsIPv6()` added to Event struct
+
+### Phase 11 (Future)
 - [ ] UDP tracing (`udp_sendmsg`/`udp_recvmsg`)
 - [ ] Anomaly detection (unusual traffic patterns)
 - [ ] Intelligent alerting on topology changes

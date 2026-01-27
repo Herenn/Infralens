@@ -16,6 +16,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -23,6 +24,12 @@ import (
 	"github.com/cilium/ebpf/perf"
 	"github.com/cilium/ebpf/rlimit"
 	log "github.com/sirupsen/logrus"
+)
+
+// Address family constants (matching kernel definitions)
+const (
+	AF_INET  = 2
+	AF_INET6 = 10
 )
 
 // Tracer manages the eBPF programs for tracing TCP connections.
@@ -41,12 +48,14 @@ type Tracer struct {
 }
 
 // Event represents a TCP connection event from the eBPF program.
+// Supports both IPv4 and IPv6 addresses (dual-stack).
 type Event struct {
 	PID   uint32
-	SAddr uint32
-	DAddr uint32
+	SAddr net.IP // Source IP address (IPv4 or IPv6)
+	DAddr net.IP // Destination IP address (IPv4 or IPv6)
 	DPort uint16
 	Comm  string
+	IPVer uint8  // IP version: 4 or 6
 }
 
 // NewTracer creates and initializes a new eBPF tracer.
@@ -174,22 +183,47 @@ const (
 
 // parseEvent parses raw bytes from the perf buffer into an Event.
 // Uses explicit byte offsets to be safe against C compiler alignment differences.
+// Supports both IPv4 (AF_INET=2) and IPv6 (AF_INET6=10) address families.
 func parseEvent(data []byte) (*Event, error) {
 	if len(data) < eventMinSize {
 		return nil, fmt.Errorf("data too short: got %d bytes, need at least %d", len(data), eventMinSize)
 	}
 
-	// Read fields at explicit offsets (no struct alignment assumptions)
+	// Read common fields at explicit offsets
 	// eventType := data[offsetType]  // Currently unused in Event struct
-	// af := data[offsetAF]           // Address family (2=IPv4, 10=IPv6)
+	af := data[offsetAF] // Address family (2=IPv4, 10=IPv6)
 	pid := binary.LittleEndian.Uint32(data[offsetPID:])
-	saddr := binary.LittleEndian.Uint32(data[offsetSrcAddrV4:])
-	daddr := binary.LittleEndian.Uint32(data[offsetDstAddrV4:])
 	dport := binary.LittleEndian.Uint16(data[offsetDstPort:])
 
 	// Extract null-terminated comm string
 	commBytes := data[offsetComm : offsetComm+commLen]
 	comm := extractNullTerminatedString(commBytes)
+
+	// Parse addresses based on address family (dual-stack support)
+	var saddr, daddr net.IP
+	var ipVer uint8
+
+	switch af {
+	case AF_INET: // IPv4
+		ipVer = 4
+		// Read 4-byte IPv4 addresses (stored in little-endian)
+		saddr = make(net.IP, 4)
+		daddr = make(net.IP, 4)
+		// IPv4 addresses from kernel are in network byte order, copy directly
+		copy(saddr, data[offsetSrcAddrV4:offsetSrcAddrV4+4])
+		copy(daddr, data[offsetDstAddrV4:offsetDstAddrV4+4])
+
+	case AF_INET6: // IPv6
+		ipVer = 6
+		// Read 16-byte IPv6 addresses
+		saddr = make(net.IP, 16)
+		daddr = make(net.IP, 16)
+		copy(saddr, data[offsetSrcAddrV6:offsetSrcAddrV6+16])
+		copy(daddr, data[offsetDstAddrV6:offsetDstAddrV6+16])
+
+	default:
+		return nil, fmt.Errorf("unsupported address family: %d", af)
+	}
 
 	return &Event{
 		PID:   pid,
@@ -197,6 +231,7 @@ func parseEvent(data []byte) (*Event, error) {
 		DAddr: daddr,
 		DPort: dport,
 		Comm:  comm,
+		IPVer: ipVer,
 	}, nil
 }
 

@@ -153,6 +153,8 @@ function filterTopology(topology: Topology | null, filters: FilterState): Topolo
           id: aggregatedId,
           name: `${displayTech} (${svcs.length})`,
           display_name: `${displayTech} (${svcs.length})`,
+          original_id: svcs[0].id,  // Keep first service's ID for backend lookups
+          aggregated_count: svcs.length,
         }
         aggregatedExternal.push(aggregatedSvc)
         

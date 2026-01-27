@@ -790,7 +790,8 @@ function AIDocsTab({
 
   // Name for display (used in AI prompts internally)
   // const name = nodeType === 'server' ? serverData?.serverName : service?.name
-  const serviceId = service?.id
+  // Use original_id for aggregated services, otherwise use the normal id
+  const serviceId = service?.original_id || service?.id
 
   // Fetch AI status on mount
   useEffect(() => {
