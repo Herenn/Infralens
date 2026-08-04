@@ -36,6 +36,10 @@ type ServerConfig struct {
 	WriteTimeout time.Duration
 	IdleTimeout  time.Duration
 	Debug        bool
+
+	// DemoMode enables the built-in topology simulator so the UI can be
+	// explored without any agents (no Linux/eBPF required).
+	DemoMode bool
 }
 
 // LLMConfig holds LLM provider configuration.
@@ -62,6 +66,7 @@ func Load() *Config {
 			WriteTimeout: getDurationEnv("WRITE_TIMEOUT", 15*time.Second),
 			IdleTimeout:  getDurationEnv("IDLE_TIMEOUT", 60*time.Second),
 			Debug:        getBoolEnv("DEBUG", false),
+			DemoMode:     getBoolEnv("DEMO_MODE", false),
 		},
 
 		Storage: storage.Config{

@@ -1,0 +1,51 @@
+# InfraLens Demo Mode
+# ===================
+# Try InfraLens in 30 seconds - no Linux, no eBPF, no agent required.
+# The backend simulates a realistic multi-node topology with live traffic.
+#
+# Usage (pre-built images):
+#   docker compose -f demo.yml up -d
+#
+# Usage (build locally):
+#   docker compose -f demo.yml up -d --build
+#
+# Then open http://localhost:3000
+
+services:
+  backend:
+    image: ghcr.io/herenn/infralens/backend:latest
+    build:
+      context: ../../
+      dockerfile: Dockerfile.backend
+    container_name: infralens-demo-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - DEMO_MODE=true
+      - DB_DSN=/tmp/infralens-demo.db
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - infralens-demo
+
+  frontend:
+    image: ghcr.io/herenn/infralens/frontend:latest
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+    container_name: infralens-demo-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - infralens-demo
+
+networks:
+  infralens-demo:
+    driver: bridge

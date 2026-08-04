@@ -17,6 +17,7 @@ import (
 	"github.com/Herenn/Infralens/backend/config"
 	"github.com/Herenn/Infralens/backend/k8s"
 	"github.com/Herenn/Infralens/backend/pkg/llm"
+	"github.com/Herenn/Infralens/backend/service/demo"
 	"github.com/Herenn/Infralens/backend/storage"
 	"github.com/Herenn/Infralens/backend/storage/postgres"
 	"github.com/Herenn/Infralens/backend/storage/sqlite"
@@ -98,6 +99,14 @@ func main() {
 	// Create API server
 	apiServer := api.NewServer(cfg, store, k8sWatcher, llmManager)
 	defer apiServer.Close()
+
+	// Start demo simulator if enabled (try InfraLens without any agents)
+	demoCtx, demoCancel := context.WithCancel(context.Background())
+	defer demoCancel()
+	if cfg.Server.DemoMode {
+		simulator := demo.NewSimulator(apiServer.TopologyService())
+		go simulator.Run(demoCtx)
+	}
 
 	// Create HTTP server
 	srv := &http.Server{

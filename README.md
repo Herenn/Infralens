@@ -151,6 +151,20 @@ flowchart TB
 
 ## 🚀 Quick Start
 
+### Try It in 30 Seconds (Demo Mode)
+
+No Linux, no eBPF, no agents required — the backend simulates a realistic multi-node topology with live traffic:
+
+```bash
+git clone https://github.com/Herenn/Infralens.git
+cd Infralens/deploy/docker-compose
+docker compose -f demo.yml up -d
+```
+
+Open [http://localhost:3000](http://localhost:3000) and explore the live topology. Works on macOS, Windows, and Linux.
+
+You can also enable demo mode on any backend with `DEMO_MODE=true`.
+
 ### Option 1: One-Line Install (Linux Servers)
 
 **Full Stack (Main Server):**
@@ -228,6 +242,7 @@ infralens/
 # ═══════════════════════════════════════════════════════════════════
 LISTEN_ADDR=:8080              # HTTP listen address
 DEBUG=false                    # Enable debug logging
+DEMO_MODE=false                # Simulate a live topology (no agents needed)
 READ_TIMEOUT=15s               # HTTP read timeout
 WRITE_TIMEOUT=15s              # HTTP write timeout
 
