@@ -65,6 +65,7 @@ type Connection struct {
 	SourceID      string    `json:"source_id"`
 	TargetID      string    `json:"target_id"`
 	Port          uint16    `json:"port"`
+	Protocol      string    `json:"protocol,omitempty"` // "tcp" or "udp"
 	Count         int64     `json:"count"`
 	BytesSent     uint64    `json:"bytes_sent,omitempty"`
 	BytesRecv     uint64    `json:"bytes_recv,omitempty"`

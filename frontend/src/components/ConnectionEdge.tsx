@@ -3,6 +3,7 @@ import { BaseEdge, getBezierPath, EdgeLabelRenderer, Position } from '@xyflow/re
 
 export interface ConnectionEdgeData {
   port: number
+  protocol?: string // "tcp" (default) or "udp"
   count: number
   bytesSent?: number
   bytesRecv?: number
@@ -60,6 +61,7 @@ function ConnectionEdge({
                         (data?.bytesRecvRate && data.bytesRecvRate > 0)
 
   const isHighlighted = data?.highlighted
+  const isUdp = data?.protocol === 'udp'
 
   // Calculate edge color based on highlighting and throughput
   const getEdgeColor = () => {
@@ -104,6 +106,8 @@ function ConnectionEdge({
           stroke: getEdgeColor(),
           strokeWidth: getStrokeWidth(),
           opacity: getOpacity(),
+          // UDP flows are rendered dashed to distinguish them from TCP
+          strokeDasharray: isUdp ? '6 4' : undefined,
           transition: 'stroke 0.2s, stroke-width 0.2s, opacity 0.2s',
         }}
         className={isHighlighted ? 'animated-edge' : ''}
@@ -137,9 +141,12 @@ function ConnectionEdge({
             </div>
           )}
 
-          {/* Port and count */}
+          {/* Port, protocol, and count */}
           <div className="flex items-center gap-1.5">
             <span className={`${isHighlighted ? 'text-dark-100' : 'text-dark-300'}`}>:{data?.port}</span>
+            {isUdp && (
+              <span className="text-[9px] font-semibold text-amber-400 bg-amber-500/10 px-1 rounded">UDP</span>
+            )}
             {data?.count && data.count > 1 && (
               <span className="text-dark-500">×{data.count}</span>
             )}

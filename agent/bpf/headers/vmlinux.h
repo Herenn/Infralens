@@ -106,6 +106,34 @@ struct in6_addr {
     } in6_u;
 };
 
+/* IPv4 address structure */
+struct in_addr {
+    __be32 s_addr;
+};
+
+/* Socket address structures (used to read UDP sendto destinations) */
+struct sockaddr_in {
+    __u16 sin_family;
+    __be16 sin_port;
+    struct in_addr sin_addr;
+};
+
+struct sockaddr_in6 {
+    __u16 sin6_family;
+    __be16 sin6_port;
+    __be32 sin6_flowinfo;
+    struct in6_addr sin6_addr;
+    __u32 sin6_scope_id;
+};
+
+/*
+ * Message header (minimal) - only msg_name is accessed.
+ * CO-RE relocates the field offset against the running kernel's BTF.
+ */
+struct msghdr {
+    void *msg_name;
+};
+
 /*
  * Socket common structure - key for TCP tracing
  */

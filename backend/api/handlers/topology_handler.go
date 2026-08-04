@@ -123,6 +123,7 @@ type ConnectionResponse struct {
 	SourceID      string  `json:"source_id"`
 	TargetID      string  `json:"target_id"`
 	Port          uint16  `json:"port"`
+	Protocol      string  `json:"protocol,omitempty"`
 	Count         int64   `json:"count"`
 	BytesSent     uint64  `json:"bytes_sent,omitempty"`
 	BytesRecv     uint64  `json:"bytes_recv,omitempty"`
@@ -194,6 +195,7 @@ func convertConnectionToResponse(conn storage.Connection) ConnectionResponse {
 		SourceID:      conn.SourceID,
 		TargetID:      conn.TargetID,
 		Port:          conn.Port,
+		Protocol:      conn.Protocol,
 		Count:         conn.Count,
 		BytesSent:     conn.BytesSent,
 		BytesRecv:     conn.BytesRecv,

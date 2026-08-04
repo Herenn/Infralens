@@ -28,9 +28,10 @@ type Collector struct {
 
 // connTrackKey is used to track connections across polls
 type connTrackKey struct {
-	srcAddr string
-	dstAddr string
-	dstPort uint16
+	srcAddr  string
+	dstAddr  string
+	dstPort  uint16
+	protocol uint8
 }
 
 // prevStats stores previous poll values for delta calculation
@@ -168,6 +169,52 @@ func (c *Collector) attachProbes() error {
 		fmt.Println("✓ Kretprobe attached to inet_csk_accept")
 	}
 
+	// udp_sendmsg for UDP flow discovery + bytes sent (optional)
+	l, err = link.Kprobe("udp_sendmsg", c.objs.KprobeUdpSendmsg, nil)
+	if err != nil {
+		fmt.Printf("⚠ Warning: Failed to attach kprobe/udp_sendmsg: %v\n", err)
+		fmt.Println("  (UDP tracing disabled)")
+	} else {
+		c.links = append(c.links, l)
+		fmt.Println("✓ Kprobe attached to udp_sendmsg")
+	}
+
+	// udp_recvmsg for UDP bytes received (optional)
+	l, err = link.Kprobe("udp_recvmsg", c.objs.KprobeUdpRecvmsg, nil)
+	if err != nil {
+		fmt.Printf("⚠ Warning: Failed to attach kprobe/udp_recvmsg: %v\n", err)
+	} else {
+		c.links = append(c.links, l)
+		fmt.Println("✓ Kprobe attached to udp_recvmsg")
+
+		l, err = link.Kretprobe("udp_recvmsg", c.objs.KretprobeUdpRecvmsg, nil)
+		if err != nil {
+			fmt.Printf("⚠ Warning: Failed to attach kretprobe/udp_recvmsg: %v\n", err)
+		} else {
+			c.links = append(c.links, l)
+			fmt.Println("✓ Kretprobe attached to udp_recvmsg")
+		}
+	}
+
+	// IPv6 UDP probes (optional - some kernels may not support)
+	l, err = link.Kprobe("udpv6_sendmsg", c.objs.KprobeUdpv6Sendmsg, nil)
+	if err != nil {
+		fmt.Printf("⚠ Warning: Failed to attach kprobe/udpv6_sendmsg: %v\n", err)
+		fmt.Println("  (IPv6 UDP tracing disabled)")
+	} else {
+		c.links = append(c.links, l)
+		fmt.Println("✓ Kprobe attached to udpv6_sendmsg")
+
+		l, err = link.Kprobe("udpv6_recvmsg", c.objs.KprobeUdpv6Recvmsg, nil)
+		if err == nil {
+			c.links = append(c.links, l)
+			if l, err = link.Kretprobe("udpv6_recvmsg", c.objs.KretprobeUdpv6Recvmsg, nil); err == nil {
+				c.links = append(c.links, l)
+				fmt.Println("✓ Probes attached to udpv6_recvmsg")
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -223,12 +270,21 @@ type Throughput struct {
 	DstAddr       string
 	SrcPort       uint16
 	DstPort       uint16
+	Protocol      uint8 // ProtocolTCP (0) or ProtocolUDP (1)
 	BytesSent     uint64
 	BytesRecv     uint64
 	BytesSentRate float64
 	BytesRecvRate float64
 	PacketsSent   uint64
 	PacketsRecv   uint64
+}
+
+// ProtocolString returns "tcp" or "udp" for the throughput's protocol.
+func (t *Throughput) ProtocolString() string {
+	if t.Protocol == ProtocolUDP {
+		return "udp"
+	}
+	return "tcp"
 }
 
 // PollThroughput reads connection stats from the BPF map and calculates throughput.
@@ -261,9 +317,10 @@ func (c *Collector) PollThroughput() []Throughput {
 		}
 
 		ck := connTrackKey{
-			srcAddr: srcAddr,
-			dstAddr: dstAddr,
-			dstPort: Ntohs(value.DstPort),
+			srcAddr:  srcAddr,
+			dstAddr:  dstAddr,
+			dstPort:  Ntohs(value.DstPort),
+			protocol: value.Protocol,
 		}
 		currentStats[ck] = value
 	}
@@ -312,6 +369,7 @@ func (c *Collector) PollThroughput() []Throughput {
 				DstAddr:       ck.dstAddr,
 				SrcPort:       current.SrcPort,
 				DstPort:       ck.dstPort,
+				Protocol:      current.Protocol,
 				BytesSent:     current.BytesSent,
 				BytesRecv:     current.BytesRecv,
 				BytesSentRate: sentRate,

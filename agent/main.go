@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,7 +26,8 @@ import (
 
 // Command-line flags
 var (
-	backendAddr         = flag.String("backend", "", "Backend address (e.g., localhost:8080)")
+	backendAddr         = flag.String("backend", "", "Backend address or URL (e.g., localhost:8080, https://infralens.example.com)")
+	apiKey              = flag.String("api-key", os.Getenv("INFRALENS_API_KEY"), "API key for backend authentication (or INFRALENS_API_KEY env)")
 	nodeName            = flag.String("node", "", "Node name (defaults to hostname)")
 	clusterName         = flag.String("cluster", "", "Cluster name (groups all nodes under this name in UI)")
 	batchSize           = flag.Int("batch-size", 10, "Number of events to batch before sending")
@@ -71,10 +73,14 @@ func main() {
 	defer coll.Close()
 
 	// Setup HTTP client for backend reporting
+	backendURL := normalizeBackendURL(*backendAddr)
 	var httpClient *http.Client
-	if *backendAddr != "" {
+	if backendURL != "" {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
-		fmt.Printf("✓ Backend reporting enabled: %s\n", *backendAddr)
+		fmt.Printf("✓ Backend reporting enabled: %s\n", backendURL)
+		if *apiKey != "" {
+			fmt.Println("✓ API key authentication enabled")
+		}
 	} else {
 		fmt.Println("ℹ Backend reporting disabled (use --backend=host:port to enable)")
 	}
@@ -111,8 +117,8 @@ func main() {
 
 	// Auto-update checker
 	stopUpdateCh := make(chan struct{})
-	if *autoUpdate && *backendAddr != "" {
-		agentUpdater := updater.NewUpdater(*backendAddr, *updateCheckInterval)
+	if *autoUpdate && backendURL != "" {
+		agentUpdater := updater.NewUpdater(backendURL, *updateCheckInterval)
 		agentUpdater.SetUpdateCallback(func() {
 			fmt.Println("📦 New version available! Attempting self-update...")
 			if err := agentUpdater.SelfUpdate(); err != nil {
@@ -152,7 +158,7 @@ func main() {
 			<-doneCh
 			// Send any remaining events
 			if httpClient != nil && len(eventBatch) > 0 {
-				sendBatch(ctx, httpClient, *backendAddr, *nodeName, eventBatch)
+				sendBatch(ctx, httpClient, backendURL, *nodeName, eventBatch)
 			}
 			fmt.Println("Agent stopped.")
 			return
@@ -164,19 +170,19 @@ func main() {
 			eventBatch = append(eventBatch, payload)
 			if len(eventBatch) >= *batchSize {
 				if httpClient != nil {
-					go sendBatch(ctx, httpClient, *backendAddr, *nodeName, eventBatch)
+					go sendBatch(ctx, httpClient, backendURL, *nodeName, eventBatch)
 				}
 				eventBatch = make([]EventPayload, 0, *batchSize)
 			}
 
 			// Trigger deep inspection for new PIDs
 			if processInspector != nil && httpClient != nil && shouldInspect(payload.PID) {
-				go inspectAndReport(ctx, httpClient, processInspector, payload)
+				go inspectAndReport(ctx, httpClient, backendURL, processInspector, payload)
 			}
 
 		case <-batchTimer.C:
 			if httpClient != nil && len(eventBatch) > 0 {
-				go sendBatch(ctx, httpClient, *backendAddr, *nodeName, eventBatch)
+				go sendBatch(ctx, httpClient, backendURL, *nodeName, eventBatch)
 				eventBatch = make([]EventPayload, 0, *batchSize)
 			}
 
@@ -185,7 +191,7 @@ func main() {
 			if len(throughput) > 0 {
 				printThroughput(throughput)
 				if httpClient != nil {
-					go sendThroughput(ctx, httpClient, *backendAddr, *nodeName, throughput)
+					go sendThroughput(ctx, httpClient, backendURL, *nodeName, throughput)
 				}
 			}
 
@@ -196,7 +202,7 @@ func main() {
 			} else {
 				printHostMetrics(hostMetrics)
 				if httpClient != nil {
-					go sendHostMetrics(ctx, httpClient, *backendAddr, hostMetrics)
+					go sendHostMetrics(ctx, httpClient, backendURL, hostMetrics)
 				}
 			}
 		}
@@ -215,6 +221,7 @@ type EventPayload struct {
 	DstAddr   string `json:"dst_addr"`
 	DstPort   uint16 `json:"dst_port"`
 	Direction uint8  `json:"direction"`
+	Protocol  string `json:"protocol,omitempty"` // "tcp" or "udp"
 }
 
 // EventBatch represents a batch of events sent to the backend
@@ -242,6 +249,7 @@ type ConnectionThroughput struct {
 	DstAddr       string  `json:"dst_addr"`
 	SrcPort       uint16  `json:"src_port"`
 	DstPort       uint16  `json:"dst_port"`
+	Protocol      string  `json:"protocol,omitempty"` // "tcp" or "udp"
 	BytesSent     uint64  `json:"bytes_sent"`
 	BytesRecv     uint64  `json:"bytes_recv"`
 	BytesSentRate float64 `json:"bytes_sent_rate"`
@@ -271,6 +279,7 @@ func eventToPayload(event *collector.Event) EventPayload {
 		DstAddr:   event.DstAddr.String(),
 		DstPort:   event.DstPort,
 		Direction: event.Direction,
+		Protocol:  event.ProtocolString(),
 	}
 }
 
@@ -282,6 +291,7 @@ func throughputToPayload(t collector.Throughput) ConnectionThroughput {
 		DstAddr:       t.DstAddr,
 		SrcPort:       t.SrcPort,
 		DstPort:       t.DstPort,
+		Protocol:      t.ProtocolString(),
 		BytesSent:     t.BytesSent,
 		BytesRecv:     t.BytesRecv,
 		BytesSentRate: t.BytesSentRate,
@@ -337,7 +347,53 @@ func formatBytes(b uint64) string {
 // HTTP Reporting Functions
 // =============================================================================
 
-func sendBatch(ctx context.Context, client *http.Client, backendAddr, nodeName string, events []EventPayload) {
+// normalizeBackendURL converts a backend address into a full base URL.
+// Accepts bare host:port ("localhost:8080") as well as full URLs
+// ("https://infralens.example.com"). Returns "" for empty input.
+func normalizeBackendURL(addr string) string {
+	addr = strings.TrimRight(strings.TrimSpace(addr), "/")
+	if addr == "" {
+		return ""
+	}
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return addr
+	}
+	return "http://" + addr
+}
+
+// postJSON marshals payload and POSTs it to url, attaching the configured
+// API key (if any). Errors are returned so callers can add context.
+func postJSON(ctx context.Context, client *http.Client, url string, payload interface{}) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if *apiKey != "" {
+		req.Header.Set("X-API-Key", *apiKey)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("backend rejected request (status %d): check --api-key matches the backend API_KEY", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("backend returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func sendBatch(ctx context.Context, client *http.Client, backendURL, nodeName string, events []EventPayload) {
 	batch := EventBatch{
 		NodeName:    nodeName,
 		ClusterName: *clusterName,
@@ -345,35 +401,12 @@ func sendBatch(ctx context.Context, client *http.Client, backendAddr, nodeName s
 		Events:      events,
 	}
 
-	data, err := json.Marshal(batch)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to marshal batch: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("http://%s/api/v1/events", backendAddr)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create request: %v\n", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			fmt.Fprintf(os.Stderr, "Failed to send events: %v\n", err)
-		}
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		fmt.Fprintf(os.Stderr, "Backend returned status %d\n", resp.StatusCode)
+	if err := postJSON(ctx, client, backendURL+"/api/v1/events", batch); err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintf(os.Stderr, "Failed to send events: %v\n", err)
 	}
 }
 
-func sendThroughput(ctx context.Context, client *http.Client, backendAddr, nodeName string, stats []collector.Throughput) {
+func sendThroughput(ctx context.Context, client *http.Client, backendURL, nodeName string, stats []collector.Throughput) {
 	connections := make([]ConnectionThroughput, len(stats))
 	for i, t := range stats {
 		connections[i] = throughputToPayload(t)
@@ -387,60 +420,14 @@ func sendThroughput(ctx context.Context, client *http.Client, backendAddr, nodeN
 		Connections: connections,
 	}
 
-	data, err := json.Marshal(report)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to marshal throughput: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("http://%s/api/v1/stats", backendAddr)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create stats request: %v\n", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			fmt.Fprintf(os.Stderr, "Failed to send throughput: %v\n", err)
-		}
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		fmt.Fprintf(os.Stderr, "Backend returned status %d for stats\n", resp.StatusCode)
+	if err := postJSON(ctx, client, backendURL+"/api/v1/stats", report); err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintf(os.Stderr, "Failed to send throughput: %v\n", err)
 	}
 }
 
-func sendHostMetrics(ctx context.Context, client *http.Client, backendAddr string, m *metrics.HostMetrics) {
-	data, err := json.Marshal(m)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to marshal host metrics: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("http://%s/api/v1/metrics", backendAddr)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create metrics request: %v\n", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			fmt.Fprintf(os.Stderr, "Failed to send host metrics: %v\n", err)
-		}
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		fmt.Fprintf(os.Stderr, "Backend returned status %d for metrics\n", resp.StatusCode)
+func sendHostMetrics(ctx context.Context, client *http.Client, backendURL string, m *metrics.HostMetrics) {
+	if err := postJSON(ctx, client, backendURL+"/api/v1/metrics", m); err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintf(os.Stderr, "Failed to send host metrics: %v\n", err)
 	}
 }
 
@@ -461,7 +448,7 @@ func shouldInspect(pid uint32) bool {
 	return true
 }
 
-func inspectAndReport(ctx context.Context, client *http.Client, insp *inspector.Inspector, event EventPayload) {
+func inspectAndReport(ctx context.Context, client *http.Client, backendURL string, insp *inspector.Inspector, event EventPayload) {
 	result, err := insp.InspectProcess(int32(event.PID))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Inspection failed for PID %d: %v\n", event.PID, err)
@@ -484,31 +471,13 @@ func inspectAndReport(ctx context.Context, client *http.Client, insp *inspector.
 		Inspection:  result,
 	}
 
-	data, err := json.Marshal(report)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to marshal inspection: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("http://%s/api/v1/inspection", *backendAddr)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create inspection request: %v\n", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
+	if err := postJSON(ctx, client, backendURL+"/api/v1/inspection", report); err != nil {
 		if !errors.Is(err, context.Canceled) {
 			fmt.Fprintf(os.Stderr, "Failed to send inspection: %v\n", err)
 		}
 		return
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted {
-		fmt.Printf("🔍 Inspected [%d] %s: %d ports, %d deps, %d configs\n",
-			event.PID, event.Comm, len(result.ListenPorts), len(result.Dependencies), len(result.ConfigFiles))
-	}
+	fmt.Printf("🔍 Inspected [%d] %s: %d ports, %d deps, %d configs\n",
+		event.PID, event.Comm, len(result.ListenPorts), len(result.Dependencies), len(result.ConfigFiles))
 }

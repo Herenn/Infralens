@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: infralens/frontend:latest
+          image: ghcr.io/herenn/infralens/frontend:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

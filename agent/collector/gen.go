@@ -35,6 +35,12 @@
 //   - kretprobe/tcp_recvmsg      - Track bytes received
 //   - kprobe/tcp_close           - Connection cleanup
 //   - kretprobe/inet_csk_accept  - Inbound connections (accept)
+//   - kprobe/udp_sendmsg         - UDP IPv4 flow discovery + bytes sent
+//   - kprobe/udpv6_sendmsg       - UDP IPv6 flow discovery + bytes sent
+//   - kprobe/udp_recvmsg         - Store socket for UDP recv tracking
+//   - kretprobe/udp_recvmsg      - UDP bytes received
+//   - kprobe/udpv6_recvmsg       - Store socket for UDP IPv6 recv tracking
+//   - kretprobe/udpv6_recvmsg    - UDP IPv6 bytes received
 
 package collector
 

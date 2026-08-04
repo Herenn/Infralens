@@ -25,6 +25,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # Default values
 BACKEND_URL=""
 NODE_NAME=$(hostname)
+API_KEY=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -37,18 +38,24 @@ while [[ $# -gt 0 ]]; do
             NODE_NAME="${1#*=}"
             shift
             ;;
+        --api-key=*)
+            API_KEY="${1#*=}"
+            shift
+            ;;
         --help|-h)
             echo "InfraLens Agent Installation"
             echo ""
             echo "Usage:"
-            echo "  sudo bash install-agent.sh --backend=IP:PORT [--node=NAME]"
+            echo "  sudo bash install-agent.sh --backend=IP:PORT [--node=NAME] [--api-key=KEY]"
             echo ""
             echo "Options:"
-            echo "  --backend=IP:PORT   Backend server address (required)"
+            echo "  --backend=IP:PORT   Backend server address or URL (required)"
+            echo "                      Supports https:// URLs, e.g. https://infralens.example.com"
             echo "  --node=NAME         Node name (default: hostname)"
+            echo "  --api-key=KEY       API key if the backend requires authentication"
             echo ""
             echo "Example:"
-            echo "  sudo bash install-agent.sh --backend=192.168.1.100:8080"
+            echo "  sudo bash install-agent.sh --backend=192.168.1.100:8080 --api-key=secret"
             exit 0
             ;;
         *)
@@ -170,6 +177,8 @@ log_success "Agent built: /usr/local/bin/infralens-agent"
 # ============================================
 log_info "Creating systemd service..."
 
+AGENT_ARGS="--backend=${BACKEND_URL} --node=${NODE_NAME} --inspect"
+
 cat > /etc/systemd/system/infralens-agent.service << EOF
 [Unit]
 Description=InfraLens eBPF Agent
@@ -177,13 +186,15 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/infralens-agent --backend=${BACKEND_URL} --node=${NODE_NAME} --inspect
+ExecStart=/usr/local/bin/infralens-agent ${AGENT_ARGS}
+$([ -n "$API_KEY" ] && echo "Environment=INFRALENS_API_KEY=${API_KEY}")
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+chmod 600 /etc/systemd/system/infralens-agent.service
 
 # Reload and start service
 systemctl daemon-reload

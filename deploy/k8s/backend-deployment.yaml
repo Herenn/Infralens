@@ -21,7 +21,7 @@ spec:
       serviceAccountName: infralens-backend
       containers:
         - name: backend
-          image: infralens/backend:latest
+          image: ghcr.io/herenn/infralens/backend:latest
           imagePullPolicy: IfNotPresent
           args:
             - --listen=:8080

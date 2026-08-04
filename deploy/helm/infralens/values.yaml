@@ -33,6 +33,15 @@ backend:
       cpu: 500m
       memory: 512Mi
   
+  # API key for agent -> backend authentication.
+  # When set, ingestion endpoints require this key and agents send it automatically.
+  # Generate one with: openssl rand -hex 32
+  auth:
+    apiKey: ""
+  
+  # Demo mode - simulate a live topology without any agents (for evaluation)
+  demoMode: false
+  
   # AI Documentation Configuration
   ai:
     # OpenAI

@@ -38,6 +38,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            {{- if .Values.backend.auth.apiKey }}
+            - name: INFRALENS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "infralens.fullname" . }}-secrets
+                  key: api-key
+            {{- end }}
           securityContext:
             {{- toYaml .Values.agent.securityContext | nindent 12 }}
           volumeMounts:

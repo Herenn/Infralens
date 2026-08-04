@@ -20,6 +20,12 @@ const (
 	DirectionInbound  = 1 // Server accepted (accept)
 )
 
+// Protocol constants (matching BPF program)
+const (
+	ProtocolTCP = 0
+	ProtocolUDP = 1
+)
+
 // Event struct layout offsets (must match C struct event_t in traffic.c)
 // UNIFIED 64-byte layout
 const (
@@ -30,11 +36,12 @@ const (
 	eventOffsetComm    = 8  // comm (16 bytes)
 	eventOffsetSrcAddr = 24 // src_addr (16 bytes)
 	eventOffsetDstAddr = 40 // dst_addr (16 bytes)
-	eventOffsetFamily  = 56 // family (2 bytes)
-	eventOffsetSrcPort = 58 // src_port (2 bytes)
-	eventOffsetDstPort = 60 // dst_port (2 bytes)
-	eventOffsetPad2    = 62 // _pad2 (2 bytes)
-	eventCommLen       = 16
+	eventOffsetFamily   = 56 // family (2 bytes)
+	eventOffsetSrcPort  = 58 // src_port (2 bytes)
+	eventOffsetDstPort  = 60 // dst_port (2 bytes)
+	eventOffsetProtocol = 62 // protocol (1 byte)
+	eventOffsetPad2     = 63 // _pad2 (1 byte)
+	eventCommLen        = 16
 )
 
 // Event represents a TCP connection event from the BPF program.
@@ -51,16 +58,18 @@ const (
 //	offset 56: family     (2 bytes)  - AF_INET (2) or AF_INET6 (10)
 //	offset 58: src_port   (2 bytes)
 //	offset 60: dst_port   (2 bytes)
-//	offset 62: _pad2      (2 bytes)
+//	offset 62: protocol   (1 byte)   - ProtocolTCP (0) or ProtocolUDP (1)
+//	offset 63: _pad2      (1 byte)
 type Event struct {
-	Direction uint8    // 0 = outbound (connect), 1 = inbound (accept)
-	Pid       uint32   // Process ID
-	Comm      string   // Process name
-	SrcAddr   net.IP   // Source IP address
-	DstAddr   net.IP   // Destination IP address
-	Family    uint16   // Address family: AF_INET (2) or AF_INET6 (10)
-	SrcPort   uint16   // Source port
-	DstPort   uint16   // Destination port (network byte order converted)
+	Direction uint8  // 0 = outbound (connect), 1 = inbound (accept)
+	Pid       uint32 // Process ID
+	Comm      string // Process name
+	SrcAddr   net.IP // Source IP address
+	DstAddr   net.IP // Destination IP address
+	Family    uint16 // Address family: AF_INET (2) or AF_INET6 (10)
+	SrcPort   uint16 // Source port
+	DstPort   uint16 // Destination port (network byte order converted)
+	Protocol  uint8  // ProtocolTCP (0) or ProtocolUDP (1)
 }
 
 // ConnKey is used to identify connections for stats tracking.
@@ -81,7 +90,8 @@ type ConnKey struct {
 //	offset 36: family       (2 bytes)
 //	offset 38: src_port     (2 bytes)
 //	offset 40: dst_port     (2 bytes)
-//	offset 42: _pad         (2 bytes)
+//	offset 42: protocol     (1 byte)
+//	offset 43: _pad         (1 byte)
 //	offset 44: src_addr     (16 bytes)
 //	offset 60: dst_addr     (16 bytes)
 //	offset 76: comm         (16 bytes)
@@ -97,6 +107,7 @@ type ConnStats struct {
 	Family      uint16
 	SrcPort     uint16
 	DstPort     uint16
+	Protocol    uint8
 	SrcAddr     net.IP
 	DstAddr     net.IP
 	Comm        string
@@ -114,7 +125,8 @@ type connStatsRaw struct {
 	Family      uint16
 	SrcPort     uint16
 	DstPort     uint16
-	_pad        uint16
+	Protocol    uint8
+	_pad        uint8
 	SrcAddr     [16]byte
 	DstAddr     [16]byte
 	Comm        [16]byte
@@ -134,6 +146,7 @@ func ParseEvent(data []byte) (*Event, error) {
 	family := binary.LittleEndian.Uint16(data[eventOffsetFamily:])
 	srcPort := binary.LittleEndian.Uint16(data[eventOffsetSrcPort:])
 	dstPort := binary.LittleEndian.Uint16(data[eventOffsetDstPort:])
+	protocol := data[eventOffsetProtocol]
 
 	// Extract comm (null-terminated string)
 	comm := extractComm(data[eventOffsetComm : eventOffsetComm+eventCommLen])
@@ -162,7 +175,16 @@ func ParseEvent(data []byte) (*Event, error) {
 		Family:    family,
 		SrcPort:   srcPort,
 		DstPort:   Ntohs(dstPort),
+		Protocol:  protocol,
 	}, nil
+}
+
+// ProtocolString returns "tcp" or "udp" for the event's protocol.
+func (e *Event) ProtocolString() string {
+	if e.Protocol == ProtocolUDP {
+		return "udp"
+	}
+	return "tcp"
 }
 
 // extractComm extracts a null-terminated string from a byte slice.
