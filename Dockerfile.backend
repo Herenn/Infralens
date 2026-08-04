@@ -2,8 +2,11 @@
 # ============================
 # Multi-stage build for minimal image size
 
-# Build stage
-FROM golang:1.24-bookworm AS builder
+# Build stage - runs natively on the build host and cross-compiles for the
+# target platform (CGO is disabled, so no emulation is needed). Without
+# --platform=$BUILDPLATFORM, arm64 release builds run the whole Go compiler
+# under QEMU and take 15-25 minutes instead of ~2.
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS builder
 
 WORKDIR /app
 
@@ -14,8 +17,10 @@ RUN go mod download
 # Copy backend source
 COPY backend/ ./backend/
 
-# Build
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /infralens-backend ./backend
+# Cross-compile for the target platform
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-w -s" -o /infralens-backend ./backend
 
 # Runtime stage
 FROM gcr.io/distroless/static-debian12:nonroot
