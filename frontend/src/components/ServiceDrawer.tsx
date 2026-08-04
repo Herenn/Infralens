@@ -30,6 +30,7 @@ import {
   Settings
 } from 'lucide-react'
 import { Service, Connection, ServiceInspection, formatBytes, TypeColors } from '../types'
+import { apiUrl } from '../lib/api'
 import MarkdownRenderer from './MarkdownRenderer'
 
 // Format bytes/second to human readable rate
@@ -819,8 +820,7 @@ function AIDocsTab({
   const fetchAIStatus = async () => {
     try {
       setLoading(true)
-      const backendHost = window.location.hostname
-      const resp = await fetch(`http://${backendHost}:8080/api/v1/ai/status`, {
+      const resp = await fetch(apiUrl('/api/v1/ai/status'), {
         signal: AbortSignal.timeout(5000) // 5 second timeout
       })
       const data = await resp.json()
@@ -849,13 +849,11 @@ function AIDocsTab({
         setProvider(null)
         setFromCache(false)
       }
-      const backendHost = window.location.hostname
-      
       // Use AbortController for timeout
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 90000) // 90 second timeout
       
-      const resp = await fetch(`http://${backendHost}:8080/api/v1/ai/docs?serviceId=${encodeURIComponent(serviceId)}`, {
+      const resp = await fetch(apiUrl(`/api/v1/ai/docs?serviceId=${encodeURIComponent(serviceId)}`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -893,13 +891,11 @@ function AIDocsTab({
       setGenerating(true)
       setError(null)
       setAnswer(null)
-      const backendHost = window.location.hostname
-      
       // Use AbortController for timeout
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
       
-      const resp = await fetch(`http://${backendHost}:8080/api/v1/ai/ask?serviceId=${encodeURIComponent(serviceId)}`, {
+      const resp = await fetch(apiUrl(`/api/v1/ai/ask?serviceId=${encodeURIComponent(serviceId)}`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question }),
@@ -930,8 +926,7 @@ function AIDocsTab({
     try {
       setSavingConfig(true)
       setError(null)
-      const backendHost = window.location.hostname
-      const resp = await fetch(`http://${backendHost}:8080/api/v1/ai/config`, {
+      const resp = await fetch(apiUrl('/api/v1/ai/config'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)

@@ -1,10 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Topology } from '../types'
-
-// In development, connect to the backend on the same host but port 8080
-// In production, connect via the same host (assumes reverse proxy)
-const WS_URL = import.meta.env.VITE_WS_URL || 
-  `ws://${window.location.hostname}:8080/api/v1/ws`
+import { wsUrl } from '../lib/api'
 
 const RECONNECT_DELAY = 3000
 
@@ -17,8 +13,9 @@ export function useWebSocket() {
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
-    console.log('Connecting to WebSocket:', WS_URL)
-    const ws = new WebSocket(WS_URL)
+    const url = wsUrl()
+    console.log('Connecting to WebSocket:', url)
+    const ws = new WebSocket(url)
 
     ws.onopen = () => {
       console.log('WebSocket connected')
