@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image } from 'lucide-react'
+import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image, Search, X, FileCode, Share2 } from 'lucide-react'
 import { Stats } from '../types'
 
 interface FilterState {
@@ -15,18 +15,41 @@ interface HeaderProps {
   filters: FilterState
   onFiltersChange: (filters: FilterState) => void
   filteredStats?: Stats
+  searchQuery: string
+  onSearchChange: (query: string) => void
+  searchMatchCount?: number
   onExportPng?: () => void
   onExportJson?: () => void
+  onExportMermaid?: () => void
+  onExportDot?: () => void
 }
 
-export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, onExportPng, onExportJson }: HeaderProps) {
+export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot }: HeaderProps) {
   const [filterDropdownOpen, setFilterDropdownOpen] = useState(false)
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false)
   const filterButtonRef = useRef<HTMLButtonElement>(null)
   const exportButtonRef = useRef<HTMLButtonElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
   
   const displayStats = filteredStats || stats
   const hasFilters = filters.hideLocalhost || filters.minConnections > 1 || filters.collapseExternal
+
+  // Focus search with "/" from anywhere, clear with Escape
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement
+      const inInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
+      if (event.key === '/' && !inInput) {
+        event.preventDefault()
+        searchInputRef.current?.focus()
+      } else if (event.key === 'Escape' && target === searchInputRef.current) {
+        onSearchChange('')
+        searchInputRef.current?.blur()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onSearchChange])
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -86,6 +109,36 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             InfraLens
           </h1>
         </div>
+      </div>
+
+      {/* Search */}
+      <div className="flex items-center">
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-dark-500 pointer-events-none" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Search services...  ( / )"
+            className="w-56 pl-9 pr-8 py-1.5 rounded-lg text-xs bg-dark-800 text-dark-200 border border-dark-700 
+              placeholder:text-dark-500 focus:outline-none focus:border-lens-500/50 focus:ring-1 focus:ring-lens-500/30 transition-all"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => onSearchChange('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300"
+              title="Clear search"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+        {searchQuery && (
+          <span className={`ml-2 text-xs ${searchMatchCount ? 'text-lens-400' : 'text-red-400'}`}>
+            {searchMatchCount || 0} match{searchMatchCount === 1 ? '' : 'es'}
+          </span>
+        )}
       </div>
 
       {/* Filters */}
@@ -218,6 +271,26 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             >
               <FileJson size={16} />
               Export as JSON
+            </button>
+            <button
+              onClick={() => {
+                onExportMermaid?.()
+                setExportDropdownOpen(false)
+              }}
+              className="w-full px-4 py-2.5 text-sm text-left hover:bg-dark-700 transition-colors cursor-pointer text-dark-300 flex items-center gap-2"
+            >
+              <FileCode size={16} />
+              Export as Mermaid
+            </button>
+            <button
+              onClick={() => {
+                onExportDot?.()
+                setExportDropdownOpen(false)
+              }}
+              className="w-full px-4 py-2.5 text-sm text-left hover:bg-dark-700 transition-colors cursor-pointer text-dark-300 flex items-center gap-2"
+            >
+              <Share2 size={16} />
+              Export as DOT
             </button>
           </div>,
           document.body
