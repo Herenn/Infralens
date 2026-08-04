@@ -140,7 +140,9 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            # Releases only run on tag pushes, where is_default_branch is always
+            # false - tag latest unconditionally so compose/Helm defaults work
+            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v5
