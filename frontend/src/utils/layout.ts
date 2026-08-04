@@ -187,7 +187,7 @@ export function layoutGraph(topology: Topology): LayoutResult {
     id: conn.id,
     source: conn.source_id,
     target: conn.target_id,
-    type: 'smoothstep', // Orthogonal routing - cleaner than bezier
+    type: 'connection', // Custom edge with port/protocol/throughput labels
     animated: false,    // Disable animation for cleaner look
     zIndex: 0,          // BEHIND all nodes
     style: {
