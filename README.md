@@ -1,96 +1,86 @@
-# InfraLens 🔍
+<div align="center">
 
+# 🔍 InfraLens
+
+**See every connection in your infrastructure — without touching a single line of code.**
+
+InfraLens uses eBPF to discover and visualize service-to-service communication in real time,
+on Kubernetes clusters and plain Linux servers. No sidecars. No SDKs. No instrumentation.
+
+[![CI](https://github.com/Herenn/Infralens/actions/workflows/ci.yml/badge.svg)](https://github.com/Herenn/Infralens/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/release-v2.0.0-blue)](https://github.com/Herenn/Infralens/releases)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/Herenn/Infralens)](https://go.dev/)
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v2.0.0-blue)](https://github.com/Herenn/Infralens/releases)
+[![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens/stargazers)
 
-**Zero-Instrumentation Observability for Kubernetes & Linux Servers**
-
-InfraLens is a next-generation observability tool that uses eBPF to automatically discover and visualize service-to-service communication in Kubernetes clusters—without requiring any code changes or sidecars.
+[**Try the demo**](#-try-it-in-30-seconds) · [**Install**](#-installation) · [**How it works**](#%EF%B8%8F-how-it-works) · [**Features**](#-features) · [**Contributing**](#-contributing)
 
 ![InfraLens Demo](docs/demo.gif)
 
+</div>
+
+## ⚡ Try It in 30 Seconds
+
+No Linux, no eBPF, no agents — demo mode simulates a realistic multi-node topology with live traffic. Works on macOS, Windows, and Linux:
+
+```bash
+git clone https://github.com/Herenn/Infralens.git
+cd Infralens/deploy/docker-compose
+docker compose -f demo.yml up -d
+```
+
+Open **[http://localhost:3000](http://localhost:3000)** — you'll see servers, services, live throughput, and UDP flows. Click any node to inspect it, press `/` to search.
+
+## 🤔 Why InfraLens?
+
+You inherit a cluster, or your architecture diagram is six months stale, and the question is always the same: *what actually talks to what?* Traditional APM answers it by making you instrument every service. Service-mesh tools answer it if you're willing to run a mesh.
+
+InfraLens answers it from the kernel — deploy the agent, and every TCP connection and UDP flow on the box appears on a live map within seconds.
+
+|  | **InfraLens** | Traditional APM | Service Mesh Observability |
+|---|---|---|---|
+| Code changes required | **None** | SDK in every service | None |
+| Infrastructure required | **One agent per node** | Agents + config per app | Full mesh (sidecars/CNI) |
+| Works outside Kubernetes | **Yes — any Linux server** | Varies | No |
+| Sees non-HTTP traffic (DBs, queues, DNS) | **Yes — TCP + UDP at kernel level** | Only instrumented calls | Mostly yes |
+| Explains unknown services | **Yes — fingerprinting + AI docs** | No | No |
+| Time to first insight | **Seconds** | Days–weeks | Days |
+
 ## 🎯 Features
 
-- **Zero Instrumentation**: No sidecars, no code changes, no SDK integration required
-- **Real-time Topology**: Live visualization of service dependencies using React Flow
-- **eBPF-Powered**: Efficient kernel-level tracing with <1% CPU overhead using `cilium/ebpf`
-- **IPv4 + IPv6**: Full support for both IPv4 (`tcp_v4_connect`) and IPv6 (`tcp_v6_connect`)
-- **TCP + UDP**: UDP flow tracing (`udp_sendmsg`) surfaces DNS, StatsD, syslog, and more
-- **Ingress Visibility**: Detect external incoming connections via `inet_csk_accept` tracing
-- **Network Throughput**: Real-time bytes/packets sent/received with rate calculations
-- **Service Fingerprinting**: Automatic technology detection (PostgreSQL, Redis, Nginx, etc.) based on ports and process names
-- **Host Resource Monitoring**: Live CPU & RAM usage per server with color-coded status bars
-- **Visual Grouping**: Services grouped by physical/virtual server with infrastructure-style layout
-- **Kubernetes Native**: Deploys as a DaemonSet with full RBAC support
-- **K8s Service Discovery**: Automatic IP → Pod/Service name resolution using `client-go` informers
-- **Multi-Node Support**: Agents on multiple servers report to a central backend
-- **CO-RE Compatible**: Compile Once – Run Everywhere across kernel versions 5.8+
-- **Deep Inspection**: Protocol probing for HTTP, PostgreSQL, MySQL, Redis, MongoDB
-- **Dependency Discovery**: Auto-detect package.json, go.mod, requirements.txt
-- **Smart Code Analysis**: Automatic source code discovery with line number references
-- **AI Documentation**: Multi-provider AI support with intelligent service documentation
-- **Auto-Update**: Agents automatically check for updates and self-update
-- **Cached AI Docs**: AI documentation persists in browser - no regeneration needed
+**See everything**
+- 🕸️ **Live topology map** — services grouped by server, edges showing real-time throughput, rendered with React Flow
+- 🌐 **TCP + UDP, IPv4 + IPv6** — outbound, inbound, and UDP flows (DNS, StatsD, syslog) traced at the kernel with <1% CPU overhead
+- 📊 **Host metrics** — per-server CPU/RAM bars, bytes/packets per connection with live rates
 
-### New in v2.0.0
+**Understand it**
+- 🔎 **Service fingerprinting** — PostgreSQL, Redis, Nginx, Kafka, and dozens more identified from ports and process names
+- 🧠 **AI-generated docs** — click any service and get architecture, security, and performance analysis (OpenAI, Anthropic, Gemini, or fully local via Ollama/LM Studio)
+- 🔬 **Deep inspection** — protocol probing (HTTP headers, DB handshakes), dependency discovery from `package.json`/`go.mod`/`requirements.txt`
+- ⌨️ **Search & export** — find any node instantly (`/`), export the graph as PNG, JSON, Mermaid, or Graphviz DOT
 
-- **Demo Mode**: Try InfraLens in 30 seconds without Linux, eBPF, or agents (`DEMO_MODE=true`)
-- **UDP Tracing**: DNS, StatsD, and other UDP flows with dashed edges and protocol badges
-- **Topology Search**: Find services by name, IP, technology, or node (press `/`)
-- **Delta WebSocket Updates**: Incremental updates instead of full snapshots every 2s
-- **Graph Export**: Export topology as Mermaid or Graphviz DOT (plus PNG/JSON)
-- **Working Agent Auth**: `--api-key` / `INFRALENS_API_KEY` on the agent + HTTPS backend URLs
-- **Proxy-Friendly Frontend**: Same-origin API/WebSocket URLs work behind any ingress/TLS
+**Run it anywhere**
+- ☸️ **Kubernetes native** — DaemonSet + RBAC, automatic IP → Pod/Service name resolution via `client-go` informers
+- 🖥️ **Plain Linux servers** — one-line installer, systemd service, multi-node agents reporting to one backend
+- 🔒 **Production ready** — API-key agent auth, HTTPS support, SQLite/PostgreSQL persistence, Prometheus `/metrics`, CO-RE portability across kernels 5.8+
 
-### Production Features
+<details>
+<summary><b>What's new in v2.0.0</b></summary>
 
-- **Persistent Storage**: SQLite/PostgreSQL for data persistence across restarts
-- **Auto-Pruning**: Automatic cleanup of stale services and connections
-- **API Key Authentication**: Secure agent-to-backend communication
-- **Configurable CORS**: Environment-based CORS origin configuration
-- **Event Bus**: Real-time event system for WebSocket optimization
-- **Modular Architecture**: Clean separation of concerns with service layer
-- **Prometheus Metrics**: Full observability with `/metrics` endpoint
-- **Dual-Stack Networking**: Complete IPv4 + IPv6 support
+- **Demo mode** — try InfraLens without Linux/eBPF/agents (`DEMO_MODE=true`)
+- **UDP tracing** — DNS, StatsD, and other UDP flows with dashed edges and protocol badges
+- **Topology search** — by name, IP, technology, or node
+- **Delta WebSocket updates** — incremental updates instead of full snapshots every 2s
+- **Graph export** — Mermaid and Graphviz DOT
+- **Working agent auth** — `--api-key` / `INFRALENS_API_KEY` + HTTPS backend URLs
+- **Proxy-friendly frontend** — same-origin URLs work behind any ingress/TLS
 
-## 🤖 AI-Powered Documentation
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
-InfraLens includes a powerful AI documentation system that generates comprehensive service documentation by analyzing:
+</details>
 
-- **Source Code**: Reads README, Dockerfile, main entry files, and package manifests
-- **Network Topology**: Understands service connections and dependencies
-- **Deep Inspection**: Protocol-level service detection
-- **Runtime Metrics**: CPU, memory, and throughput data
-
-> 🔒 **Privacy First**: Only specific non-sensitive files (README, Dockerfile, package.json) are analyzed for context. Source code is sent to AI only on-demand and is **never stored permanently**. Sensitive data like `.env` files and secrets are automatically excluded.
-
-### Generated Documentation Includes
-
-| Section | Description |
-|---------|-------------|
-| 🎯 **What This Service Does** | Purpose and functionality explanation |
-| 🛠️ **Technical Stack** | Languages, frameworks, and dependencies |
-| 🏗️ **Architecture & Data Flow** | Service role and communication patterns |
-| 📂 **Code Analysis** | Key files and functions with line numbers |
-| 🌐 **Network Behavior** | Ports, protocols, and connections |
-| 🛡️ **Security Considerations** | Vulnerabilities and recommendations |
-| ⚡ **Performance & Reliability** | Resource usage and scaling insights |
-| 📋 **Recommendations** | Actionable improvement suggestions |
-
-### Supported AI Providers
-
-| Provider | Type | Default Model | Configuration |
-|----------|------|---------------|---------------|
-| **OpenAI** | Cloud | GPT-3.5-turbo | API Key |
-| **Anthropic** | Cloud | Claude 3 Haiku | API Key |
-| **Google Gemini** | Cloud | Gemini Pro | API Key |
-| **Ollama** | Local | Llama2 | Server URL |
-| **LM Studio** | Local | Any compatible | Server URL |
-
-## 🏗️ Architecture
+## 🏗️ How It Works
 
 ```mermaid
 flowchart TB
@@ -101,7 +91,7 @@ flowchart TB
     end
 
     subgraph ebpf["Kernel Space"]
-        trace[eBPF Probes<br/>tcp_connect / accept / send / recv]
+        trace[eBPF Probes<br/>tcp_connect / accept / send / recv / udp_sendmsg]
     end
 
     subgraph agent["InfraLens Agent"]
@@ -112,7 +102,7 @@ flowchart TB
 
     subgraph backend["InfraLens Backend"]
         api[REST API]
-        ws[WebSocket]
+        ws[WebSocket<br/>delta updates]
         db[(SQLite/Postgres)]
         ai[AI Providers]
     end
@@ -127,139 +117,85 @@ flowchart TB
     backend <-->|real-time| frontend
 ```
 
-<details>
-<summary>ASCII Diagram (for non-GitHub viewers)</summary>
+1. **Agent** (one per node) attaches eBPF probes to kernel functions like `tcp_v4_connect` and `udp_sendmsg`, capturing every connection with process context — no packet capture, no proxies.
+2. **Backend** aggregates events from all agents, resolves Kubernetes IPs to Pod/Service names, fingerprints services, and persists to SQLite or PostgreSQL.
+3. **Frontend** renders the live topology over a delta-based WebSocket, with search, filters, drill-down drawers, and AI documentation.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Your Infrastructure                       │
-│  ┌─────────┐     ┌─────────┐     ┌─────────┐                │
-│  │ Service │────▶│ Service │────▶│ Service │                │
-│  │    A    │     │    B    │     │    C    │                │
-│  └─────────┘     └─────────┘     └─────────┘                │
-│        │              │              │                       │
-│        └──────────────┼──────────────┘                       │
-│              eBPF Tracing (kernel)                           │
-│                       │                                      │
-│  ┌────────────────────┴─────────────────────────────────┐   │
-│  │                 InfraLens Agent                       │   │
-│  │  (DaemonSet on each node)                            │   │
-│  └──────────────────────┬───────────────────────────────┘   │
-│                         │                                    │
-│  ┌──────────────────────┴───────────────────────────────┐   │
-│  │              InfraLens Backend                        │   │
-│  │  (SQLite/Postgres + AI + WebSocket)                  │   │
-│  └──────────────────────┬───────────────────────────────┘   │
-│                         │                                    │
-│  ┌──────────────────────┴───────────────────────────────┐   │
-│  │              InfraLens Frontend                       │   │
-│  │  (React Flow Topology Visualization)                 │   │
-│  └──────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
+## 🚀 Installation
 
-</details>
-
-## 🚀 Quick Start
-
-### Try It in 30 Seconds (Demo Mode)
-
-No Linux, no eBPF, no agents required — the backend simulates a realistic multi-node topology with live traffic:
-
-```bash
-git clone https://github.com/Herenn/Infralens.git
-cd Infralens/deploy/docker-compose
-docker compose -f demo.yml up -d
-```
-
-Open [http://localhost:3000](http://localhost:3000) and explore the live topology. Works on macOS, Windows, and Linux.
-
-You can also enable demo mode on any backend with `DEMO_MODE=true`.
-
-### Option 1: One-Line Install (Linux Servers)
-
-**Full Stack (Main Server):**
-```bash
-curl -sSL https://raw.githubusercontent.com/Herenn/Infralens/main/scripts/install-full.sh | sudo bash
-```
-
-**Agent Only (Additional Servers):**
-```bash
-curl -sSL https://raw.githubusercontent.com/Herenn/Infralens/main/scripts/install-agent.sh | sudo bash -s -- --backend=YOUR_BACKEND_IP:8080
-```
-
-### Option 2: Helm (Kubernetes)
+### Kubernetes (Helm)
 
 ```bash
 helm install infralens ./deploy/helm/infralens -n infralens --create-namespace \
-  --set ai.openai.apiKey="sk-..." \
-  --set ingress.enabled=true
+  --set ingress.enabled=true \
+  --set backend.auth.apiKey="$(openssl rand -hex 32)"
 ```
 
-### Option 3: Docker Compose (Development)
+### Linux Servers (one-liner)
+
+```bash
+# Full stack (main server)
+curl -sSL https://raw.githubusercontent.com/Herenn/Infralens/main/scripts/install-full.sh | sudo bash
+
+# Agent only (each additional server)
+curl -sSL https://raw.githubusercontent.com/Herenn/Infralens/main/scripts/install-agent.sh | sudo bash -s -- --backend=YOUR_BACKEND_IP:8080
+```
+
+### Docker Compose
 
 ```bash
 cd deploy/docker-compose
-cp env.example .env
-# Edit .env with your API keys
-docker-compose up -d
+cp env.example .env   # optional: API keys, auth
+docker compose up -d
 ```
 
-Access the dashboard at `http://localhost:3000`
+Dashboard: `http://localhost:3000`
 
-## 📁 Project Structure
+> **Requirements for real tracing:** Linux kernel 5.8+ with BTF (`ls /sys/kernel/btf/vmlinux` must exist — default on Ubuntu 20.04+, Debian 11+, Fedora 31+). The agent is CO-RE: compile once, run on any supported kernel. No kernel requirements for [demo mode](#-try-it-in-30-seconds).
 
-```
-infralens/
-├── agent/                    # eBPF Agent
-│   ├── main.go              # Entry point
-│   ├── bpf/                 # BPF C programs
-│   │   ├── traffic.c        # Main tracer (CO-RE)
-│   │   └── headers/         # vmlinux.h + libbpf
-│   ├── collector/           # BPF Go bindings
-│   │   ├── gen.go           # go:generate directive
-│   │   ├── collector.go     # Event collection
-│   │   └── types.go         # Event/Stats types
-│   ├── inspector/           # Deep inspection
-│   ├── metrics/             # Host monitoring
-│   └── updater/             # Auto-update
-│
-├── backend/                  # Backend Server
-│   ├── api/                 # HTTP handlers
-│   ├── service/             # Business logic
-│   ├── storage/             # SQLite/Postgres
-│   ├── k8s/                 # K8s watcher
-│   └── pkg/llm/             # AI providers
-│
-├── frontend/                 # React Dashboard
-│   ├── src/components/      # UI components
-│   └── src/hooks/           # WebSocket hook
-│
-├── deploy/                   # Deployment configs
-│   ├── helm/                # Helm chart
-│   ├── docker-compose/      # Docker Compose
-│   └── k8s/                 # Kustomize
-│
-└── scripts/                  # Installation scripts
-```
+## 🤖 AI-Powered Documentation
+
+Click any service → **AI Docs** → get a generated explanation of what the service does, its tech stack, network behavior, security considerations, and recommendations — built from its network topology, protocol probes, runtime metrics, and (optionally) project files like README and Dockerfile.
+
+| Provider | Type | Default Model |
+|----------|------|---------------|
+| OpenAI | Cloud | GPT-3.5-turbo |
+| Anthropic | Cloud | Claude 3 Haiku |
+| Google Gemini | Cloud | Gemini Pro |
+| Ollama | **Local** | Llama2 |
+| LM Studio | **Local** | Any compatible |
+
+> 🔒 **Privacy first**: only non-sensitive files (README, Dockerfile, package manifests) are used for context, on-demand, never stored. `.env` files and secrets are always excluded. Use Ollama/LM Studio to keep everything on your own hardware.
 
 ## ⚙️ Configuration
 
-### All Environment Variables
+Common settings (see the full reference below):
 
 ```bash
-# ═══════════════════════════════════════════════════════════════════
-# SERVER CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════
+DEMO_MODE=true                  # Simulated topology, no agents needed
+DB_DRIVER=postgres              # sqlite (default) or postgres
+API_KEY=$(openssl rand -hex 32) # Require agent authentication
+CORS_ORIGINS=https://infralens.example.com
+```
+
+Agents authenticate with `--api-key` (or `INFRALENS_API_KEY`) and support HTTPS backends:
+
+```bash
+sudo ./infralens-agent --backend=https://infralens.example.com --api-key="your-secret-key"
+```
+
+<details>
+<summary><b>All environment variables</b></summary>
+
+```bash
+# ── Server ──────────────────────────────────────────────
 LISTEN_ADDR=:8080              # HTTP listen address
 DEBUG=false                    # Enable debug logging
 DEMO_MODE=false                # Simulate a live topology (no agents needed)
 READ_TIMEOUT=15s               # HTTP read timeout
 WRITE_TIMEOUT=15s              # HTTP write timeout
 
-# ═══════════════════════════════════════════════════════════════════
-# DATABASE
-# ═══════════════════════════════════════════════════════════════════
+# ── Database ────────────────────────────────────────────
 DB_DRIVER=sqlite               # Database driver: sqlite or postgres
 DB_DSN=infralens.db            # SQLite: file path, Postgres: connection string
 DB_AUTO_MIGRATE=true           # Run migrations on startup
@@ -267,229 +203,119 @@ DB_MAX_OPEN_CONNS=25           # Max open connections (default: 1 for SQLite, 25
 DB_MAX_IDLE_CONNS=5            # Max idle connections
 DB_CONN_MAX_LIFETIME=5m        # Connection max lifetime
 
-# ═══════════════════════════════════════════════════════════════════
-# DATA PRUNING (Auto-cleanup of stale data)
-# ═══════════════════════════════════════════════════════════════════
-PRUNE_INTERVAL=5m              # How often to prune (0 to disable)
+# ── Data pruning ────────────────────────────────────────
+PRUNE_INTERVAL=5m              # How often to prune stale data (0 to disable)
 PRUNE_MAX_AGE=30m              # Delete data older than this
 
-# ═══════════════════════════════════════════════════════════════════
-# SECURITY
-# ═══════════════════════════════════════════════════════════════════
+# ── Security ────────────────────────────────────────────
 API_KEY=                       # API key for agent auth (empty = disabled)
 API_KEY_HEADER=X-API-Key       # Header name for API key
 CORS_ORIGINS=*                 # Comma-separated allowed origins
 CORS_CREDENTIALS=true          # Allow credentials in CORS
 
-# ═══════════════════════════════════════════════════════════════════
-# AI PROVIDERS
-# ═══════════════════════════════════════════════════════════════════
+# ── AI providers ────────────────────────────────────────
 OPENAI_API_KEY=sk-...          # OpenAI API key
-OPENAI_MODEL=gpt-3.5-turbo     # OpenAI model
+OPENAI_MODEL=gpt-3.5-turbo
 ANTHROPIC_API_KEY=sk-ant-...   # Anthropic API key
 ANTHROPIC_MODEL=claude-3-haiku-20240307
 GEMINI_API_KEY=AIza...         # Google Gemini API key
 GEMINI_MODEL=gemini-pro
-OLLAMA_URL=http://localhost:11434  # Ollama server URL
+OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=llama2
-LMSTUDIO_URL=http://localhost:1234 # LM Studio server URL
+LMSTUDIO_URL=http://localhost:1234
 LMSTUDIO_MODEL=
-DEFAULT_LLM_PROVIDER=openai    # Default AI provider
+DEFAULT_LLM_PROVIDER=openai
 ```
 
-### Security Configuration
+</details>
 
-#### API Key Authentication
+<details>
+<summary><b>Security details: protected endpoints, CORS, databases</b></summary>
 
-Protect agent ingestion endpoints with API key authentication:
-
-```bash
-# Generate a secure API key
-export API_KEY=$(openssl rand -hex 32)
-
-# Configure backend
-export API_KEY="your-secret-api-key"
-
-# Configure agents to use the key (flag or INFRALENS_API_KEY env var)
-sudo ./infralens-agent --backend=server:8080 --api-key="your-secret-api-key"
-sudo INFRALENS_API_KEY="your-secret-api-key" ./infralens-agent --backend=server:8080
-```
-
-The agent also supports HTTPS backends behind a TLS-terminating proxy:
-
-```bash
-sudo ./infralens-agent --backend=https://infralens.example.com --api-key="your-secret-api-key"
-```
-
-**Protected endpoints (when API_KEY is set):**
-- `POST /api/v1/events`
-- `POST /api/v1/stats`
-- `POST /api/v1/metrics`
-- `POST /api/v1/inspection`
+**Protected endpoints (when `API_KEY` is set):**
+`POST /api/v1/events`, `/api/v1/stats`, `/api/v1/metrics`, `/api/v1/inspection`
 
 **Public endpoints (always accessible):**
-- `GET /api/v1/topology`
-- `GET /api/v1/services`
-- `GET /api/v1/ws` (WebSocket)
-- `GET /health`, `GET /ready`
+`GET /api/v1/topology`, `/api/v1/services`, `/api/v1/ws` (WebSocket), `/health`, `/ready`
 
-#### CORS Configuration
+**CORS:**
 
 ```bash
-# Development (allow all)
-export CORS_ORIGINS="*"
-
-# Production (specific origins)
-export CORS_ORIGINS="https://infralens.example.com,https://admin.example.com"
+export CORS_ORIGINS="*"                                    # development
+export CORS_ORIGINS="https://infralens.example.com"        # production
 ```
 
-### Database Configuration
-
-InfraLens supports SQLite (default) and PostgreSQL.
-
-#### SQLite (Default - Development/Single-Node)
+**Databases:**
 
 ```bash
+# SQLite (default - development/single node)
 export DB_DRIVER=sqlite
 export DB_DSN=infralens.db
-```
 
-#### PostgreSQL (Production/High-Volume)
-
-```bash
+# PostgreSQL (production/high volume)
 export DB_DRIVER=postgres
 export DB_DSN="postgres://user:password@localhost:5432/infralens?sslmode=disable"
-export DB_MAX_OPEN_CONNS=25
-export DB_MAX_IDLE_CONNS=5
 ```
 
-### AI Configuration
+</details>
 
-1. Click on any service node in the topology view
-2. Go to the "AI Docs" tab
-3. Click the ⚙️ Settings icon
-4. Enter your API keys
-5. Save configuration
+## 🔬 Under the Hood
 
-Supports: OpenAI, Anthropic Claude, Google Gemini, Ollama (local), LM Studio
+### eBPF Probes
 
-## 🔬 eBPF Probes
+| Probe | Purpose | Direction |
+|-------|---------|-----------|
+| `kprobe(+ret)/tcp_v4_connect` | Outbound IPv4 connections | Outbound |
+| `kprobe(+ret)/tcp_v6_connect` | Outbound IPv6 connections | Outbound |
+| `kretprobe/inet_csk_accept` | Accepted (incoming) connections | **Inbound** |
+| `kprobe/tcp_sendmsg` | Bytes sent | Throughput |
+| `kprobe(+ret)/tcp_recvmsg` | Bytes received | Throughput |
+| `kprobe/tcp_close` | Connection cleanup | Cleanup |
+| `kprobe/udp_sendmsg` / `udpv6_sendmsg` | UDP flow discovery + bytes sent | **UDP** |
+| `kprobe(+ret)/udp_recvmsg` / `udpv6_recvmsg` | UDP bytes received | **UDP** |
 
-InfraLens uses the following kernel probes to capture network activity:
+Events carry a `direction` (`0` outbound / `1` inbound) and a `protocol` (`tcp`/`udp`) field. UDP flows are discovered on first send — for unconnected sockets the destination is read from the syscall's `msg_name`. In the UI, UDP edges render dashed with an amber `UDP` badge.
 
-| Probe | Hook Point | Purpose | Direction |
-|-------|------------|---------|-----------|
-| `kprobe/tcp_v4_connect` | Entry | Store socket for IPv4 outbound | Outbound |
-| `kretprobe/tcp_v4_connect` | Return | Capture IPv4 connection details | Outbound |
-| `kprobe/tcp_v6_connect` | Entry | Store socket for IPv6 outbound | Outbound |
-| `kretprobe/tcp_v6_connect` | Return | Capture IPv6 connection details | Outbound |
-| `kretprobe/inet_csk_accept` | Return | Capture accepted (incoming) connections | **Inbound** |
-| `kprobe/tcp_sendmsg` | Entry | Track bytes sent | Throughput |
-| `kprobe/tcp_recvmsg` | Entry | Store socket for recv tracking | Throughput |
-| `kretprobe/tcp_recvmsg` | Return | Track bytes received | Throughput |
-| `kprobe/tcp_close` | Entry | Update connection timestamps | Cleanup |
-| `kprobe/udp_sendmsg` | Entry | Discover UDP IPv4 flows + bytes sent | **UDP** |
-| `kprobe/udpv6_sendmsg` | Entry | Discover UDP IPv6 flows + bytes sent | **UDP** |
-| `kprobe(+ret)/udp_recvmsg` | Entry+Return | Track UDP bytes received | **UDP** |
-| `kprobe(+ret)/udpv6_recvmsg` | Entry+Return | Track UDP IPv6 bytes received | **UDP** |
-
-### Event Direction
-
-Events include a `direction` field to distinguish traffic flow:
-- `0` = **Outbound** (connect): Local process initiated connection to remote
-- `1` = **Inbound** (accept): Remote client connected to local server
-
-### Event Protocol
-
-Events and connections include a `protocol` field (`tcp` or `udp`). UDP flows
-are discovered on first send (there is no handshake to hook); for unconnected
-sockets the destination is read from the syscall's `msg_name`. In the UI, UDP
-edges render dashed with an amber `UDP` badge.
-
-## 🔍 Deep Inspection
-
-InfraLens performs protocol-aware deep inspection to understand services beyond just network connections:
+### Deep Inspection
 
 | Service Type | Detection Method | Data Collected |
 |--------------|------------------|----------------|
-| **HTTP Services** | Probe `/`, `/health`, `/metrics` | Server header, endpoints, health status |
+| **HTTP services** | Probe `/`, `/health`, `/metrics` | Server header, endpoints, health |
 | **PostgreSQL** | SSL request handshake | Version, connection status |
 | **MySQL** | Protocol greeting packet | Version string |
 | **Redis** | PING command | Connection status |
 | **MongoDB** | Wire protocol | Connection status |
-| **Node.js** | `package.json` parsing | Dependencies, frameworks |
-| **Python** | `requirements.txt` parsing | Dependencies |
-| **Go** | `go.mod` parsing | Module dependencies |
+| **Node.js / Python / Go** | `package.json` / `requirements.txt` / `go.mod` | Dependencies, frameworks |
 
-### Smart Code Analysis
+Inspection is **read-only** by design: environment variable *names* only (never values), config file *names* only, `.env` and secrets always excluded, file reads capped at 50KB/200 lines.
 
-The agent automatically discovers and reads project files for AI context:
+<details>
+<summary><b>Project structure</b></summary>
 
-| File Type | Purpose |
-|-----------|---------|
-| `README.md` | Project documentation |
-| `Dockerfile` | Container configuration |
-| `package.json` / `go.mod` / `requirements.txt` | Dependencies |
-| `main.go` / `app.py` / `index.js` | Entry points |
-
-### Security-First Approach
-
-- **Read-only access** - No modifications to filesystem
-- **Environment variable names only** - Values are never collected
-- **Config file names only** - Contents are never read (except for AI context)
-- **No secrets exposure** - Designed for production safety
-- **Limited file sizes** - Max 50KB per file, 200 lines max
-
-## 🔧 Development
-
-### Prerequisites
-
-- **Linux kernel 5.8+** with **BTF enabled** (`CONFIG_DEBUG_INFO_BTF=y`)
-  - ⚠️ Check BTF: `ls /sys/kernel/btf/vmlinux` - file must exist
-  - Ubuntu 20.04+, Debian 11+, Fedora 31+ have BTF by default
-- Go 1.24+
-- clang/LLVM (for BPF compilation)
-- Node.js 18+ (for frontend)
-
-### Build from Source
-
-```bash
-# Clone
-git clone https://github.com/Herenn/Infralens.git
-cd infralens
-
-# Generate BPF bindings (Linux only)
-cd agent/collector && go generate ./...
-
-# Build
-cd ../.. 
-go build -o infralens-agent ./agent
-go build -o infralens-backend ./backend
-
-# Frontend
-cd frontend && npm install && npm run build
+```
+infralens/
+├── agent/                    # eBPF Agent
+│   ├── main.go              # Entry point
+│   ├── bpf/                 # BPF C programs (traffic.c, CO-RE headers)
+│   ├── collector/           # BPF Go bindings + event parsing
+│   ├── inspector/           # Deep inspection
+│   ├── metrics/             # Host monitoring
+│   └── updater/             # Auto-update
+├── backend/                  # Backend Server
+│   ├── api/                 # HTTP handlers
+│   ├── service/             # Business logic (+ demo simulator)
+│   ├── storage/             # SQLite/Postgres
+│   ├── k8s/                 # K8s watcher
+│   └── pkg/llm/             # AI providers
+├── frontend/                 # React Dashboard (React Flow + Tailwind)
+├── deploy/                   # Helm chart, Docker Compose, Kustomize
+└── scripts/                  # Installation scripts
 ```
 
-## 🐛 Troubleshooting
+</details>
 
-### "undefined: bpfObjects"
-
-Generate BPF bindings first:
-```bash
-cd agent/collector && go generate ./...
-```
-
-### "no BTF found for kernel"
-
-Your kernel needs BTF support. Check: `ls /sys/kernel/btf/vmlinux`
-
-### macOS Development
-
-eBPF requires Linux. Use a Linux VM or remote server for testing.
-
-## 📡 API Reference
-
-### Backend API (Port 8080)
+<details>
+<summary><b>API reference</b></summary>
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -497,56 +323,84 @@ eBPF requires Linux. Use a Linux VM or remote server for testing.
 | `/api/v1/stats` | POST | Receive throughput stats from agents |
 | `/api/v1/metrics` | POST | Receive host metrics (CPU/RAM) from agents |
 | `/api/v1/inspection` | POST | Receive deep inspection data from agents |
-| `/api/v1/topology` | GET | Get current service topology with node metrics |
+| `/api/v1/topology` | GET | Current service topology with node metrics |
 | `/api/v1/topology/export` | GET | Export topology as Mermaid or DOT (`?format=mermaid\|dot`) |
 | `/api/v1/services` | GET | List all discovered services |
-| `/api/v1/services/{id}` | GET | Get service details |
-| `/api/v1/ws` | WebSocket | Real-time topology updates |
-| `/api/v1/graph/stats` | GET | Get graph statistics |
-| `/api/v1/k8s/status` | GET | K8s watcher status (pods/services cached) |
-| `/api/v1/ai/status` | GET | AI provider configuration status |
-| `/api/v1/ai/config` | POST | Configure AI providers |
-| `/api/v1/ai/docs` | POST | Generate AI documentation |
-| `/api/v1/ai/ask` | POST | Ask AI questions about services |
-| `/api/v1/ai/providers` | GET | List available AI providers |
+| `/api/v1/services/{id}` | GET | Service details |
+| `/api/v1/ws` | WebSocket | Real-time topology updates (snapshot + deltas) |
+| `/api/v1/graph/stats` | GET | Graph statistics |
+| `/api/v1/k8s/status` | GET | K8s watcher status |
+| `/api/v1/ai/*` | GET/POST | AI status, config, docs generation, Q&A |
 | `/api/v1/version` | GET | Backend version info |
-| `/metrics` | GET | Prometheus metrics endpoint |
-| `/health` | GET | Health check |
-| `/ready` | GET | Readiness check |
+| `/metrics` | GET | Prometheus metrics |
+| `/health`, `/ready` | GET | Health/readiness checks |
+
+</details>
+
+## 🔧 Development
+
+```bash
+git clone https://github.com/Herenn/Infralens.git
+cd Infralens
+
+# Generate BPF bindings (Linux only, needs clang/LLVM)
+cd agent/collector && go generate ./... && cd ../..
+
+# Build
+go build -o infralens-agent ./agent
+go build -o infralens-backend ./backend
+
+# Frontend
+cd frontend && npm install && npm run dev
+```
+
+**Prerequisites:** Go 1.24+, clang/LLVM, Node.js 20+. For agent testing: Linux kernel 5.8+ with BTF.
+
+**No Linux machine?** Run the backend with `DEMO_MODE=true` and develop the frontend against simulated data.
+
+<details>
+<summary><b>Troubleshooting</b></summary>
+
+**"undefined: bpfObjects"** — generate BPF bindings first: `cd agent/collector && go generate ./...`
+
+**"no BTF found for kernel"** — your kernel needs BTF support; check `ls /sys/kernel/btf/vmlinux`
+
+**macOS development** — eBPF requires Linux; use a VM, a remote server, or demo mode.
+
+</details>
 
 ## 🛣️ Roadmap
 
-### Completed ✅
-
-- eBPF-based TCP tracing (IPv4 + IPv6)
-- Real-time topology visualization
-- Network throughput monitoring
-- Kubernetes integration
-- Multi-provider AI documentation
-- SQLite/PostgreSQL persistence
-- Production-ready modular architecture
-- UDP tracing (v2.0)
-- Delta-based WebSocket updates (v2.0)
-- Graph export: Mermaid + DOT (v2.0)
-- Demo mode & topology search (v2.0)
-
-### Planned
-
-- Historical time-series storage & time-travel view
-- Anomaly detection & alerting
-- Service mesh integration
-- HTTP-level (L7) request tracing
+- [x] eBPF TCP tracing (IPv4 + IPv6) with throughput
+- [x] Kubernetes service discovery & real-time topology
+- [x] Multi-provider AI documentation
+- [x] SQLite/PostgreSQL persistence
+- [x] UDP tracing *(v2.0)*
+- [x] Delta-based WebSocket updates *(v2.0)*
+- [x] Demo mode, topology search, Mermaid/DOT export *(v2.0)*
+- [ ] Historical time-series storage & time-travel view
+- [ ] Anomaly detection & alerting
+- [ ] HTTP-level (L7) request tracing
+- [ ] Service mesh integration
 
 ## 🤝 Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are very welcome — this project is young and there's a lot of interesting work to pick up, from eBPF probes to React Flow UX. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started, or open an issue to discuss an idea first.
 
 ## 📄 License
 
-Apache License 2.0 - see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE).
 
 ## 🙏 Acknowledgments
 
-- [cilium/ebpf](https://github.com/cilium/ebpf) - Pure Go eBPF library
-- [React Flow](https://reactflow.dev/) - Graph visualization
-- [Hubble](https://github.com/cilium/hubble) - Inspiration
+- [cilium/ebpf](https://github.com/cilium/ebpf) — pure Go eBPF library
+- [React Flow](https://reactflow.dev/) — graph visualization
+- [Hubble](https://github.com/cilium/hubble) — inspiration
+
+---
+
+<div align="center">
+
+**If InfraLens saved you an afternoon of spelunking through your infrastructure, consider giving it a ⭐ — it helps others find the project.**
+
+</div>
