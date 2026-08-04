@@ -22,7 +22,7 @@ spec:
       hostNetwork: true
       containers:
         - name: agent
-          image: infralens-agent:latest
+          image: ghcr.io/herenn/infralens/agent:latest
           imagePullPolicy: Never
           args:
             - --backend=infralens-backend.infralens.svc.cluster.local:8080

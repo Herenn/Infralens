@@ -18,6 +18,12 @@ tools/demo/demo-traffic
 *.out
 go.work
 
+# Local SQLite databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # Generated eBPF files
 agent/collector/bpf_*.go
 agent/collector/bpf_*.o

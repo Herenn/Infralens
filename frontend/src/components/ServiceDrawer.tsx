@@ -872,13 +872,14 @@ function AIDocsTab({
       
       // Cache the docs
       cacheDocs(serviceId, data.content, data.provider || '')
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
+    } catch (err) {
+      const e = err as Error
+      if (e.name === 'AbortError') {
         setError('Request timed out. The service has too much data - try a simpler service.')
-      } else if (err.message === 'Failed to fetch') {
+      } else if (e.message === 'Failed to fetch') {
         setError('Network error: Could not reach backend. Check if backend is running.')
       } else {
-        setError(err.message || 'Failed to generate documentation')
+        setError(e.message || 'Failed to generate documentation')
       }
     } finally {
       setGenerating(false)
@@ -909,13 +910,14 @@ function AIDocsTab({
       }
       const data = await resp.json()
       setAnswer(data.content)
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
+    } catch (err) {
+      const e = err as Error
+      if (e.name === 'AbortError') {
         setError('Request timed out. Try a shorter question.')
-      } else if (err.message === 'Failed to fetch') {
+      } else if (e.message === 'Failed to fetch') {
         setError('Network error: Could not reach backend.')
       } else {
-        setError(err.message || 'Failed to get answer')
+        setError(e.message || 'Failed to get answer')
       }
     } finally {
       setGenerating(false)
@@ -937,8 +939,8 @@ function AIDocsTab({
       }
       await fetchAIStatus()
       setShowSettings(false)
-    } catch (err: any) {
-      setError(err.message || 'Failed to save configuration')
+    } catch (err) {
+      setError((err as Error).message || 'Failed to save configuration')
     } finally {
       setSavingConfig(false)
     }

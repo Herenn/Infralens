@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/badge/release-v1.0.0-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v2.0.0-blue)](https://github.com/Herenn/Infralens/releases)
 
 **Zero-Instrumentation Observability for Kubernetes & Linux Servers**
 
@@ -18,6 +18,7 @@ InfraLens is a next-generation observability tool that uses eBPF to automaticall
 - **Real-time Topology**: Live visualization of service dependencies using React Flow
 - **eBPF-Powered**: Efficient kernel-level tracing with <1% CPU overhead using `cilium/ebpf`
 - **IPv4 + IPv6**: Full support for both IPv4 (`tcp_v4_connect`) and IPv6 (`tcp_v6_connect`)
+- **TCP + UDP**: UDP flow tracing (`udp_sendmsg`) surfaces DNS, StatsD, syslog, and more
 - **Ingress Visibility**: Detect external incoming connections via `inet_csk_accept` tracing
 - **Network Throughput**: Real-time bytes/packets sent/received with rate calculations
 - **Service Fingerprinting**: Automatic technology detection (PostgreSQL, Redis, Nginx, etc.) based on ports and process names
@@ -34,7 +35,17 @@ InfraLens is a next-generation observability tool that uses eBPF to automaticall
 - **Auto-Update**: Agents automatically check for updates and self-update
 - **Cached AI Docs**: AI documentation persists in browser - no regeneration needed
 
-### Production Features (v1.0.0)
+### New in v2.0.0
+
+- **Demo Mode**: Try InfraLens in 30 seconds without Linux, eBPF, or agents (`DEMO_MODE=true`)
+- **UDP Tracing**: DNS, StatsD, and other UDP flows with dashed edges and protocol badges
+- **Topology Search**: Find services by name, IP, technology, or node (press `/`)
+- **Delta WebSocket Updates**: Incremental updates instead of full snapshots every 2s
+- **Graph Export**: Export topology as Mermaid or Graphviz DOT (plus PNG/JSON)
+- **Working Agent Auth**: `--api-key` / `INFRALENS_API_KEY` on the agent + HTTPS backend URLs
+- **Proxy-Friendly Frontend**: Same-origin API/WebSocket URLs work behind any ingress/TLS
+
+### Production Features
 
 - **Persistent Storage**: SQLite/PostgreSQL for data persistence across restarts
 - **Auto-Pruning**: Automatic cleanup of stale services and connections
@@ -377,12 +388,23 @@ InfraLens uses the following kernel probes to capture network activity:
 | `kprobe/tcp_recvmsg` | Entry | Store socket for recv tracking | Throughput |
 | `kretprobe/tcp_recvmsg` | Return | Track bytes received | Throughput |
 | `kprobe/tcp_close` | Entry | Update connection timestamps | Cleanup |
+| `kprobe/udp_sendmsg` | Entry | Discover UDP IPv4 flows + bytes sent | **UDP** |
+| `kprobe/udpv6_sendmsg` | Entry | Discover UDP IPv6 flows + bytes sent | **UDP** |
+| `kprobe(+ret)/udp_recvmsg` | Entry+Return | Track UDP bytes received | **UDP** |
+| `kprobe(+ret)/udpv6_recvmsg` | Entry+Return | Track UDP IPv6 bytes received | **UDP** |
 
 ### Event Direction
 
 Events include a `direction` field to distinguish traffic flow:
 - `0` = **Outbound** (connect): Local process initiated connection to remote
 - `1` = **Inbound** (accept): Remote client connected to local server
+
+### Event Protocol
+
+Events and connections include a `protocol` field (`tcp` or `udp`). UDP flows
+are discovered on first send (there is no handshake to hook); for unconnected
+sockets the destination is read from the syscall's `msg_name`. In the UI, UDP
+edges render dashed with an amber `UDP` badge.
 
 ## 🔍 Deep Inspection
 
@@ -476,6 +498,7 @@ eBPF requires Linux. Use a Linux VM or remote server for testing.
 | `/api/v1/metrics` | POST | Receive host metrics (CPU/RAM) from agents |
 | `/api/v1/inspection` | POST | Receive deep inspection data from agents |
 | `/api/v1/topology` | GET | Get current service topology with node metrics |
+| `/api/v1/topology/export` | GET | Export topology as Mermaid or DOT (`?format=mermaid\|dot`) |
 | `/api/v1/services` | GET | List all discovered services |
 | `/api/v1/services/{id}` | GET | Get service details |
 | `/api/v1/ws` | WebSocket | Real-time topology updates |
@@ -502,14 +525,17 @@ eBPF requires Linux. Use a Linux VM or remote server for testing.
 - Multi-provider AI documentation
 - SQLite/PostgreSQL persistence
 - Production-ready modular architecture
+- UDP tracing (v2.0)
+- Delta-based WebSocket updates (v2.0)
+- Graph export: Mermaid + DOT (v2.0)
+- Demo mode & topology search (v2.0)
 
 ### Planned
 
-- UDP tracing
-- Anomaly detection
+- Historical time-series storage & time-travel view
+- Anomaly detection & alerting
 - Service mesh integration
-- Graph export (Mermaid, DOT)
-- Delta-based WebSocket updates
+- HTTP-level (L7) request tracing
 
 ## 🤝 Contributing
 

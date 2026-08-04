@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Herenn/Infralens/backend/api"
+	"github.com/Herenn/Infralens/backend/api/handlers"
 	"github.com/Herenn/Infralens/backend/config"
 	"github.com/Herenn/Infralens/backend/k8s"
 	"github.com/Herenn/Infralens/backend/pkg/llm"
@@ -56,7 +57,7 @@ func main() {
 		"debug":   cfg.Server.Debug,
 		"db":      cfg.Storage.DSN,
 		"driver":  cfg.Storage.Driver,
-		"version": "1.0.0",
+		"version": handlers.Version,
 	}).Info("Starting InfraLens backend")
 
 	// Initialize storage based on driver

@@ -73,13 +73,13 @@ deps:
 docker-build: docker-build-agent docker-build-backend docker-build-frontend
 
 docker-build-agent:
-	docker build -t $(DOCKER_REGISTRY)/agent:$(DOCKER_TAG) -f docker/Dockerfile.agent .
+	docker build -t $(DOCKER_REGISTRY)/agent:$(DOCKER_TAG) -f Dockerfile.agent .
 
 docker-build-backend:
-	docker build -t $(DOCKER_REGISTRY)/backend:$(DOCKER_TAG) -f docker/Dockerfile.backend .
+	docker build -t $(DOCKER_REGISTRY)/backend:$(DOCKER_TAG) -f Dockerfile.backend .
 
 docker-build-frontend:
-	docker build -t $(DOCKER_REGISTRY)/frontend:$(DOCKER_TAG) -f docker/Dockerfile.frontend .
+	docker build -t $(DOCKER_REGISTRY)/frontend:$(DOCKER_TAG) -f frontend/Dockerfile frontend
 
 ## Docker push
 docker-push:
