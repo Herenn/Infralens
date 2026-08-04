@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -27,16 +28,21 @@ type VersionInfo struct {
 
 // Updater handles agent self-updates
 type Updater struct {
-	backendAddr   string
+	backendURL    string
 	checkInterval time.Duration
 	httpClient    *http.Client
 	onUpdate      func() // Callback when update is available
 }
 
-// NewUpdater creates a new updater instance
-func NewUpdater(backendAddr string, checkInterval time.Duration) *Updater {
+// NewUpdater creates a new updater instance.
+// backendURL may be a full URL ("https://host") or a bare host:port.
+func NewUpdater(backendURL string, checkInterval time.Duration) *Updater {
+	backendURL = strings.TrimRight(strings.TrimSpace(backendURL), "/")
+	if backendURL != "" && !strings.HasPrefix(backendURL, "http://") && !strings.HasPrefix(backendURL, "https://") {
+		backendURL = "http://" + backendURL
+	}
 	return &Updater{
-		backendAddr:   backendAddr,
+		backendURL:    backendURL,
 		checkInterval: checkInterval,
 		httpClient:    &http.Client{Timeout: 30 * time.Second},
 	}
@@ -49,7 +55,7 @@ func (u *Updater) SetUpdateCallback(callback func()) {
 
 // CheckVersion checks if a newer version is available
 func (u *Updater) CheckVersion() (*VersionInfo, bool, error) {
-	url := fmt.Sprintf("http://%s/api/v1/version", u.backendAddr)
+	url := fmt.Sprintf("%s/api/v1/version", u.backendURL)
 	resp, err := u.httpClient.Get(url)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to check version: %w", err)

@@ -299,8 +299,15 @@ export API_KEY=$(openssl rand -hex 32)
 # Configure backend
 export API_KEY="your-secret-api-key"
 
-# Configure agents to use the key
+# Configure agents to use the key (flag or INFRALENS_API_KEY env var)
 sudo ./infralens-agent --backend=server:8080 --api-key="your-secret-api-key"
+sudo INFRALENS_API_KEY="your-secret-api-key" ./infralens-agent --backend=server:8080
+```
+
+The agent also supports HTTPS backends behind a TLS-terminating proxy:
+
+```bash
+sudo ./infralens-agent --backend=https://infralens.example.com --api-key="your-secret-api-key"
 ```
 
 **Protected endpoints (when API_KEY is set):**

@@ -25,6 +25,8 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Agent authentication (optional, empty = disabled)
+      - API_KEY=${API_KEY:-}
       # AI Documentation (optional)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
@@ -81,6 +83,8 @@ services:
       - --backend=http://localhost:8080
       - --node=${HOSTNAME:-docker-host}
       - --inspect
+    environment:
+      - INFRALENS_API_KEY=${API_KEY:-}
     volumes:
       - /proc:/proc:ro
       - /sys:/sys:rw

@@ -26,6 +26,17 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
+            {{- if .Values.backend.auth.apiKey }}
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "infralens.fullname" . }}-secrets
+                  key: api-key
+            {{- end }}
+            {{- if .Values.backend.demoMode }}
+            - name: DEMO_MODE
+              value: "true"
+            {{- end }}
             # AI Configuration
             {{- if .Values.backend.ai.openai.apiKey }}
             - name: OPENAI_API_KEY
