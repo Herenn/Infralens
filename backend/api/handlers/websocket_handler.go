@@ -10,8 +10,27 @@ import (
 
 	"github.com/Herenn/Infralens/backend/pkg/metrics"
 	"github.com/Herenn/Infralens/backend/service"
+	"github.com/Herenn/Infralens/backend/storage"
 	log "github.com/sirupsen/logrus"
 )
+
+// resyncInterval controls how often a full topology snapshot is sent as a
+// safety net (covers pruned entities and any missed delta events).
+const resyncInterval = 30 * time.Second
+
+// WSMessage is the envelope for all WebSocket messages sent to clients.
+//
+// Message types:
+//   - "snapshot"           data is a full TopologyResponse
+//   - "service"            data is a ServiceResponse (created or updated)
+//   - "service.deleted"    data is {"service_id": "..."}
+//   - "connection"         data is a ConnectionResponse (created or updated)
+//   - "connection.deleted" data is {"connection_id": "..."}
+//   - "metrics"            data is a MetricsResponse
+type WSMessage struct {
+	Type string      `json:"type"`
+	Data interface{} `json:"data"`
+}
 
 // WebSocketHandler handles WebSocket connections for real-time updates.
 type WebSocketHandler struct {
@@ -27,7 +46,7 @@ func NewWebSocketHandler(topology *service.TopologyService, eventBus *service.Ev
 		eventBus: eventBus,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
-				return true // Allow all origins for development
+				return true // CORS is enforced at the middleware level
 			},
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -36,7 +55,8 @@ func NewWebSocketHandler(topology *service.TopologyService, eventBus *service.Ev
 }
 
 // HandleWebSocket handles WebSocket connections.
-// It sends real-time topology updates to connected clients.
+// Clients receive an initial full snapshot, then incremental delta messages
+// per changed entity, with a periodic full snapshot as a re-sync safety net.
 func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -59,12 +79,8 @@ func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 
 	// Send initial topology snapshot
 	ctx := context.Background()
-	if topology, err := h.topology.GetTopology(ctx); err == nil {
-		response := convertTopologyToResponse(topology)
-		if err := conn.WriteJSON(response); err != nil {
-			log.WithError(err).Debug("Failed to send initial topology")
-			return
-		}
+	if !h.sendSnapshot(ctx, conn) {
+		return
 	}
 
 	// Set up ping/pong for connection health
@@ -89,10 +105,10 @@ func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 		}
 	}()
 
-	// Periodic full topology broadcast (fallback for missed events)
-	// Send full topology every 5 seconds for now (can be optimized to use events)
-	snapshotTicker := time.NewTicker(2 * time.Second)
-	defer snapshotTicker.Stop()
+	// Periodic full snapshot as a re-sync safety net (also covers deletions
+	// from the pruner, which bypass the event bus).
+	resyncTicker := time.NewTicker(resyncInterval)
+	defer resyncTicker.Stop()
 
 	for {
 		select {
@@ -101,38 +117,94 @@ func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 				return
 			}
 
-			// For topology snapshots, send the full topology
-			if event.Type == service.EventTopologySnapshot {
-				if err := conn.WriteJSON(event.Data); err != nil {
-					log.WithError(err).Debug("WebSocket write failed")
-					return
-				}
-			} else {
-				// For delta events, wrap in event envelope
-				// Note: Frontend currently expects full topology, so we still send full topology
-				// This can be optimized to send just deltas once frontend supports it
-				if topology, err := h.topology.GetTopology(ctx); err == nil {
-					response := convertTopologyToResponse(topology)
-					if err := conn.WriteJSON(response); err != nil {
-						log.WithError(err).Debug("WebSocket write failed")
-						return
-					}
-				}
+			msg, ok := h.eventToMessage(ctx, event)
+			if !ok {
+				continue
+			}
+			if err := conn.WriteJSON(msg); err != nil {
+				log.WithError(err).Debug("WebSocket write failed")
+				return
 			}
 
-		case <-snapshotTicker.C:
-			// Periodic full topology broadcast
-			if topology, err := h.topology.GetTopology(ctx); err == nil {
-				response := convertTopologyToResponse(topology)
-				if err := conn.WriteJSON(response); err != nil {
-					log.WithError(err).Debug("WebSocket write failed, client disconnected")
-					return
-				}
+		case <-resyncTicker.C:
+			if !h.sendSnapshot(ctx, conn) {
+				return
 			}
 
 		case <-sub.Done:
 			log.WithField("subscriber", subID).Info("WebSocket subscription ended")
 			return
 		}
+	}
+}
+
+// sendSnapshot sends the full topology; returns false if the write failed.
+func (h *WebSocketHandler) sendSnapshot(ctx context.Context, conn *websocket.Conn) bool {
+	topology, err := h.topology.GetTopology(ctx)
+	if err != nil {
+		log.WithError(err).Error("Failed to get topology for WebSocket snapshot")
+		return true // storage error, not a connection error
+	}
+	msg := WSMessage{Type: "snapshot", Data: convertTopologyToResponse(topology)}
+	if err := conn.WriteJSON(msg); err != nil {
+		log.WithError(err).Debug("Failed to send topology snapshot")
+		return false
+	}
+	return true
+}
+
+// eventToMessage converts a bus event into a WebSocket delta message.
+// It fetches the full entity from storage so clients receive complete
+// objects they can upsert directly. Returns ok=false when the event should
+// be skipped (e.g. entity already pruned).
+func (h *WebSocketHandler) eventToMessage(ctx context.Context, event service.Event) (WSMessage, bool) {
+	switch event.Type {
+	case service.EventServiceCreated, service.EventServiceUpdated:
+		data, ok := event.Data.(service.ServiceEvent)
+		if !ok {
+			return WSMessage{}, false
+		}
+		svc, err := h.topology.GetService(ctx, data.ServiceID)
+		if err != nil || svc == nil {
+			return WSMessage{}, false
+		}
+		return WSMessage{Type: "service", Data: convertServiceToResponse(*svc)}, true
+
+	case service.EventServiceDeleted:
+		return WSMessage{Type: "service.deleted", Data: event.Data}, true
+
+	case service.EventConnectionCreated, service.EventConnectionUpdated:
+		data, ok := event.Data.(service.ConnectionEvent)
+		if !ok {
+			return WSMessage{}, false
+		}
+		conn, err := h.topology.GetConnection(ctx, data.ConnectionID)
+		if err != nil || conn == nil {
+			return WSMessage{}, false
+		}
+		return WSMessage{Type: "connection", Data: convertConnectionToResponse(*conn)}, true
+
+	case service.EventConnectionDeleted:
+		return WSMessage{Type: "connection.deleted", Data: event.Data}, true
+
+	case service.EventMetricsUpdated:
+		data, ok := event.Data.(service.MetricsEvent)
+		if !ok {
+			return WSMessage{}, false
+		}
+		m, err := h.topology.GetNodeMetrics(ctx, data.NodeName)
+		if err != nil || m == nil {
+			return WSMessage{}, false
+		}
+		return WSMessage{Type: "metrics", Data: convertMetricsToResponse(*m)}, true
+
+	case service.EventTopologySnapshot:
+		if t, ok := event.Data.(*storage.Topology); ok {
+			return WSMessage{Type: "snapshot", Data: convertTopologyToResponse(t)}, true
+		}
+		return WSMessage{Type: "snapshot", Data: event.Data}, true
+
+	default:
+		return WSMessage{}, false
 	}
 }
