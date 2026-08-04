@@ -32,6 +32,7 @@ type demoConnection struct {
 	sourceID string
 	targetID string
 	port     uint16
+	protocol string // "tcp" or "udp"
 
 	baseSentRate float64 // bytes/sec
 	baseRecvRate float64 // bytes/sec
@@ -44,7 +45,11 @@ type demoConnection struct {
 }
 
 func (c *demoConnection) id() string {
-	return fmt.Sprintf("%s->%s:%d", c.sourceID, c.targetID, c.port)
+	id := fmt.Sprintf("%s->%s:%d", c.sourceID, c.targetID, c.port)
+	if c.protocol == "udp" {
+		id += "/udp"
+	}
+	return id
 }
 
 // demoNode describes a simulated host with CPU/RAM that drifts over time.
@@ -146,6 +151,7 @@ func (s *Simulator) buildScenario() {
 		svc("10.0.3.11:6379", "redis", "cache", "Redis 7.2", "redis", nodeData, "10.0.3.11"),
 		svc("10.0.3.12:9092", "kafka", "message_queue", "Kafka", "kafka", nodeData, "10.0.3.12"),
 		svc("10.0.3.13:9090", "prometheus", "monitoring", "Prometheus", "prometheus", nodeData, "10.0.3.13"),
+		svc("10.0.3.14:53", "dns", "application", "DNS", "dns", nodeData, "10.0.3.14"),
 	}
 
 	conn := func(src, dst string, port uint16, sentKBps, recvKBps float64) *demoConnection {
@@ -153,9 +159,16 @@ func (s *Simulator) buildScenario() {
 			sourceID:     src,
 			targetID:     dst,
 			port:         port,
+			protocol:     "tcp",
 			baseSentRate: sentKBps * 1024,
 			baseRecvRate: recvKBps * 1024,
 		}
+	}
+
+	udpConn := func(src, dst string, port uint16, sentKBps, recvKBps float64) *demoConnection {
+		c := conn(src, dst, port, sentKBps, recvKBps)
+		c.protocol = "udp"
+		return c
 	}
 
 	s.connections = []*demoConnection{
@@ -173,6 +186,8 @@ func (s *Simulator) buildScenario() {
 		conn("10.0.2.13/payment-worker", "10.0.3.12:9092", 9092, 5, 70),
 		conn("10.0.2.13/payment-worker", "10.0.3.10:5432", 5432, 12, 30),
 		conn("10.0.3.13:9090", "10.0.2.10/api-gateway", 8080, 3, 40),
+		udpConn("10.0.2.10/api-gateway", "10.0.3.14:53", 53, 1, 2),
+		udpConn("10.0.2.12/orders-service", "10.0.3.14:53", 53, 1, 2),
 	}
 
 	gib := func(n uint64) uint64 { return n * 1024 * 1024 * 1024 }
@@ -193,6 +208,7 @@ func (s *Simulator) seed(ctx context.Context) error {
 			SourceID: c.sourceID,
 			TargetID: c.targetID,
 			Port:     c.port,
+			Protocol: c.protocol,
 			LastSeen: time.Now(),
 		}); err != nil {
 			return err

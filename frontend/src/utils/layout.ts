@@ -197,6 +197,7 @@ export function layoutGraph(topology: Topology): LayoutResult {
     },
     data: {
       port: conn.port,
+      protocol: conn.protocol,
       count: conn.count,
       bytesSent: conn.bytes_sent,
       bytesRecv: conn.bytes_recv,
@@ -360,6 +361,7 @@ export function updateEdgeData(currentEdges: Edge[], topology: Topology): Edge[]
       ...edge,
       data: {
         port: conn.port,
+        protocol: conn.protocol,
         count: conn.count,
         bytesSent: conn.bytes_sent,
         bytesRecv: conn.bytes_recv,

@@ -19,7 +19,7 @@ const (
 	DirectionInbound  = 1 // Server accepted (accept)
 )
 
-// TCPEvent represents a TCP connection event from an agent.
+// TCPEvent represents a network connection event from an agent (TCP or UDP).
 type TCPEvent struct {
 	PID       uint32 `json:"pid"`
 	Comm      string `json:"comm"`
@@ -27,6 +27,7 @@ type TCPEvent struct {
 	DstAddr   string `json:"dst_addr"`
 	DstPort   uint16 `json:"dst_port"`
 	Direction uint8  `json:"direction"`
+	Protocol  string `json:"protocol,omitempty"` // "tcp" (default) or "udp"
 }
 
 // ThroughputStats represents throughput statistics for a connection.
@@ -37,6 +38,7 @@ type ThroughputStats struct {
 	DstAddr       string  `json:"dst_addr"`
 	SrcPort       uint16  `json:"src_port"`
 	DstPort       uint16  `json:"dst_port"`
+	Protocol      string  `json:"protocol,omitempty"` // "tcp" (default) or "udp"
 	BytesSent     uint64  `json:"bytes_sent"`
 	BytesRecv     uint64  `json:"bytes_recv"`
 	BytesSentRate float64 `json:"bytes_sent_rate"`
@@ -114,8 +116,9 @@ func (p *EventProcessor) ProcessTCPEvent(ctx context.Context, nodeName string, e
 		}
 	}
 
-	// Build connection ID
-	connID := fmt.Sprintf("%s->%s:%d", srcID, dstID, event.DstPort)
+	// Build connection ID (UDP flows get a suffix so they never collide with
+	// TCP connections between the same endpoints; TCP IDs stay unchanged)
+	connID := makeConnectionID(srcID, dstID, event.DstPort, event.Protocol)
 
 	// For INBOUND events, check if connection already exists to avoid duplicates
 	if event.Direction == DirectionInbound {
@@ -191,6 +194,7 @@ func (p *EventProcessor) ProcessTCPEvent(ctx context.Context, nodeName string, e
 		SourceID: srcID,
 		TargetID: dstID,
 		Port:     event.DstPort,
+		Protocol: normalizeProtocol(event.Protocol),
 		LastSeen: now,
 	}
 	if err := p.topology.AddConnection(ctx, conn); err != nil {
@@ -235,7 +239,7 @@ func (p *EventProcessor) ProcessThroughputStats(ctx context.Context, nodeName st
 		dstID = makeServiceIDWithPort(stats.DstAddr, stats.DstPort)
 	}
 
-	connID := fmt.Sprintf("%s->%s:%d", srcID, dstID, stats.DstPort)
+	connID := makeConnectionID(srcID, dstID, stats.DstPort, stats.Protocol)
 
 	// Update connection stats
 	err := p.topology.UpdateConnectionStats(ctx, connID,
@@ -337,4 +341,24 @@ func makeServiceIDWithPort(ipStr string, port uint16) string {
 		ipPart = ip.String()
 	}
 	return fmt.Sprintf("%s:%d", ipPart, port)
+}
+
+// normalizeProtocol maps agent-reported protocols to "tcp" or "udp".
+// Older agents don't send a protocol at all, which means TCP.
+func normalizeProtocol(protocol string) string {
+	if protocol == "udp" {
+		return "udp"
+	}
+	return "tcp"
+}
+
+// makeConnectionID builds a stable connection ID. UDP flows are suffixed so
+// they never collide with TCP connections between the same endpoints; TCP
+// IDs keep the historical format for backward compatibility.
+func makeConnectionID(srcID, dstID string, port uint16, protocol string) string {
+	id := fmt.Sprintf("%s->%s:%d", srcID, dstID, port)
+	if normalizeProtocol(protocol) == "udp" {
+		id += "/udp"
+	}
+	return id
 }

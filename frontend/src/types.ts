@@ -92,6 +92,7 @@ export interface Connection {
   source_id: string
   target_id: string
   port: number
+  protocol?: string // "tcp" (default) or "udp"
   count: number
   bytes_sent?: number
   bytes_recv?: number

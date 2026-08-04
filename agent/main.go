@@ -221,6 +221,7 @@ type EventPayload struct {
 	DstAddr   string `json:"dst_addr"`
 	DstPort   uint16 `json:"dst_port"`
 	Direction uint8  `json:"direction"`
+	Protocol  string `json:"protocol,omitempty"` // "tcp" or "udp"
 }
 
 // EventBatch represents a batch of events sent to the backend
@@ -248,6 +249,7 @@ type ConnectionThroughput struct {
 	DstAddr       string  `json:"dst_addr"`
 	SrcPort       uint16  `json:"src_port"`
 	DstPort       uint16  `json:"dst_port"`
+	Protocol      string  `json:"protocol,omitempty"` // "tcp" or "udp"
 	BytesSent     uint64  `json:"bytes_sent"`
 	BytesRecv     uint64  `json:"bytes_recv"`
 	BytesSentRate float64 `json:"bytes_sent_rate"`
@@ -277,6 +279,7 @@ func eventToPayload(event *collector.Event) EventPayload {
 		DstAddr:   event.DstAddr.String(),
 		DstPort:   event.DstPort,
 		Direction: event.Direction,
+		Protocol:  event.ProtocolString(),
 	}
 }
 
@@ -288,6 +291,7 @@ func throughputToPayload(t collector.Throughput) ConnectionThroughput {
 		DstAddr:       t.DstAddr,
 		SrcPort:       t.SrcPort,
 		DstPort:       t.DstPort,
+		Protocol:      t.ProtocolString(),
 		BytesSent:     t.BytesSent,
 		BytesRecv:     t.BytesRecv,
 		BytesSentRate: t.BytesSentRate,

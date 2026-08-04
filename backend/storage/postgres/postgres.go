@@ -512,13 +512,17 @@ func (r *ConnectionRepo) executor(ctx context.Context) interface {
 
 func (r *ConnectionRepo) Upsert(ctx context.Context, conn *storage.Connection) error {
 	now := time.Now()
+	if conn.Protocol == "" {
+		conn.Protocol = "tcp"
+	}
 	query := `
-		INSERT INTO connections (id, source_id, target_id, port, count, bytes_sent, bytes_recv,
+		INSERT INTO connections (id, source_id, target_id, port, protocol, count, bytes_sent, bytes_recv,
 			bytes_sent_rate, bytes_recv_rate, packets_sent, packets_recv, last_seen, latency_ms,
 			created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT(id) DO UPDATE SET
 			count = connections.count + 1,
+			protocol = EXCLUDED.protocol,
 			bytes_sent = CASE WHEN EXCLUDED.bytes_sent > 0 THEN EXCLUDED.bytes_sent ELSE connections.bytes_sent END,
 			bytes_recv = CASE WHEN EXCLUDED.bytes_recv > 0 THEN EXCLUDED.bytes_recv ELSE connections.bytes_recv END,
 			bytes_sent_rate = EXCLUDED.bytes_sent_rate,
@@ -530,20 +534,20 @@ func (r *ConnectionRepo) Upsert(ctx context.Context, conn *storage.Connection) e
 			updated_at = EXCLUDED.updated_at
 	`
 	_, err := r.executor(ctx).ExecContext(ctx, query,
-		conn.ID, conn.SourceID, conn.TargetID, conn.Port, conn.Count,
+		conn.ID, conn.SourceID, conn.TargetID, conn.Port, conn.Protocol, conn.Count,
 		conn.BytesSent, conn.BytesRecv, conn.BytesSentRate, conn.BytesRecvRate,
 		conn.PacketsSent, conn.PacketsRecv, now, conn.Latency, now, now)
 	return err
 }
 
 func (r *ConnectionRepo) Get(ctx context.Context, id string) (*storage.Connection, error) {
-	query := `SELECT id, source_id, target_id, port, count, bytes_sent, bytes_recv,
+	query := `SELECT id, source_id, target_id, port, protocol, count, bytes_sent, bytes_recv,
 		bytes_sent_rate, bytes_recv_rate, packets_sent, packets_recv, last_seen, latency_ms,
 		created_at, updated_at FROM connections WHERE id = $1`
 
 	var conn storage.Connection
 	err := r.executor(ctx).QueryRowContext(ctx, query, id).Scan(
-		&conn.ID, &conn.SourceID, &conn.TargetID, &conn.Port, &conn.Count,
+		&conn.ID, &conn.SourceID, &conn.TargetID, &conn.Port, &conn.Protocol, &conn.Count,
 		&conn.BytesSent, &conn.BytesRecv, &conn.BytesSentRate, &conn.BytesRecvRate,
 		&conn.PacketsSent, &conn.PacketsRecv, &conn.LastSeen, &conn.Latency,
 		&conn.CreatedAt, &conn.UpdatedAt)
@@ -554,7 +558,7 @@ func (r *ConnectionRepo) Get(ctx context.Context, id string) (*storage.Connectio
 }
 
 func (r *ConnectionRepo) List(ctx context.Context, filter storage.ConnectionFilter) ([]storage.Connection, error) {
-	query := `SELECT id, source_id, target_id, port, count, bytes_sent, bytes_recv,
+	query := `SELECT id, source_id, target_id, port, protocol, count, bytes_sent, bytes_recv,
 		bytes_sent_rate, bytes_recv_rate, packets_sent, packets_recv, last_seen, latency_ms,
 		created_at, updated_at FROM connections WHERE 1=1`
 	args := []interface{}{}
@@ -597,7 +601,7 @@ func (r *ConnectionRepo) List(ctx context.Context, filter storage.ConnectionFilt
 	var connections []storage.Connection
 	for rows.Next() {
 		var conn storage.Connection
-		err := rows.Scan(&conn.ID, &conn.SourceID, &conn.TargetID, &conn.Port, &conn.Count,
+		err := rows.Scan(&conn.ID, &conn.SourceID, &conn.TargetID, &conn.Port, &conn.Protocol, &conn.Count,
 			&conn.BytesSent, &conn.BytesRecv, &conn.BytesSentRate, &conn.BytesRecvRate,
 			&conn.PacketsSent, &conn.PacketsRecv, &conn.LastSeen, &conn.Latency,
 			&conn.CreatedAt, &conn.UpdatedAt)
