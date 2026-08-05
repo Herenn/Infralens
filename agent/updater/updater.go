@@ -2,12 +2,15 @@
 package updater
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -16,19 +19,34 @@ import (
 )
 
 // Version is the current agent version (set at build time)
-var Version = "2.0.1"
+var Version = "3.0.0"
 
-// VersionInfo represents version information from the backend
+// releaseBaseURL is the only origin the agent will install a binary from.
+// It is a constant on purpose: the download location must not be derivable
+// from anything the backend says.
+const releaseBaseURL = "https://github.com/Herenn/Infralens/releases/download"
+
+// semverPattern constrains the version string before it is interpolated into
+// a download URL, so a hostile value cannot redirect the request elsewhere.
+var semverPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$`)
+
+// VersionInfo represents version information from the backend.
+//
+// Note there is deliberately no UpdateURL field. The agent used to take a
+// download location straight from this response and install whatever it
+// found there, which handed anyone able to answer the version request — a
+// hostile backend, or a network attacker, since the backend may be plain
+// HTTP — arbitrary code execution as root on every node.
 type VersionInfo struct {
 	Version     string `json:"version"`
 	CommitHash  string `json:"commit_hash,omitempty"`
 	ReleaseDate string `json:"release_date,omitempty"`
-	UpdateURL   string `json:"update_url,omitempty"`
 }
 
 // Updater handles agent self-updates
 type Updater struct {
 	backendURL    string
+	apiKey        string
 	checkInterval time.Duration
 	httpClient    *http.Client
 	onUpdate      func() // Callback when update is available
@@ -36,13 +54,16 @@ type Updater struct {
 
 // NewUpdater creates a new updater instance.
 // backendURL may be a full URL ("https://host") or a bare host:port.
-func NewUpdater(backendURL string, checkInterval time.Duration) *Updater {
+// apiKey is sent with version checks; without it a backend that has
+// authentication enabled rejects them and updates never happen.
+func NewUpdater(backendURL, apiKey string, checkInterval time.Duration) *Updater {
 	backendURL = strings.TrimRight(strings.TrimSpace(backendURL), "/")
 	if backendURL != "" && !strings.HasPrefix(backendURL, "http://") && !strings.HasPrefix(backendURL, "https://") {
 		backendURL = "http://" + backendURL
 	}
 	return &Updater{
 		backendURL:    backendURL,
+		apiKey:        apiKey,
 		checkInterval: checkInterval,
 		httpClient:    &http.Client{Timeout: 30 * time.Second},
 	}
@@ -56,11 +77,25 @@ func (u *Updater) SetUpdateCallback(callback func()) {
 // CheckVersion checks if a newer version is available
 func (u *Updater) CheckVersion() (*VersionInfo, bool, error) {
 	url := fmt.Sprintf("%s/api/v1/version", u.backendURL)
-	resp, err := u.httpClient.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to build version request: %w", err)
+	}
+	if u.apiKey != "" {
+		req.Header.Set("X-API-Key", u.apiKey)
+	}
+
+	resp, err := u.httpClient.Do(req)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to check version: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, false, fmt.Errorf(
+			"version check rejected (status %d): check --api-key matches the backend API_KEY",
+			resp.StatusCode)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, false, fmt.Errorf("version check returned status %d", resp.StatusCode)
@@ -128,18 +163,25 @@ func (u *Updater) SelfUpdate() error {
 		return nil
 	}
 
-	// Determine download URL
-	downloadURL := info.UpdateURL
-	if downloadURL == "" {
-		// Construct GitHub release URL
-		arch := runtime.GOARCH
-		downloadURL = fmt.Sprintf(
-			"https://github.com/Herenn/Infralens/releases/download/%s/infralens-agent-linux-%s",
-			info.Version, arch,
-		)
+	// The version string is interpolated into a URL path, so it has to look
+	// like a version and nothing else.
+	if !semverPattern.MatchString(info.Version) {
+		return fmt.Errorf("refusing to update: backend reported a malformed version %q", info.Version)
 	}
 
+	// Always built from a pinned HTTPS origin. Never from anything the
+	// backend supplied.
+	assetName := fmt.Sprintf("infralens-agent-linux-%s", runtime.GOARCH)
+	downloadURL := fmt.Sprintf("%s/%s/%s", releaseBaseURL, info.Version, assetName)
+
 	log.WithField("url", downloadURL).Info("Downloading new version...")
+
+	// Fetch the published digest first: if it is unavailable we have no way
+	// to tell a genuine release binary from anything else, so we stop.
+	wantSum, err := u.fetchChecksum(downloadURL + ".sha256")
+	if err != nil {
+		return fmt.Errorf("refusing to install unverified update: %w", err)
+	}
 
 	// Download new binary
 	resp, err := u.httpClient.Get(downloadURL)
@@ -158,19 +200,27 @@ func (u *Updater) SelfUpdate() error {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	// Write to temporary file
+	// Write to temporary file, hashing as we go
 	tmpPath := execPath + ".new"
 	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 
-	_, err = io.Copy(tmpFile, resp.Body)
+	hasher := sha256.New()
+	_, err = io.Copy(io.MultiWriter(tmpFile, hasher), resp.Body)
 	tmpFile.Close()
 	if err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to write update: %w", err)
 	}
+
+	gotSum := hex.EncodeToString(hasher.Sum(nil))
+	if !strings.EqualFold(gotSum, wantSum) {
+		os.Remove(tmpPath)
+		return fmt.Errorf("checksum mismatch: expected %s, got %s - update discarded", wantSum, gotSum)
+	}
+	log.WithField("sha256", gotSum).Info("Update checksum verified")
 
 	// Backup old binary
 	backupPath := execPath + ".old"
@@ -191,6 +241,38 @@ func (u *Updater) SelfUpdate() error {
 
 	log.WithField("version", info.Version).Info("Update installed successfully!")
 	return nil
+}
+
+// fetchChecksum retrieves the published sha256 digest for a release asset.
+// The digest file contains the hex digest alone.
+func (u *Updater) fetchChecksum(url string) (string, error) {
+	resp, err := u.httpClient.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch checksum: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("checksum fetch returned status %d", resp.StatusCode)
+	}
+
+	// Bounded read: a digest is 64 hex characters.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+	if err != nil {
+		return "", fmt.Errorf("failed to read checksum: %w", err)
+	}
+
+	sum := strings.TrimSpace(string(data))
+	if i := strings.IndexAny(sum, " \t"); i > 0 {
+		sum = sum[:i] // tolerate "<digest>  <filename>" form
+	}
+	if len(sum) != hex.EncodedLen(sha256.Size) {
+		return "", fmt.Errorf("malformed checksum %q", sum)
+	}
+	if _, err := hex.DecodeString(sum); err != nil {
+		return "", fmt.Errorf("malformed checksum %q", sum)
+	}
+	return sum, nil
 }
 
 // RestartSelf restarts the agent process using systemctl

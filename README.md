@@ -8,7 +8,7 @@ InfraLens uses eBPF to discover and visualize service-to-service communication i
 on Kubernetes clusters and plain Linux servers. No sidecars. No SDKs. No instrumentation.
 
 [![CI](https://github.com/Herenn/Infralens/actions/workflows/ci.yml/badge.svg)](https://github.com/Herenn/Infralens/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v2.0.1-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v3.0.0-blue)](https://github.com/Herenn/Infralens/releases)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/Herenn/Infralens)](https://go.dev/)
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)

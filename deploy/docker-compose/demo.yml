@@ -23,6 +23,9 @@ services:
       - "8080:8080"
     environment:
       - DEMO_MODE=true
+      # Demo runs with no agents and no secrets; opting out of auth explicitly
+      # is what the backend now requires instead of silently defaulting open.
+      - ALLOW_NO_AUTH=true
       - DB_DSN=/tmp/infralens-demo.db
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]

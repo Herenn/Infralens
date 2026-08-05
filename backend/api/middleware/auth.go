@@ -3,6 +3,7 @@ package middleware
 
 import (
 	"crypto/subtle"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -20,6 +21,21 @@ type AuthConfig struct {
 
 	// SkipPaths are paths that don't require authentication.
 	SkipPaths []string
+
+	// AllowNoAuth permits running with no APIKey configured. Without it, an
+	// empty APIKey is a startup error rather than a silently open server.
+	AllowNoAuth bool
+}
+
+// Validate reports whether the configuration is safe to serve with.
+func (cfg AuthConfig) Validate() error {
+	if cfg.APIKey == "" && !cfg.AllowNoAuth {
+		return errors.New(
+			"no API_KEY configured: event ingestion and AI endpoints would accept " +
+				"unauthenticated requests. Set API_KEY, or set ALLOW_NO_AUTH=true to " +
+				"run without authentication deliberately")
+	}
+	return nil
 }
 
 // DefaultAuthConfig returns the default auth configuration.

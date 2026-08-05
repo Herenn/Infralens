@@ -116,12 +116,13 @@ func (s *Server) setupRoutes() {
 
 // Handler returns the HTTP handler with middleware applied.
 func (s *Server) Handler() http.Handler {
-	// Apply middleware in order: Recovery -> Metrics -> Logging -> CORS -> Auth
+	// Apply middleware in order: Recovery -> Metrics -> Logging -> BodyLimit -> CORS -> Auth
 	// Note: Metrics is before Logging so we don't double-count
 	handler := middleware.Chain(
 		middleware.Recovery(),
 		middleware.Metrics(),
 		middleware.Logging(),
+		middleware.BodyLimit(s.config.Server.MaxRequestBytes),
 		middleware.CORS(s.config.CORS),
 		middleware.Auth(s.config.Auth),
 	)(s.router)

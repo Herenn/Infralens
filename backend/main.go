@@ -60,6 +60,16 @@ func main() {
 		"version": handlers.Version,
 	}).Info("Starting InfraLens backend")
 
+	// Refuse to come up in a configuration that silently accepts
+	// unauthenticated event ingestion and AI requests.
+	if err := cfg.Auth.Validate(); err != nil {
+		log.WithError(err).Fatal("Refusing to start with an insecure authentication configuration")
+	}
+	if cfg.Auth.APIKey == "" {
+		log.Warn("Running without API key authentication (ALLOW_NO_AUTH=true) - " +
+			"all ingest and AI endpoints accept unauthenticated requests")
+	}
+
 	// Initialize storage based on driver
 	store, err := initStorage(cfg.Storage)
 	if err != nil {

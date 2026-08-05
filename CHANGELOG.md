@@ -5,6 +5,71 @@ All notable changes to InfraLens are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-08-05
+
+Security release. The version jump is because three of these changes will stop
+an existing deployment from starting or working until it is reconfigured — see
+**Breaking changes** below.
+
+### Security
+
+- **The agent no longer installs updates it cannot verify.** It previously read
+  a download location out of the backend's version response and installed
+  whatever it found there, with no signature or checksum, over its own
+  executable. Since a bare `--backend=host:port` is contacted over plain HTTP,
+  anyone able to answer that request could run code as root on every node — the
+  agent runs privileged with `hostPID`. Downloads now come only from a pinned
+  HTTPS release URL, the reported version must parse as a version before it is
+  used in a URL, and a published SHA-256 digest is verified before installation.
+  Releases now publish a `.sha256` alongside each agent binary.
+- **The AI configuration endpoint no longer accepts local-LLM URLs.**
+  `ollama_url` and `lmstudio_url` named hosts the backend would then send
+  requests to and surface the responses from, which made the endpoint a
+  server-side request forgery primitive against cloud metadata and internal
+  services. Those endpoints are environment configuration now
+  (`OLLAMA_URL`, `LMSTUDIO_URL`).
+- **The backend refuses to start with no API key** unless `ALLOW_NO_AUTH=true`
+  is set. Previously an unset `API_KEY` silently disabled authentication on
+  every ingest and AI endpoint.
+- **AI documentation output is HTML-escaped before rendering.** It is injected
+  as HTML, and its content derives from agent-collected data (process names,
+  command lines, README and Dockerfile contents), so anyone able to influence a
+  monitored workload could get script into an operator's browser.
+- **Request bodies are capped** (`MAX_REQUEST_BYTES`, default 10 MiB). Handlers
+  decoded JSON off the request body with no limit, so one request could exhaust
+  memory.
+- **Install scripts verify the Go toolchain download** against the published
+  SHA-256 instead of extracting whatever was served.
+
+### Fixed
+
+- A data race on the LLM provider map crashed the whole backend. `POST
+  /api/v1/ai/config` rebuilt the map while other requests read it, and
+  concurrent map access is a Go runtime fatal error, not a panic — the recovery
+  middleware could not contain it. All access is now mutex-guarded and the
+  provider set is swapped atomically.
+- Agent auto-update was silently dead whenever authentication was enabled: the
+  version check never sent the API key, so it received 401 and failed with the
+  error logged only at debug level. The key is sent now, and an auth rejection
+  is reported clearly.
+- CORS no longer advertises `Access-Control-Allow-Origin: *` together with
+  `Access-Control-Allow-Credentials: true`. Browsers reject that pair, so
+  credentialed cross-origin requests failed silently; credentials are now
+  dropped for a wildcard origin, with a warning.
+
+### Breaking changes
+
+- **`API_KEY` is now required.** Set it, or set `ALLOW_NO_AUTH=true` to keep the
+  old behaviour deliberately. The demo Compose file sets `ALLOW_NO_AUTH=true`;
+  Helm exposes `backend.auth.allowNoAuth`.
+- **`ollama_url` / `lmstudio_url` are rejected in `POST /api/v1/ai/config`.**
+  Move them to the `OLLAMA_URL` / `LMSTUDIO_URL` environment variables.
+- **`CORS_CREDENTIALS` now defaults to `false`.** With the default wildcard
+  origin it never worked anyway; set explicit `CORS_ORIGINS` to use credentials.
+- Agents older than 3.0.0 will not self-update to 3.0.0 and later releases
+  without the published checksum being reachable; upgrade them with the install
+  script if their update check reports a verification failure.
+
 ## [2.0.1] - 2026-08-05
 
 ### Fixed
