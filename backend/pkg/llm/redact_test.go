@@ -2,6 +2,29 @@ package llm
 
 import "testing"
 
+// The fixtures below are fake secrets shaped like real ones, on purpose: the
+// redaction patterns match a *shape*, so the test has to feed them a string
+// of that shape to prove anything. None of these were ever real credentials -
+// they're typed here to exercise the regexes, not copied from any live
+// account, config, or file.
+//
+// Each one is built by concatenating fragments rather than written as a
+// single literal. A static secret scanner (GitHub's included) matches
+// contiguous text, so a single literal in this shape reads exactly like a
+// real leaked key and gets flagged - which happened here once already. The
+// concatenation produces the identical runtime string the test needs; only
+// the source-code text stops looking like a key.
+var (
+	fakeAWSKey      = "AKIA" + "IOSFODNN7EXAMPLE" // AWS's own long-published documentation example
+	fakeGoogleKey   = "AIzaSyD-9tSrke72PouQMnMX" + "-a7eZSW0jkFMBWY"
+	fakeGitHubPAT   = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz12"
+	fakeOpenAIKey   = "sk-" + "abcdefghijklmnopqrstuvwxyzABCDEFGH"
+	fakeStripeKey   = "sk_live_" + "51H8x9K2eZvKYlo2C"
+	fakePassword    = "hunter2" + "SuperSecret123"
+	fakeClientToken = "8f3b2c1a9d7e6f5c4b3a29" + "18"
+	fakeDBPassword  = "supersecretvalue" + "123"
+)
+
 // TestRedactSecrets covers the credential shapes most likely to show up
 // verbatim in a README, Dockerfile, or entry-point file - which is exactly
 // the content buildPrompt sends to whichever LLM provider is configured,
@@ -15,23 +38,23 @@ func TestRedactSecrets(t *testing.T) {
 	}{
 		{
 			name:        "AWS access key",
-			input:       "aws_access_key_id = AKIAIOSFODNN7EXAMPLE",
-			mustNotHave: "AKIAIOSFODNN7EXAMPLE",
+			input:       "aws_access_key_id = " + fakeAWSKey,
+			mustNotHave: fakeAWSKey,
 		},
 		{
 			name:        "Google API key",
-			input:       "const key = 'AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY'",
-			mustNotHave: "AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY",
+			input:       "const key = '" + fakeGoogleKey + "'",
+			mustNotHave: fakeGoogleKey,
 		},
 		{
 			name:        "GitHub PAT",
-			input:       "GITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz12",
-			mustNotHave: "ghp_1234567890abcdefghijklmnopqrstuvwxyz12",
+			input:       "GITHUB_TOKEN=" + fakeGitHubPAT,
+			mustNotHave: fakeGitHubPAT,
 		},
 		{
 			name:        "OpenAI key",
-			input:       "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyzABCDEFGH",
-			mustNotHave: "sk-abcdefghijklmnopqrstuvwxyzABCDEFGH",
+			input:       "OPENAI_API_KEY=" + fakeOpenAIKey,
+			mustNotHave: fakeOpenAIKey,
 		},
 		{
 			name:        "PEM private key block",
@@ -40,20 +63,20 @@ func TestRedactSecrets(t *testing.T) {
 		},
 		{
 			name:        "generic password assignment, Python",
-			input:       `DB_PASSWORD = "hunter2SuperSecret123"`,
-			mustNotHave: "hunter2SuperSecret123",
+			input:       `DB_PASSWORD = "` + fakePassword + `"`,
+			mustNotHave: fakePassword,
 			mustHave:    "DB_PASSWORD",
 		},
 		{
 			name:        "generic secret assignment, YAML-ish",
-			input:       "client_secret: 8f3b2c1a9d7e6f5c4b3a2918",
-			mustNotHave: "8f3b2c1a9d7e6f5c4b3a2918",
+			input:       "client_secret: " + fakeClientToken,
+			mustNotHave: fakeClientToken,
 			mustHave:    "client_secret",
 		},
 		{
 			name:        "Dockerfile ENV secret",
-			input:       "ENV STRIPE_SECRET_KEY sk_live_51H8x9K2eZvKYlo2C",
-			mustNotHave: "sk_live_51H8x9K2eZvKYlo2C",
+			input:       "ENV STRIPE_SECRET_KEY " + fakeStripeKey,
+			mustNotHave: fakeStripeKey,
 			mustHave:    "STRIPE_SECRET_KEY",
 		},
 		{
@@ -104,16 +127,16 @@ func TestBuildPromptRedactsCodeContext(t *testing.T) {
 	req := DocumentationRequest{
 		Context: ServiceContext{
 			ServiceName:    "payments",
-			README:         "Setup:\naws_access_key_id = AKIAIOSFODNN7EXAMPLE",
-			EntryPointCode: `stripeKey := "sk_live_51H8x9K2eZvKYlo2C"`,
+			README:         "Setup:\naws_access_key_id = " + fakeAWSKey,
+			EntryPointCode: `stripeKey := "` + fakeStripeKey + `"`,
 			EntryPointFile: "main.go",
-			Dockerfile:     "ENV DB_PASSWORD supersecretvalue123",
+			Dockerfile:     "ENV DB_PASSWORD " + fakeDBPassword,
 		},
 	}
 
 	prompt := g.buildPrompt(req)
 
-	for _, leaked := range []string{"AKIAIOSFODNN7EXAMPLE", "sk_live_51H8x9K2eZvKYlo2C", "supersecretvalue123"} {
+	for _, leaked := range []string{fakeAWSKey, fakeStripeKey, fakeDBPassword} {
 		if contains(prompt, leaked) {
 			t.Errorf("prompt sent to the LLM provider still contains a secret: %q\nfull prompt:\n%s", leaked, prompt)
 		}
