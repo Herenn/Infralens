@@ -21,6 +21,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The release notes must match what docker/metadata-action actually
+      # publishes in the docker-images job below:
+      #   - image paths are lowercased (Docker rejects uppercase repository
+      #     names outright), so github.repository can't be used verbatim
+      #   - type=semver,pattern={{version}} strips the leading "v", so the
+      #     image tag is 2.0.1, not the tag name v2.0.1
+      - name: Compute image reference
+        id: image_ref
+        run: |
+          echo "repository=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Create Release
         id: create_release
         uses: actions/create-release@v1
@@ -33,15 +45,15 @@ jobs:
           prerelease: false
           body: |
             ## What's Changed
-            
+
             See [CHANGELOG.md](CHANGELOG.md) for details.
-            
+
             ## Docker Images
-            
+
             ```bash
-            docker pull ghcr.io/${{ github.repository }}/agent:${{ github.ref_name }}
-            docker pull ghcr.io/${{ github.repository }}/backend:${{ github.ref_name }}
-            docker pull ghcr.io/${{ github.repository }}/frontend:${{ github.ref_name }}
+            docker pull ghcr.io/${{ steps.image_ref.outputs.repository }}/agent:${{ steps.image_ref.outputs.version }}
+            docker pull ghcr.io/${{ steps.image_ref.outputs.repository }}/backend:${{ steps.image_ref.outputs.version }}
+            docker pull ghcr.io/${{ steps.image_ref.outputs.repository }}/frontend:${{ steps.image_ref.outputs.version }}
             ```
             
             ## Helm Installation
