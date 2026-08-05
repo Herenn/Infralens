@@ -45,6 +45,23 @@ an existing deployment from starting or working until it is reconfigured, so rea
   beneath it, so a future endpoint could lose authentication purely by virtue
   of where it was mounted. Sub-path access for `/api/v1/services/{id}` is now
   an explicitly declared prefix.
+- **Source code sent to AI providers is scanned for hardcoded credentials
+  before it leaves the prompt.** The README, Dockerfile, and entry-point file
+  content the agent collects (for the AI documentation feature) were inserted
+  into the LLM prompt verbatim, with no redaction, and by default that prompt
+  goes to a cloud provider (OpenAI/Anthropic/Gemini) rather than a local one.
+  Hardcoded credentials in an entry-point file or Dockerfile `ENV`/`ARG` line —
+  a common real-world occurrence — would have been sent to that third party.
+  Recognisable secret shapes (cloud provider keys, private key blocks, and
+  generic `password=`/`token=`/`secret=`-style assignments) are now redacted
+  first. This is a best-effort net on top of the agent's existing behavior of
+  only ever collecting environment variable *names*, never values.
+- **The database DSN is no longer logged in cleartext at startup.** A Postgres
+  DSN commonly carries its password directly
+  (`postgres://user:pass@host/db`), and the startup log line printed
+  `cfg.Storage.DSN` verbatim regardless of driver — putting the database
+  password in every log aggregator that ingested the process's output. The
+  password is now masked before logging; SQLite's file-path DSN is unaffected.
 
 ### Fixed
 
@@ -85,6 +102,18 @@ an existing deployment from starting or working until it is reconfigured, so rea
 - Agents older than 2.1.0 will not self-update to 2.1.0 and later releases
   without the published checksum being reachable; upgrade them with the install
   script if their update check reports a verification failure.
+
+### Known limitations (not changed in this release)
+
+- **Read endpoints, including the full topology (`/api/v1/topology`,
+  `/api/v1/services`) and the WebSocket feed, are unauthenticated by design**
+  even with `API_KEY` set — they are on the auth skip list deliberately,
+  because the shipped frontend has no login flow and never sends a credential.
+  Anyone with network access to the backend can read service names, IPs,
+  Kubernetes namespaces/pod names, and node metrics with no credential. Put
+  the backend behind an authenticating reverse proxy or network policy if that
+  exposure is not acceptable; this was true before 2.1.0 as well and is not a
+  new regression, just not yet fixed.
 
 ## [2.0.1] - 2026-08-05
 

@@ -53,9 +53,12 @@ func main() {
 	})
 
 	log.WithFields(log.Fields{
-		"addr":    cfg.Server.ListenAddr,
-		"debug":   cfg.Server.Debug,
-		"db":      cfg.Storage.DSN,
+		"addr":  cfg.Server.ListenAddr,
+		"debug": cfg.Server.Debug,
+		// A Postgres DSN carries its password directly; logging it verbatim
+		// put the database credential in every log aggregator that ingested
+		// this process's output.
+		"db":      storage.RedactDSN(cfg.Storage.DSN),
 		"driver":  cfg.Storage.Driver,
 		"version": handlers.Version,
 	}).Info("Starting InfraLens backend")
