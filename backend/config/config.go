@@ -99,9 +99,10 @@ func Load() *Config {
 		},
 
 		Auth: middleware.AuthConfig{
-			APIKey:     getEnv("API_KEY", ""),
-			HeaderName: getEnv("API_KEY_HEADER", "X-API-Key"),
-			SkipPaths:  middleware.DefaultAuthConfig().SkipPaths,
+			APIKey:       getEnv("API_KEY", ""),
+			HeaderName:   getEnv("API_KEY_HEADER", "X-API-Key"),
+			SkipPaths:    middleware.DefaultAuthConfig().SkipPaths,
+			SkipPrefixes: middleware.DefaultAuthConfig().SkipPrefixes,
 			// Running with no API key leaves every ingest and AI endpoint open.
 			// That has to be a deliberate choice, not something you get by
 			// forgetting to set a variable.

@@ -19,7 +19,7 @@ import (
 )
 
 // Version is the current agent version (set at build time)
-var Version = "3.0.0"
+var Version = "2.1.0"
 
 // releaseBaseURL is the only origin the agent will install a binary from.
 // It is a constant on purpose: the download location must not be derivable

@@ -2,8 +2,8 @@ apiVersion: v2
 name: infralens
 description: Zero-Instrumentation Observability for Kubernetes using eBPF
 type: application
-version: 3.0.0
-appVersion: "3.0.0"
+version: 2.1.0
+appVersion: "2.1.0"
 keywords:
   - observability
   - ebpf

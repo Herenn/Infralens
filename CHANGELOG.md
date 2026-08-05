@@ -5,11 +5,11 @@ All notable changes to InfraLens are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.0.0] - 2026-08-05
+## [2.1.0] - 2026-08-05
 
-Security release. The version jump is because three of these changes will stop
-an existing deployment from starting or working until it is reconfigured — see
-**Breaking changes** below.
+Security release. Three of these changes will stop
+an existing deployment from starting or working until it is reconfigured, so read
+**Breaking changes** below before upgrading.
 
 ### Security
 
@@ -40,8 +40,24 @@ an existing deployment from starting or working until it is reconfigured — see
   memory.
 - **Install scripts verify the Go toolchain download** against the published
   SHA-256 instead of extracting whatever was served.
+- **The authentication skip list is matched exactly** instead of by prefix.
+  A public path such as `/api/v1/topology` previously exempted anything routed
+  beneath it, so a future endpoint could lose authentication purely by virtue
+  of where it was mounted. Sub-path access for `/api/v1/services/{id}` is now
+  an explicitly declared prefix.
 
 ### Fixed
+
+- **Inbound connections never showed any throughput.** The agent reports each
+  sample from the local socket's point of view, so for a connection this host
+  accepted, the sample reads server -> client on the client's ephemeral port,
+  while the accept event recorded client -> server on the listening port. The
+  two never matched and every inbound update silently applied to no rows.
+  Samples are now resolved against both directions.
+- **Throughput samples sharing a topology edge overwrote each other.** Every
+  client on a listening port collapses onto one inbound edge, and the update
+  writes absolute values, so the edge showed one arbitrary client's traffic
+  rather than the total. Samples are now summed per edge before being written.
 
 - A data race on the LLM provider map crashed the whole backend. `POST
   /api/v1/ai/config` rebuilt the map while other requests read it, and
@@ -66,7 +82,7 @@ an existing deployment from starting or working until it is reconfigured — see
   Move them to the `OLLAMA_URL` / `LMSTUDIO_URL` environment variables.
 - **`CORS_CREDENTIALS` now defaults to `false`.** With the default wildcard
   origin it never worked anyway; set explicit `CORS_ORIGINS` to use credentials.
-- Agents older than 3.0.0 will not self-update to 3.0.0 and later releases
+- Agents older than 2.1.0 will not self-update to 2.1.0 and later releases
   without the published checksum being reachable; upgrade them with the install
   script if their update check reports a verification failure.
 
