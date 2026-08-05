@@ -133,7 +133,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
+		return nil, fmt.Errorf("sending request: %w", sanitizeTransportError(err))
 	}
 	defer resp.Body.Close()
 

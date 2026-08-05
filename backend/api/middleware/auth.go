@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net/http"
+	stdpath "path"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -95,8 +96,18 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check if path should skip auth
-			path := r.URL.Path
+			// The skip-list decision is made on the cleaned path, not the raw
+			// one. net/url.Parse does not collapse "." / ".." segments, so a
+			// request for "/api/v1/services/../events" arrives with that
+			// literal path; naive prefix matching against it would exempt a
+			// protected route it merely starts with the text of. gorilla/mux
+			// happens to intercept dirty paths on its own and redirect before
+			// any handler runs, which is what actually prevents this today -
+			// but that is mux's default, not a guarantee this middleware
+			// controls, and it would silently stop applying if the router
+			// ever called SkipClean(true) for an unrelated reason. Cleaning
+			// here makes the auth decision correct on its own.
+			path := stdpath.Clean(r.URL.Path)
 			if skipSet[path] {
 				next.ServeHTTP(w, r)
 				return

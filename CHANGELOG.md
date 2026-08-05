@@ -45,6 +45,28 @@ an existing deployment from starting or working until it is reconfigured, so rea
   beneath it, so a future endpoint could lose authentication purely by virtue
   of where it was mounted. Sub-path access for `/api/v1/services/{id}` is now
   an explicitly declared prefix.
+- **The authentication check now cleans the request path before matching it**
+  against that skip list. `net/url.Parse` does not collapse `.`/`..`
+  segments, so a request for `/api/v1/services/../events` arrives with that
+  literal, uncleaned path; matching it against the skip list without
+  normalizing first would treat it as starting with the exempted
+  `/api/v1/services/` prefix and let it through to a protected route with no
+  credential. The router's own default behavior happened to intercept this
+  before any handler ran, but that was incidental to a downstream library's
+  default, not something this middleware guaranteed on its own - verified
+  live against a real binary with a raw, unencoded request, both before and
+  after the fix.
+- **A live third-party API key could leak into logs and into the caller's own
+  response** on a plain network failure talking to Gemini - not an auth
+  failure, any transport-level failure (refused connection, DNS failure,
+  timeout). Gemini's key is sent as a URL query parameter, and Go's HTTP
+  client embeds the full request URL in the error it returns when a request
+  never gets a response; that error was logged and returned to whoever called
+  the AI documentation endpoint verbatim. Reproduced live: a failed request
+  against an unreachable address rendered the operator's (fake, test) key
+  directly in the resulting error string. Every provider's request path now
+  strips the URL from a transport-level error before it is used, whether or
+  not that provider currently puts anything sensitive in its URL.
 - **Source code sent to AI providers is scanned for hardcoded credentials
   before it leaves the prompt.** The README, Dockerfile, and entry-point file
   content the agent collects (for the AI documentation feature) were inserted

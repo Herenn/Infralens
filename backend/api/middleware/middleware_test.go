@@ -36,6 +36,61 @@ func TestAuthConfigValidate(t *testing.T) {
 // TestAuthSkipsOnlyDeclaredPaths guards the skip list against the prefix
 // matching it used to do, where any path merely starting with a public one —
 // including routes added later — was exempted from authentication.
+// TestAuthResistsDotSegmentTraversal is a regression test. net/url.Parse does
+// not collapse "." / ".." path segments, so a request for
+// "/api/v1/services/../events" arrives at the handler with that literal,
+// uncleaned path. Naive prefix matching against cfg.SkipPrefixes would see it
+// start with the exempted "/api/v1/services/" prefix and let it straight
+// through to a protected route with zero authentication.
+//
+// gorilla/mux happens to intercept any dirty path on its own, before route
+// matching, and respond with a bare redirect instead of running a handler -
+// which is what actually prevented this from being exploitable even before
+// this fix (verified separately, live, against a real binary: the redirect
+// carries no side effects, and following it to the clean path enforces auth
+// normally). But that protection is mux's default, not something this
+// middleware controls, and it would silently stop applying the moment
+// anything called router.SkipClean(true) for an unrelated reason elsewhere in
+// the codebase. This test pins down that Auth is correct on its own, by
+// exercising it directly with a dirty path and no router involved at all.
+func TestAuthResistsDotSegmentTraversal(t *testing.T) {
+	cfg := DefaultAuthConfig()
+	cfg.APIKey = "secret"
+
+	handler := Auth(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Each of these cleans (via path.Clean, the same normalization a
+	// well-behaved router applies) to a protected route, despite the raw text
+	// starting with the exempted /api/v1/services/ prefix.
+	dirtyPaths := []string{
+		"/api/v1/services/../events",
+		"/api/v1/services/../../v1/ai/config",
+		"/api/v1/services//../events",
+		"/api/v1/services/./../events",
+	}
+
+	for _, p := range dirtyPaths {
+		t.Run(p, func(t *testing.T) {
+			req := httptest.NewRequest("POST", p, nil)
+			// Confirm the test setup actually reflects what a real request
+			// delivers: httptest/net-url must not have already cleaned this
+			// for us, or the test would be exercising nothing.
+			if req.URL.Path != p {
+				t.Fatalf("test setup invalid: httptest.NewRequest cleaned %q to %q before Auth ever saw it", p, req.URL.Path)
+			}
+
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusUnauthorized {
+				t.Errorf("dirty path %q was not rejected: got %d, want 401", p, rr.Code)
+			}
+		})
+	}
+}
+
 func TestAuthSkipsOnlyDeclaredPaths(t *testing.T) {
 	cfg := DefaultAuthConfig()
 	cfg.APIKey = "secret"
