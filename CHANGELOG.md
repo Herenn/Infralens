@@ -5,6 +5,34 @@ All notable changes to InfraLens are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-08-05
+
+### Fixed
+
+- **WebSocket keepalive crashed the backend process.** Pings were written from a
+  separate goroutine while the event loop wrote deltas to the same connection.
+  `gorilla/websocket` allows only one concurrent writer and panics otherwise,
+  and because the panic happened in a bare goroutine the recovery middleware
+  could not contain it — the process exited. Pings now come from the same loop
+  that writes everything else.
+- **WebSocket ping/pong health checking never worked.** Nothing read from the
+  connection, so the pong handler never ran and its read deadline was never
+  applied; a departed client was only noticed on the next failed write. A read
+  pump now handles pongs, caps inbound frame size, and tears the subscription
+  down as soon as the client goes away. All writes carry a deadline so one
+  stalled client cannot block the loop.
+- `POST /api/v1/inspection` without an `inspection` object nil-dereferenced and
+  returned 500; it now returns 400.
+- The frontend WebSocket hook scheduled a reconnect from its close handler even
+  when the close came from unmount cleanup, leaving a socket reconnecting
+  forever after unmount.
+- The agent's inspected-PID table grew for the lifetime of the process as PIDs
+  churned; expired entries are now swept.
+
+### Changed
+
+- `gofmt` applied across the tree (15 files were unformatted).
+
 ## [2.0.0] - 2026-08-04
 
 ### Added
