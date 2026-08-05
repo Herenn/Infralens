@@ -41,6 +41,10 @@ var (
 	showVersion         = flag.Bool("version", false, "Show version and exit")
 )
 
+// maxTrackedPIDs is the size at which shouldInspect sweeps expired entries out
+// of inspectedPIDs. It only bounds bookkeeping, not inspection itself.
+const maxTrackedPIDs = 4096
+
 // Track inspected PIDs to avoid re-inspecting too frequently
 var (
 	inspectedPIDs   = make(map[uint32]time.Time)
@@ -439,12 +443,24 @@ func shouldInspect(pid uint32) bool {
 	inspectedPIDsMu.Lock()
 	defer inspectedPIDsMu.Unlock()
 
+	now := time.Now()
+
 	lastInspected, seen := inspectedPIDs[pid]
-	if seen && time.Since(lastInspected) < *inspectionCooldown {
+	if seen && now.Sub(lastInspected) < *inspectionCooldown {
 		return false
 	}
 
-	inspectedPIDs[pid] = time.Now()
+	// Entries past the cooldown carry no information, so drop them instead of
+	// letting the map grow for the lifetime of the agent as PIDs churn.
+	if len(inspectedPIDs) >= maxTrackedPIDs {
+		for p, t := range inspectedPIDs {
+			if now.Sub(t) >= *inspectionCooldown {
+				delete(inspectedPIDs, p)
+			}
+		}
+	}
+
+	inspectedPIDs[pid] = now
 	return true
 }
 

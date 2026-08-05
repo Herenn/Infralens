@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,7 @@ func newTestServer(t *testing.T) *testServer {
 	api.HandleFunc("/events", eventHandler.HandleEvents).Methods("POST")
 	api.HandleFunc("/stats", eventHandler.HandleStats).Methods("POST")
 	api.HandleFunc("/metrics", eventHandler.HandleMetrics).Methods("POST")
+	api.HandleFunc("/inspection", eventHandler.HandleInspection).Methods("POST")
 	api.HandleFunc("/topology", topologyHandler.HandleGetTopology).Methods("GET")
 	api.HandleFunc("/services", topologyHandler.HandleGetServices).Methods("GET")
 	api.HandleFunc("/services/{id}", topologyHandler.HandleGetService).Methods("GET")
@@ -520,6 +522,66 @@ func TestServices_ReturnsJSON(t *testing.T) {
 	contentType := rr.Header().Get("Content-Type")
 	if contentType != "application/json" {
 		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
+	}
+}
+
+// =============================================================================
+// Inspection Ingestion Tests
+// =============================================================================
+
+// TestHandleInspection_MissingFields is a regression test: a report without an
+// "inspection" object used to nil-deref in the service layer, panicking the
+// handler instead of rejecting the request.
+func TestHandleInspection_MissingFields(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"no inspection object", `{"node_name":"n1","service_id":"10.0.0.1/nginx"}`},
+		{"null inspection object", `{"node_name":"n1","service_id":"10.0.0.1/nginx","inspection":null}`},
+		{"no service id", `{"node_name":"n1","inspection":{"PID":1}}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := newTestServer(t)
+
+			req := httptest.NewRequest("POST", "/api/v1/inspection", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			ts.router.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleInspection_Valid(t *testing.T) {
+	ts := newTestServer(t)
+
+	body := `{"node_name":"n1","service_id":"10.0.0.1/nginx","inspection":{"PID":42,"ProcessName":"nginx"}}`
+	req := httptest.NewRequest("POST", "/api/v1/inspection", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusAccepted, rr.Code, rr.Body.String())
+	}
+
+	insp, err := ts.store.Services().GetInspection(t.Context(), "10.0.0.1/nginx")
+	if err != nil {
+		t.Fatalf("GetInspection: %v", err)
+	}
+	if insp == nil {
+		t.Fatal("expected inspection to be stored")
+	}
+	if insp.ProcessName != "nginx" {
+		t.Errorf("ProcessName = %q, want %q", insp.ProcessName, "nginx")
 	}
 }
 

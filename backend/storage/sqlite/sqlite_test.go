@@ -189,10 +189,10 @@ func TestServiceRepo_List(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		filter   storage.ServiceFilter
-		wantLen  int
-		wantIDs  []string
+		name    string
+		filter  storage.ServiceFilter
+		wantLen int
+		wantIDs []string
 	}{
 		{
 			name:    "no filter",

@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/gorilla/mux"
 	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
+	"github.com/gorilla/mux"
 )
 
 // TopologyHandler handles topology query endpoints.
@@ -94,10 +94,10 @@ func (h *TopologyHandler) HandleGetStats(w http.ResponseWriter, r *http.Request)
 
 // TopologyResponse is the topology format expected by the frontend.
 type TopologyResponse struct {
-	Services    []ServiceResponse    `json:"services"`
-	Connections []ConnectionResponse `json:"connections"`
+	Services    []ServiceResponse          `json:"services"`
+	Connections []ConnectionResponse       `json:"connections"`
 	NodeMetrics map[string]MetricsResponse `json:"node_metrics,omitempty"`
-	UpdatedAt   string               `json:"updated_at"`
+	UpdatedAt   string                     `json:"updated_at"`
 }
 
 // ServiceResponse is the service format expected by the frontend.

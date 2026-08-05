@@ -43,20 +43,20 @@ type Service struct {
 
 // ServiceInspection contains deep inspection data for a service.
 type ServiceInspection struct {
-	ServiceID    string            `json:"service_id"`
-	PID          int32             `json:"pid,omitempty"`
-	ProcessName  string            `json:"process_name,omitempty"`
-	CommandLine  string            `json:"command_line,omitempty"` // JSON array stored as string
-	WorkingDir   string            `json:"working_dir,omitempty"`
-	EnvVarNames  string            `json:"env_var_names,omitempty"` // JSON array
-	ListenPorts  string            `json:"listen_ports,omitempty"`  // JSON array
-	ConfigFiles  string            `json:"config_files,omitempty"`  // JSON array
-	Dependencies string            `json:"dependencies,omitempty"`  // JSON array
-	HTTPInfo     string            `json:"http_info,omitempty"`     // JSON object
-	DBInfo       string            `json:"db_info,omitempty"`       // JSON object
-	K8sMetadata  string            `json:"k8s_metadata,omitempty"`  // JSON object
-	CodeContext  string            `json:"code_context,omitempty"`  // JSON object
-	InspectedAt  time.Time         `json:"inspected_at"`
+	ServiceID    string    `json:"service_id"`
+	PID          int32     `json:"pid,omitempty"`
+	ProcessName  string    `json:"process_name,omitempty"`
+	CommandLine  string    `json:"command_line,omitempty"` // JSON array stored as string
+	WorkingDir   string    `json:"working_dir,omitempty"`
+	EnvVarNames  string    `json:"env_var_names,omitempty"` // JSON array
+	ListenPorts  string    `json:"listen_ports,omitempty"`  // JSON array
+	ConfigFiles  string    `json:"config_files,omitempty"`  // JSON array
+	Dependencies string    `json:"dependencies,omitempty"`  // JSON array
+	HTTPInfo     string    `json:"http_info,omitempty"`     // JSON object
+	DBInfo       string    `json:"db_info,omitempty"`       // JSON object
+	K8sMetadata  string    `json:"k8s_metadata,omitempty"`  // JSON object
+	CodeContext  string    `json:"code_context,omitempty"`  // JSON object
+	InspectedAt  time.Time `json:"inspected_at"`
 }
 
 // Connection represents a connection between two services.
@@ -100,12 +100,12 @@ type Topology struct {
 
 // ServiceFilter provides filtering options for querying services.
 type ServiceFilter struct {
-	Node       string     // Filter by node name
-	Namespace  string     // Filter by namespace
-	Type       string     // Filter by service type
+	Node          string     // Filter by node name
+	Namespace     string     // Filter by namespace
+	Type          string     // Filter by service type
 	LastSeenAfter *time.Time // Only services seen after this time
-	Limit      int        // Max results (0 = no limit)
-	Offset     int        // Pagination offset
+	Limit         int        // Max results (0 = no limit)
+	Offset        int        // Pagination offset
 }
 
 // ConnectionFilter provides filtering options for querying connections.

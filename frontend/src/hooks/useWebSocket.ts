@@ -52,6 +52,9 @@ export function useWebSocket() {
   const [isConnected, setIsConnected] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
+  // Set on unmount so the close handler doesn't schedule a reconnect for a
+  // socket we deliberately tore down.
+  const closedRef = useRef(false)
   const storeRef = useRef<TopologyStore>(emptyStore())
   const dirtyRef = useRef(false)
   const flushTimeoutRef = useRef<number | null>(null)
@@ -142,6 +145,7 @@ export function useWebSocket() {
   )
 
   const connect = useCallback(() => {
+    if (closedRef.current) return
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
     const url = wsUrl()
@@ -166,6 +170,9 @@ export function useWebSocket() {
       setIsConnected(false)
       wsRef.current = null
 
+      // Don't reconnect a socket we closed ourselves on unmount
+      if (closedRef.current) return
+
       // Schedule reconnection
       reconnectTimeoutRef.current = window.setTimeout(() => {
         connect()
@@ -180,17 +187,22 @@ export function useWebSocket() {
   }, [handleMessage])
 
   useEffect(() => {
+    closedRef.current = false
     connect()
 
     return () => {
+      closedRef.current = true
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
+        reconnectTimeoutRef.current = null
       }
       if (flushTimeoutRef.current) {
         clearTimeout(flushTimeoutRef.current)
+        flushTimeoutRef.current = null
       }
       if (wsRef.current) {
         wsRef.current.close()
+        wsRef.current = null
       }
     }
   }, [connect])

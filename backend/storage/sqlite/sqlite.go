@@ -35,13 +35,13 @@ const (
 
 // Store implements storage.Store using SQLite.
 type Store struct {
-	db            *sql.DB
-	config        storage.Config
-	services      *ServiceRepo
-	connections   *ConnectionRepo
-	metrics       *MetricsRepo
-	pruneStop     chan struct{}
-	pruneWg       sync.WaitGroup
+	db          *sql.DB
+	config      storage.Config
+	services    *ServiceRepo
+	connections *ConnectionRepo
+	metrics     *MetricsRepo
+	pruneStop   chan struct{}
+	pruneWg     sync.WaitGroup
 }
 
 // New creates a new SQLite store.

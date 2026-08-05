@@ -29,8 +29,8 @@ func DefaultAuthConfig() AuthConfig {
 		SkipPaths: []string{
 			"/health",
 			"/ready",
-			"/api/v1/ws",           // WebSocket has its own auth if needed
-			"/api/v1/topology",      // Read endpoints can be public
+			"/api/v1/ws",       // WebSocket has its own auth if needed
+			"/api/v1/topology", // Read endpoints can be public
 			"/api/v1/services",
 			"/api/v1/graph/stats",
 			"/api/v1/k8s/status",

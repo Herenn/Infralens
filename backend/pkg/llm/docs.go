@@ -39,12 +39,12 @@ type ServiceContext struct {
 	DBDatabases []string `json:"db_databases,omitempty"`
 
 	// Source code context (NEW)
-	ProjectName    string            `json:"project_name,omitempty"`
-	ProjectDesc    string            `json:"project_desc,omitempty"`
-	README         string            `json:"readme,omitempty"`
-	EntryPointCode string            `json:"entry_point_code,omitempty"`
-	EntryPointFile string            `json:"entry_point_file,omitempty"`
-	Dockerfile     string            `json:"dockerfile,omitempty"`
+	ProjectName    string `json:"project_name,omitempty"`
+	ProjectDesc    string `json:"project_desc,omitempty"`
+	README         string `json:"readme,omitempty"`
+	EntryPointCode string `json:"entry_point_code,omitempty"`
+	EntryPointFile string `json:"entry_point_file,omitempty"`
+	Dockerfile     string `json:"dockerfile,omitempty"`
 }
 
 // ConnectionInfo describes a network connection.
@@ -64,10 +64,10 @@ type DocumentationRequest struct {
 
 // DocumentationResponse contains the generated documentation.
 type DocumentationResponse struct {
-	Content      string `json:"content"`
-	Provider     string `json:"provider"`
-	Model        string `json:"model"`
-	TokensUsed   int    `json:"tokens_used,omitempty"`
+	Content    string `json:"content"`
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	TokensUsed int    `json:"tokens_used,omitempty"`
 }
 
 // DocsGenerator generates AI documentation for services.
@@ -221,7 +221,7 @@ func (g *DocsGenerator) buildPrompt(req DocumentationRequest) string {
 	// Network connections (limited to prevent token overflow)
 	if len(req.Context.IncomingConnections) > 0 || len(req.Context.OutgoingConnections) > 0 {
 		sb.WriteString("## Network Topology\n")
-		
+
 		if len(req.Context.IncomingConnections) > 0 {
 			sb.WriteString("### Incoming Connections\n")
 			incomingToShow := req.Context.IncomingConnections
@@ -332,13 +332,13 @@ func (g *DocsGenerator) buildPrompt(req DocumentationRequest) string {
 	// ============================================================
 	// SOURCE CODE CONTEXT (Most valuable for understanding the app)
 	// ============================================================
-	
-	hasCodeContext := req.Context.ProjectName != "" || req.Context.README != "" || 
+
+	hasCodeContext := req.Context.ProjectName != "" || req.Context.README != "" ||
 		req.Context.EntryPointCode != "" || req.Context.Dockerfile != ""
-	
+
 	if hasCodeContext {
 		sb.WriteString("## Source Code Analysis\n\n")
-		
+
 		// Project info
 		if req.Context.ProjectName != "" {
 			sb.WriteString(fmt.Sprintf("**Project Name**: %s\n", req.Context.ProjectName))
@@ -347,7 +347,7 @@ func (g *DocsGenerator) buildPrompt(req DocumentationRequest) string {
 			sb.WriteString(fmt.Sprintf("**Description**: %s\n", req.Context.ProjectDesc))
 		}
 		sb.WriteString("\n")
-		
+
 		// README (most valuable!)
 		if req.Context.README != "" {
 			sb.WriteString("### README.md\n")
@@ -360,7 +360,7 @@ func (g *DocsGenerator) buildPrompt(req DocumentationRequest) string {
 			sb.WriteString(readme)
 			sb.WriteString("\n```\n\n")
 		}
-		
+
 		// Entry point code
 		if req.Context.EntryPointCode != "" {
 			sb.WriteString(fmt.Sprintf("### Main Entry Point (%s)\n", req.Context.EntryPointFile))
@@ -368,7 +368,7 @@ func (g *DocsGenerator) buildPrompt(req DocumentationRequest) string {
 			sb.WriteString(req.Context.EntryPointCode)
 			sb.WriteString("\n```\n\n")
 		}
-		
+
 		// Dockerfile
 		if req.Context.Dockerfile != "" {
 			sb.WriteString("### Dockerfile\n")

@@ -360,8 +360,8 @@ func (w *Watcher) removePodFromCache(pod *corev1.Pod) {
 	}
 
 	log.WithFields(log.Fields{
-		"pod":       fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
-		"ip":        pod.Status.PodIP,
+		"pod": fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"ip":  pod.Status.PodIP,
 	}).Debug("Pod removed from cache")
 }
 

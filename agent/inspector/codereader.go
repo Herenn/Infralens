@@ -14,18 +14,18 @@ import (
 type CodeContext struct {
 	ProjectName    string            `json:"project_name,omitempty"`
 	Description    string            `json:"description,omitempty"`
-	ProjectRoot    string            `json:"project_root,omitempty"`   // Detected project root path
-	Framework      string            `json:"framework,omitempty"`      // Detected framework (Laravel, Express, etc.)
-	README         string            `json:"readme,omitempty"`         // First 2000 chars of README
-	EntryPoint     string            `json:"entry_point,omitempty"`    // Main file content (first 100 lines)
+	ProjectRoot    string            `json:"project_root,omitempty"` // Detected project root path
+	Framework      string            `json:"framework,omitempty"`    // Detected framework (Laravel, Express, etc.)
+	README         string            `json:"readme,omitempty"`       // First 2000 chars of README
+	EntryPoint     string            `json:"entry_point,omitempty"`  // Main file content (first 100 lines)
 	EntryPointFile string            `json:"entry_point_file,omitempty"`
-	Dockerfile     string            `json:"dockerfile,omitempty"`     // Dockerfile content
-	Dependencies   map[string]string `json:"dependencies,omitempty"`   // From package.json/go.mod/composer.json
-	Scripts        map[string]string `json:"scripts,omitempty"`        // npm scripts or Makefile targets
-	EnvExample     []string          `json:"env_example,omitempty"`    // .env.example variables
-	
+	Dockerfile     string            `json:"dockerfile,omitempty"`   // Dockerfile content
+	Dependencies   map[string]string `json:"dependencies,omitempty"` // From package.json/go.mod/composer.json
+	Scripts        map[string]string `json:"scripts,omitempty"`      // npm scripts or Makefile targets
+	EnvExample     []string          `json:"env_example,omitempty"`  // .env.example variables
+
 	// Deep analysis (opt-in)
-	SourceFiles    []SourceFile      `json:"source_files,omitempty"`   // Additional source files
+	SourceFiles []SourceFile `json:"source_files,omitempty"` // Additional source files
 }
 
 // SourceFile represents a source code file.
@@ -36,25 +36,25 @@ type SourceFile struct {
 }
 
 const (
-	maxREADMESize      = 3000  // chars
-	maxEntryPointLines = 150   // lines
-	maxDockerfileSize  = 2000  // chars
-	maxSourceFileLines = 100   // lines per file
-	maxSourceFiles     = 5     // for deep analysis
+	maxREADMESize      = 3000 // chars
+	maxEntryPointLines = 150  // lines
+	maxDockerfileSize  = 2000 // chars
+	maxSourceFileLines = 100  // lines per file
+	maxSourceFiles     = 5    // for deep analysis
 )
 
 // Identity files that indicate project root (ordered by priority)
 var identityFiles = []string{
-	"composer.json",      // PHP (Composer)
-	"package.json",       // Node.js
-	"go.mod",             // Go
-	"requirements.txt",   // Python
-	"pyproject.toml",     // Python (modern)
-	"Cargo.toml",         // Rust
-	"pom.xml",            // Java (Maven)
-	"build.gradle",       // Java (Gradle)
-	"Gemfile",            // Ruby
-	"mix.exs",            // Elixir
+	"composer.json",    // PHP (Composer)
+	"package.json",     // Node.js
+	"go.mod",           // Go
+	"requirements.txt", // Python
+	"pyproject.toml",   // Python (modern)
+	"Cargo.toml",       // Rust
+	"pom.xml",          // Java (Maven)
+	"build.gradle",     // Java (Gradle)
+	"Gemfile",          // Ruby
+	"mix.exs",          // Elixir
 }
 
 // Nested folder suffixes that often indicate we're NOT at the project root
@@ -95,7 +95,7 @@ func DetectProjectRoot(cwd string) string {
 			}
 		}
 	}
-	
+
 	// Walk up from CWD looking for identity files (up to 3 levels)
 	currentPath := cwd
 	for i := 0; i < 3; i++ {
@@ -113,7 +113,7 @@ func DetectProjectRoot(cwd string) string {
 		}
 		currentPath = parent
 	}
-	
+
 	// Default to original CWD
 	return cwd
 }
@@ -133,7 +133,7 @@ func DetectFramework(basePath string) string {
 	if pathExists(filepath.Join(basePath, "index.php")) && pathExists(filepath.Join(basePath, "system", "core")) {
 		return "CodeIgniter"
 	}
-	
+
 	// Node.js Frameworks (check package.json dependencies)
 	if pkgContent := readFileHead(filepath.Join(basePath, "package.json"), 5000); pkgContent != "" {
 		if strings.Contains(pkgContent, "\"express\"") {
@@ -164,7 +164,7 @@ func DetectFramework(basePath string) string {
 			return "Angular"
 		}
 	}
-	
+
 	// Python Frameworks
 	if reqContent := readFileHead(filepath.Join(basePath, "requirements.txt"), 2000); reqContent != "" {
 		if strings.Contains(reqContent, "django") || strings.Contains(reqContent, "Django") {
@@ -177,7 +177,7 @@ func DetectFramework(basePath string) string {
 			return "FastAPI"
 		}
 	}
-	
+
 	// Go Frameworks (check go.mod)
 	if goModContent := readFileHead(filepath.Join(basePath, "go.mod"), 2000); goModContent != "" {
 		if strings.Contains(goModContent, "github.com/gin-gonic/gin") {
@@ -193,7 +193,7 @@ func DetectFramework(basePath string) string {
 			return "Gorilla Mux"
 		}
 	}
-	
+
 	return ""
 }
 
@@ -206,12 +206,12 @@ func (i *Inspector) ReadCodeContext(pid int32, cwd string, deep bool) *CodeConte
 	// Use /proc/{pid}/root to access container filesystem
 	rootPath := fmt.Sprintf("/proc/%d/root", pid)
 	basePath := filepath.Join(rootPath, cwd)
-	
+
 	// Fallback to direct path if /proc path doesn't work
 	if !pathExists(basePath) {
 		basePath = cwd
 	}
-	
+
 	if !pathExists(basePath) {
 		log.Debugf("Code context: base path not accessible: %s", basePath)
 		return nil
@@ -297,7 +297,7 @@ func (ctx *CodeContext) parseComposerJSON(content string) {
 			ctx.Description = extractJSONValue(line)
 		}
 	}
-	
+
 	// Extract require section (dependencies)
 	inRequire := false
 	for _, line := range lines {
@@ -321,7 +321,7 @@ func (ctx *CodeContext) parseComposerJSON(content string) {
 			}
 		}
 	}
-	
+
 	// Also check for scripts
 	inScripts := false
 	for _, line := range lines {
@@ -358,7 +358,7 @@ func (ctx *CodeContext) parsePackageJSON(content string) {
 			ctx.Description = extractJSONValue(line)
 		}
 	}
-	
+
 	// Extract dependencies section
 	inDeps := false
 	for _, line := range lines {
@@ -450,7 +450,7 @@ func (ctx *CodeContext) findEntryPoint(basePath string) {
 			"wsgi.py",
 		},
 	}
-	
+
 	// Try framework-specific entry points first
 	if ctx.Framework != "" {
 		if entries, ok := frameworkEntryPoints[ctx.Framework]; ok {
@@ -464,7 +464,7 @@ func (ctx *CodeContext) findEntryPoint(basePath string) {
 			}
 		}
 	}
-	
+
 	// Common entry point files in priority order
 	entryPoints := []string{
 		// PHP
@@ -511,7 +511,7 @@ func (ctx *CodeContext) readFrameworkFiles(basePath string) {
 	if ctx.SourceFiles == nil {
 		ctx.SourceFiles = []SourceFile{}
 	}
-	
+
 	// Framework-specific important files
 	frameworkFiles := map[string][]string{
 		"Laravel": {
@@ -544,25 +544,25 @@ func (ctx *CodeContext) readFrameworkFiles(basePath string) {
 			"pages/api",
 		},
 	}
-	
+
 	if ctx.Framework == "" {
 		return
 	}
-	
+
 	files, ok := frameworkFiles[ctx.Framework]
 	if !ok {
 		return
 	}
-	
+
 	for _, file := range files {
 		fullPath := filepath.Join(basePath, file)
-		
+
 		// Check if it's a directory
 		info, err := os.Stat(fullPath)
 		if err != nil {
 			continue
 		}
-		
+
 		if info.IsDir() {
 			// Read first file in the directory
 			entries, err := os.ReadDir(fullPath)
@@ -601,15 +601,15 @@ func (ctx *CodeContext) readFrameworkFiles(basePath string) {
 
 func (ctx *CodeContext) readSourceFiles(basePath string) {
 	// Skip if path is a system directory
-	if strings.HasPrefix(basePath, "/etc/") || 
-	   strings.HasPrefix(basePath, "/usr/") || 
-	   strings.HasPrefix(basePath, "/lib/") ||
-	   strings.HasPrefix(basePath, "/bin/") ||
-	   strings.HasPrefix(basePath, "/sbin/") {
+	if strings.HasPrefix(basePath, "/etc/") ||
+		strings.HasPrefix(basePath, "/usr/") ||
+		strings.HasPrefix(basePath, "/lib/") ||
+		strings.HasPrefix(basePath, "/bin/") ||
+		strings.HasPrefix(basePath, "/sbin/") {
 		log.Debugf("Skipping source file scan for system path: %s", basePath)
 		return
 	}
-	
+
 	// Find additional source files for deep analysis
 	extensions := []string{".go", ".py", ".js", ".ts", ".java", ".rs", ".cs", ".php", ".rb"}
 	skipDirs := map[string]bool{
@@ -637,9 +637,9 @@ func (ctx *CodeContext) readSourceFiles(basePath string) {
 		"api",
 		"services",
 	}
-	
+
 	var files []SourceFile
-	
+
 	// First, try to read priority files
 	for _, priorityFile := range priorityFiles {
 		if len(files) >= maxSourceFiles {
@@ -650,7 +650,7 @@ func (ctx *CodeContext) readSourceFiles(basePath string) {
 		if err != nil {
 			continue
 		}
-		
+
 		if info.IsDir() {
 			// Read first few files from priority directory
 			entries, _ := os.ReadDir(fullPath)
@@ -687,7 +687,7 @@ func (ctx *CodeContext) readSourceFiles(basePath string) {
 			}
 		}
 	}
-	
+
 	// Then walk the directory for remaining slots
 	if len(files) < maxSourceFiles {
 		filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
@@ -697,7 +697,7 @@ func (ctx *CodeContext) readSourceFiles(basePath string) {
 				}
 				return nil
 			}
-			
+
 			if len(files) >= maxSourceFiles {
 				return filepath.SkipAll
 			}
@@ -706,7 +706,7 @@ func (ctx *CodeContext) readSourceFiles(basePath string) {
 			for _, e := range extensions {
 				if ext == e {
 					relPath, _ := filepath.Rel(basePath, path)
-					
+
 					// Skip if already added
 					alreadyAdded := false
 					for _, f := range files {
@@ -718,7 +718,7 @@ func (ctx *CodeContext) readSourceFiles(basePath string) {
 					if alreadyAdded {
 						break
 					}
-					
+
 					content := readFileLines(path, maxSourceFileLines)
 					if content != "" {
 						files = append(files, SourceFile{
@@ -793,7 +793,7 @@ func readFileLines(path string, maxLines int) string {
 		lines = append(lines, fmt.Sprintf("%4d | %s", lineNum, scanner.Text()))
 		lineNum++
 	}
-	
+
 	if len(lines) == 0 {
 		return ""
 	}

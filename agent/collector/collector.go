@@ -425,4 +425,3 @@ func (c *Collector) Close() error {
 	}
 	return nil
 }
-
