@@ -32,11 +32,11 @@ type Event struct {
 
 // ServiceEvent contains service-related event data.
 type ServiceEvent struct {
-	ServiceID   string `json:"service_id"`
-	Name        string `json:"name,omitempty"`
-	Node        string `json:"node,omitempty"`
-	Type        string `json:"type,omitempty"`
-	Healthy     bool   `json:"healthy"`
+	ServiceID string `json:"service_id"`
+	Name      string `json:"name,omitempty"`
+	Node      string `json:"node,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Healthy   bool   `json:"healthy"`
 }
 
 // ConnectionEvent contains connection-related event data.

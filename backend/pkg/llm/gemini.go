@@ -44,7 +44,7 @@ func (p *GeminiProvider) IsConfigured() bool {
 
 // Gemini API types
 type geminiRequest struct {
-	Contents         []geminiContent        `json:"contents"`
+	Contents         []geminiContent         `json:"contents"`
 	GenerationConfig *geminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 

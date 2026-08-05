@@ -29,13 +29,13 @@ const (
 // Event struct layout offsets (must match C struct event_t in traffic.c)
 // UNIFIED 64-byte layout
 const (
-	EventSize          = 64
-	eventOffsetDir     = 0  // direction (1 byte)
-	eventOffsetPad1    = 1  // _pad1 (3 bytes)
-	eventOffsetPid     = 4  // pid (4 bytes)
-	eventOffsetComm    = 8  // comm (16 bytes)
-	eventOffsetSrcAddr = 24 // src_addr (16 bytes)
-	eventOffsetDstAddr = 40 // dst_addr (16 bytes)
+	EventSize           = 64
+	eventOffsetDir      = 0  // direction (1 byte)
+	eventOffsetPad1     = 1  // _pad1 (3 bytes)
+	eventOffsetPid      = 4  // pid (4 bytes)
+	eventOffsetComm     = 8  // comm (16 bytes)
+	eventOffsetSrcAddr  = 24 // src_addr (16 bytes)
+	eventOffsetDstAddr  = 40 // dst_addr (16 bytes)
 	eventOffsetFamily   = 56 // family (2 bytes)
 	eventOffsetSrcPort  = 58 // src_port (2 bytes)
 	eventOffsetDstPort  = 60 // dst_port (2 bytes)

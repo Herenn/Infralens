@@ -60,6 +60,10 @@ func (ts *TopologyService) AddOrUpdateService(ctx context.Context, svc *storage.
 
 // UpdateServiceInspection updates inspection data for a service.
 func (ts *TopologyService) UpdateServiceInspection(ctx context.Context, serviceID string, insp *ServiceInspection) error {
+	if insp == nil {
+		return fmt.Errorf("inspection is nil for service %q", serviceID)
+	}
+
 	// Convert service layer inspection to storage model
 	storageInsp := &storage.ServiceInspection{
 		ServiceID:   serviceID,

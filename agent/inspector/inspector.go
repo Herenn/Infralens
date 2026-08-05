@@ -18,58 +18,58 @@ import (
 
 // InspectionResult contains all discovered metadata about a process/service.
 type InspectionResult struct {
-	PID         int32             `json:"pid"`
-	ProcessName string            `json:"process_name"`
-	CommandLine []string          `json:"command_line,omitempty"`
-	WorkingDir  string            `json:"working_dir,omitempty"`
-	EnvVarNames []string          `json:"env_var_names,omitempty"` // Names only, not values (security)
-	ListenPorts []int             `json:"listen_ports,omitempty"`
-	
+	PID         int32    `json:"pid"`
+	ProcessName string   `json:"process_name"`
+	CommandLine []string `json:"command_line,omitempty"`
+	WorkingDir  string   `json:"working_dir,omitempty"`
+	EnvVarNames []string `json:"env_var_names,omitempty"` // Names only, not values (security)
+	ListenPorts []int    `json:"listen_ports,omitempty"`
+
 	// Protocol-specific probing results
-	HTTPInfo    *HTTPProbeResult  `json:"http_info,omitempty"`
-	DBInfo      *DBProbeResult    `json:"db_info,omitempty"`
-	
+	HTTPInfo *HTTPProbeResult `json:"http_info,omitempty"`
+	DBInfo   *DBProbeResult   `json:"db_info,omitempty"`
+
 	// K8s metadata (if available)
-	K8sMetadata *K8sMetadata      `json:"k8s_metadata,omitempty"`
-	
+	K8sMetadata *K8sMetadata `json:"k8s_metadata,omitempty"`
+
 	// Detected specs/docs
-	OpenAPISpec string            `json:"openapi_spec,omitempty"`
-	
+	OpenAPISpec string `json:"openapi_spec,omitempty"`
+
 	// Configuration files (names only, not content)
-	ConfigFiles []string          `json:"config_files,omitempty"`
-	
+	ConfigFiles []string `json:"config_files,omitempty"`
+
 	// Package manifest info (dependencies)
-	Dependencies []Dependency     `json:"dependencies,omitempty"`
-	
+	Dependencies []Dependency `json:"dependencies,omitempty"`
+
 	// Source code context (for AI analysis)
-	CodeContext *CodeContext      `json:"code_context,omitempty"`
+	CodeContext *CodeContext `json:"code_context,omitempty"`
 }
 
 // HTTPProbeResult contains info from HTTP probing.
 type HTTPProbeResult struct {
-	ServerHeader   string            `json:"server_header,omitempty"`
-	PoweredBy      string            `json:"x_powered_by,omitempty"`
-	HealthEndpoint string            `json:"health_endpoint,omitempty"`
-	HealthStatus   int               `json:"health_status,omitempty"`
-	Endpoints      []string          `json:"endpoints,omitempty"` // Discovered endpoints
+	ServerHeader    string            `json:"server_header,omitempty"`
+	PoweredBy       string            `json:"x_powered_by,omitempty"`
+	HealthEndpoint  string            `json:"health_endpoint,omitempty"`
+	HealthStatus    int               `json:"health_status,omitempty"`
+	Endpoints       []string          `json:"endpoints,omitempty"` // Discovered endpoints
 	ResponseHeaders map[string]string `json:"response_headers,omitempty"`
 }
 
 // DBProbeResult contains database-specific info.
 type DBProbeResult struct {
-	Type        string   `json:"type"`         // postgres, mysql, redis, mongodb
-	Version     string   `json:"version,omitempty"`
-	Databases   []string `json:"databases,omitempty"`
-	TableCount  int      `json:"table_count,omitempty"`
+	Type       string   `json:"type"` // postgres, mysql, redis, mongodb
+	Version    string   `json:"version,omitempty"`
+	Databases  []string `json:"databases,omitempty"`
+	TableCount int      `json:"table_count,omitempty"`
 }
 
 // K8sMetadata from the Downward API and annotations.
 type K8sMetadata struct {
-	PodName       string            `json:"pod_name,omitempty"`
-	Namespace     string            `json:"namespace,omitempty"`
-	ServiceAccount string           `json:"service_account,omitempty"`
-	Labels        map[string]string `json:"labels,omitempty"`
-	Annotations   map[string]string `json:"annotations,omitempty"`
+	PodName        string            `json:"pod_name,omitempty"`
+	Namespace      string            `json:"namespace,omitempty"`
+	ServiceAccount string            `json:"service_account,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	Annotations    map[string]string `json:"annotations,omitempty"`
 }
 
 // Dependency represents a package dependency.
@@ -198,7 +198,7 @@ func (i *Inspector) readProcInfo(pid int32, result *InspectionResult) error {
 // findListenPorts finds TCP ports the process is listening on.
 func (i *Inspector) findListenPorts(pid int32) []int {
 	ports := make([]int, 0)
-	
+
 	// Read /proc/{pid}/net/tcp and /proc/{pid}/net/tcp6
 	for _, proto := range []string{"tcp", "tcp6"} {
 		path := fmt.Sprintf("/proc/%d/net/%s", pid, proto)
@@ -210,13 +210,13 @@ func (i *Inspector) findListenPorts(pid int32) []int {
 
 		scanner := bufio.NewScanner(file)
 		scanner.Scan() // Skip header
-		
+
 		for scanner.Scan() {
 			fields := strings.Fields(scanner.Text())
 			if len(fields) < 4 {
 				continue
 			}
-			
+
 			// State 0A = LISTEN
 			if fields[3] == "0A" {
 				// Parse local address (format: IP:PORT in hex)
@@ -252,18 +252,18 @@ func (i *Inspector) scanConfigFiles(pid int32) []string {
 
 	for _, dir := range configDirs {
 		fullDir := filepath.Join(rootPath, dir)
-		
+
 		filepath.WalkDir(fullDir, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return filepath.SkipDir
 			}
-			
+
 			// Skip deep directories
 			relPath, _ := filepath.Rel(fullDir, path)
 			if strings.Count(relPath, string(os.PathSeparator)) > 2 {
 				return filepath.SkipDir
 			}
-			
+
 			// Skip common non-config dirs
 			if d.IsDir() && isIgnoredDir(d.Name()) {
 				return filepath.SkipDir
@@ -279,7 +279,7 @@ func (i *Inspector) scanConfigFiles(pid int32) []string {
 					}
 				}
 			}
-			
+
 			return nil
 		})
 	}
@@ -306,12 +306,12 @@ func (i *Inspector) readK8sMetadata() *K8sMetadata {
 	if data, err := os.ReadFile("/etc/podinfo/namespace"); err == nil {
 		meta.Namespace = strings.TrimSpace(string(data))
 	}
-	
+
 	// Labels file (key="value" format)
 	if data, err := os.ReadFile("/etc/podinfo/labels"); err == nil {
 		meta.Labels = parseKeyValueFile(string(data))
 	}
-	
+
 	// Annotations file
 	if data, err := os.ReadFile("/etc/podinfo/annotations"); err == nil {
 		meta.Annotations = parseKeyValueFile(string(data))
@@ -362,7 +362,7 @@ func (i *Inspector) parseDependencyManifests(pid int32) []Dependency {
 // parseGoMod extracts dependencies from go.mod.
 func (i *Inspector) parseGoMod(path string) []Dependency {
 	deps := make([]Dependency, 0)
-	
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return deps
@@ -374,7 +374,7 @@ func (i *Inspector) parseGoMod(path string) []Dependency {
 
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		
+
 		if strings.HasPrefix(line, "require (") {
 			inRequireBlock = true
 			continue
@@ -383,7 +383,7 @@ func (i *Inspector) parseGoMod(path string) []Dependency {
 			inRequireBlock = false
 			continue
 		}
-		
+
 		if inRequireBlock {
 			if matches := requireRegex.FindStringSubmatch(line); len(matches) == 3 {
 				deps = append(deps, Dependency{
@@ -407,7 +407,7 @@ func (i *Inspector) parseGoMod(path string) []Dependency {
 func (i *Inspector) parsePackageJson(path string) []Dependency {
 	deps := make([]Dependency, 0)
 	// Simplified parsing - in production use encoding/json
-	
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return deps
@@ -416,7 +416,7 @@ func (i *Inspector) parsePackageJson(path string) []Dependency {
 	// Look for key frameworks
 	content := string(data)
 	frameworks := []string{"express", "fastify", "koa", "next", "react", "vue", "angular", "nestjs"}
-	
+
 	for _, fw := range frameworks {
 		if strings.Contains(content, `"`+fw+`"`) {
 			deps = append(deps, Dependency{Name: fw, Type: "npm"})
@@ -429,7 +429,7 @@ func (i *Inspector) parsePackageJson(path string) []Dependency {
 // parseRequirementsTxt extracts dependencies from requirements.txt.
 func (i *Inspector) parseRequirementsTxt(path string) []Dependency {
 	deps := make([]Dependency, 0)
-	
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return deps
@@ -440,7 +440,7 @@ func (i *Inspector) parseRequirementsTxt(path string) []Dependency {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		
+
 		// Parse package==version or package>=version
 		parts := regexp.MustCompile(`[=<>!]+`).Split(line, 2)
 		if len(parts) >= 1 {
@@ -471,7 +471,7 @@ func (i *Inspector) probeHTTP(addr string) *HTTPProbeResult {
 
 	// Try common endpoints
 	endpoints := []string{"/", "/health", "/healthz", "/api", "/metrics", "/openapi.json", "/swagger.json"}
-	
+
 	result := &HTTPProbeResult{
 		ResponseHeaders: make(map[string]string),
 		Endpoints:       make([]string, 0),
@@ -496,7 +496,7 @@ func (i *Inspector) probeHTTP(addr string) *HTTPProbeResult {
 		if result.ServerHeader == "" {
 			result.ServerHeader = resp.Header.Get("Server")
 			result.PoweredBy = resp.Header.Get("X-Powered-By")
-			
+
 			// Store interesting headers
 			for _, h := range []string{"Content-Type", "X-Request-Id", "X-Trace-Id"} {
 				if v := resp.Header.Get(h); v != "" {
@@ -546,11 +546,11 @@ func (i *Inspector) probePostgres(addr string) *DBProbeResult {
 	// Send PostgreSQL startup message (SSLRequest)
 	sslRequest := []byte{0, 0, 0, 8, 4, 210, 22, 47}
 	conn.Write(sslRequest)
-	
+
 	buf := make([]byte, 1)
 	conn.SetReadDeadline(time.Now().Add(i.timeout))
 	n, err := conn.Read(buf)
-	
+
 	if err == nil && n > 0 {
 		// 'N' = no SSL, 'S' = SSL supported - both mean PostgreSQL
 		if buf[0] == 'N' || buf[0] == 'S' {
@@ -574,7 +574,7 @@ func (i *Inspector) probeMySQL(addr string) *DBProbeResult {
 	conn.SetReadDeadline(time.Now().Add(i.timeout))
 	buf := make([]byte, 256)
 	n, err := conn.Read(buf)
-	
+
 	if err == nil && n > 4 {
 		// MySQL sends a greeting packet
 		// Check for protocol version (usually 10)
@@ -585,7 +585,7 @@ func (i *Inspector) probeMySQL(addr string) *DBProbeResult {
 				verEnd++
 			}
 			version := string(buf[5:verEnd])
-			
+
 			return &DBProbeResult{
 				Type:    "mysql",
 				Version: version,
@@ -606,11 +606,11 @@ func (i *Inspector) probeRedis(addr string) *DBProbeResult {
 
 	// Send PING command
 	conn.Write([]byte("*1\r\n$4\r\nPING\r\n"))
-	
+
 	conn.SetReadDeadline(time.Now().Add(i.timeout))
 	buf := make([]byte, 64)
 	n, err := conn.Read(buf)
-	
+
 	if err == nil && n > 0 {
 		response := string(buf[:n])
 		if strings.Contains(response, "PONG") || strings.Contains(response, "+PONG") {

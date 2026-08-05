@@ -41,8 +41,8 @@ var portMap = map[uint16]ServiceInfo{
 	26257: {Type: TypeDatabase, Tech: "CockroachDB", Icon: "cockroachdb"},
 
 	// Caches
-	6379: {Type: TypeCache, Tech: "Redis", Icon: "redis"},
-	6380: {Type: TypeCache, Tech: "Redis", Icon: "redis"},
+	6379:  {Type: TypeCache, Tech: "Redis", Icon: "redis"},
+	6380:  {Type: TypeCache, Tech: "Redis", Icon: "redis"},
 	11211: {Type: TypeCache, Tech: "Memcached", Icon: "memcached"},
 
 	// Message Queues
@@ -67,14 +67,14 @@ var portMap = map[uint16]ServiceInfo{
 	8444: {Type: TypeProxy, Tech: "Kong", Icon: "kong"},
 
 	// Monitoring
-	9090: {Type: TypeMonitoring, Tech: "Prometheus", Icon: "prometheus"},
-	3100: {Type: TypeMonitoring, Tech: "Loki", Icon: "loki"},
-	9200: {Type: TypeMonitoring, Tech: "Elasticsearch", Icon: "elasticsearch"},
-	9300: {Type: TypeMonitoring, Tech: "Elasticsearch", Icon: "elasticsearch"},
-	5601: {Type: TypeMonitoring, Tech: "Kibana", Icon: "kibana"},
+	9090:  {Type: TypeMonitoring, Tech: "Prometheus", Icon: "prometheus"},
+	3100:  {Type: TypeMonitoring, Tech: "Loki", Icon: "loki"},
+	9200:  {Type: TypeMonitoring, Tech: "Elasticsearch", Icon: "elasticsearch"},
+	9300:  {Type: TypeMonitoring, Tech: "Elasticsearch", Icon: "elasticsearch"},
+	5601:  {Type: TypeMonitoring, Tech: "Kibana", Icon: "kibana"},
 	16686: {Type: TypeMonitoring, Tech: "Jaeger", Icon: "jaeger"},
-	9411: {Type: TypeMonitoring, Tech: "Zipkin", Icon: "zipkin"},
-	4317: {Type: TypeMonitoring, Tech: "OpenTelemetry", Icon: "otel"},
+	9411:  {Type: TypeMonitoring, Tech: "Zipkin", Icon: "zipkin"},
+	4317:  {Type: TypeMonitoring, Tech: "OpenTelemetry", Icon: "otel"},
 
 	// Other common services
 	22:   {Type: TypeApp, Tech: "SSH", Icon: "ssh"},
@@ -88,52 +88,52 @@ var portMap = map[uint16]ServiceInfo{
 // commMap maps process names (comm) to service info
 var commMap = map[string]ServiceInfo{
 	// Databases
-	"postgres":       {Type: TypeDatabase, Tech: "PostgreSQL", Icon: "postgresql"},
-	"mysqld":         {Type: TypeDatabase, Tech: "MySQL", Icon: "mysql"},
-	"mariadbd":       {Type: TypeDatabase, Tech: "MariaDB", Icon: "mariadb"},
-	"mongod":         {Type: TypeDatabase, Tech: "MongoDB", Icon: "mongodb"},
-	"mongos":         {Type: TypeDatabase, Tech: "MongoDB", Icon: "mongodb"},
-	"sqlservr":       {Type: TypeDatabase, Tech: "SQL Server", Icon: "sqlserver"},
-	"cassandra":      {Type: TypeDatabase, Tech: "Cassandra", Icon: "cassandra"},
-	"cockroach":      {Type: TypeDatabase, Tech: "CockroachDB", Icon: "cockroachdb"},
+	"postgres":  {Type: TypeDatabase, Tech: "PostgreSQL", Icon: "postgresql"},
+	"mysqld":    {Type: TypeDatabase, Tech: "MySQL", Icon: "mysql"},
+	"mariadbd":  {Type: TypeDatabase, Tech: "MariaDB", Icon: "mariadb"},
+	"mongod":    {Type: TypeDatabase, Tech: "MongoDB", Icon: "mongodb"},
+	"mongos":    {Type: TypeDatabase, Tech: "MongoDB", Icon: "mongodb"},
+	"sqlservr":  {Type: TypeDatabase, Tech: "SQL Server", Icon: "sqlserver"},
+	"cassandra": {Type: TypeDatabase, Tech: "Cassandra", Icon: "cassandra"},
+	"cockroach": {Type: TypeDatabase, Tech: "CockroachDB", Icon: "cockroachdb"},
 
 	// Caches
-	"redis-server":   {Type: TypeCache, Tech: "Redis", Icon: "redis"},
-	"redis":          {Type: TypeCache, Tech: "Redis", Icon: "redis"},
-	"memcached":      {Type: TypeCache, Tech: "Memcached", Icon: "memcached"},
-	"dragonfly":      {Type: TypeCache, Tech: "Dragonfly", Icon: "dragonfly"},
+	"redis-server": {Type: TypeCache, Tech: "Redis", Icon: "redis"},
+	"redis":        {Type: TypeCache, Tech: "Redis", Icon: "redis"},
+	"memcached":    {Type: TypeCache, Tech: "Memcached", Icon: "memcached"},
+	"dragonfly":    {Type: TypeCache, Tech: "Dragonfly", Icon: "dragonfly"},
 
 	// Message Queues
-	"kafka":          {Type: TypeMessageQueue, Tech: "Kafka", Icon: "kafka"},
-	"rabbitmq":       {Type: TypeMessageQueue, Tech: "RabbitMQ", Icon: "rabbitmq"},
-	"beam.smp":       {Type: TypeMessageQueue, Tech: "RabbitMQ", Icon: "rabbitmq"}, // Erlang runtime
-	"nats-server":    {Type: TypeMessageQueue, Tech: "NATS", Icon: "nats"},
+	"kafka":       {Type: TypeMessageQueue, Tech: "Kafka", Icon: "kafka"},
+	"rabbitmq":    {Type: TypeMessageQueue, Tech: "RabbitMQ", Icon: "rabbitmq"},
+	"beam.smp":    {Type: TypeMessageQueue, Tech: "RabbitMQ", Icon: "rabbitmq"}, // Erlang runtime
+	"nats-server": {Type: TypeMessageQueue, Tech: "NATS", Icon: "nats"},
 
 	// Web Servers
-	"nginx":          {Type: TypeWebServer, Tech: "Nginx", Icon: "nginx"},
-	"apache2":        {Type: TypeWebServer, Tech: "Apache", Icon: "apache"},
-	"httpd":          {Type: TypeWebServer, Tech: "Apache", Icon: "apache"},
-	"caddy":          {Type: TypeWebServer, Tech: "Caddy", Icon: "caddy"},
-	"traefik":        {Type: TypeProxy, Tech: "Traefik", Icon: "traefik"},
-	"envoy":          {Type: TypeProxy, Tech: "Envoy", Icon: "envoy"},
-	"haproxy":        {Type: TypeProxy, Tech: "HAProxy", Icon: "haproxy"},
+	"nginx":   {Type: TypeWebServer, Tech: "Nginx", Icon: "nginx"},
+	"apache2": {Type: TypeWebServer, Tech: "Apache", Icon: "apache"},
+	"httpd":   {Type: TypeWebServer, Tech: "Apache", Icon: "apache"},
+	"caddy":   {Type: TypeWebServer, Tech: "Caddy", Icon: "caddy"},
+	"traefik": {Type: TypeProxy, Tech: "Traefik", Icon: "traefik"},
+	"envoy":   {Type: TypeProxy, Tech: "Envoy", Icon: "envoy"},
+	"haproxy": {Type: TypeProxy, Tech: "HAProxy", Icon: "haproxy"},
 
 	// Application Runtimes
-	"node":           {Type: TypeApp, Tech: "Node.js", Icon: "nodejs"},
-	"npm":            {Type: TypeApp, Tech: "Node.js", Icon: "nodejs"},
-	"deno":           {Type: TypeApp, Tech: "Deno", Icon: "deno"},
-	"bun":            {Type: TypeApp, Tech: "Bun", Icon: "bun"},
-	"python":         {Type: TypeApp, Tech: "Python", Icon: "python"},
-	"python3":        {Type: TypeApp, Tech: "Python", Icon: "python"},
-	"gunicorn":       {Type: TypeApp, Tech: "Python/Gunicorn", Icon: "python"},
-	"uvicorn":        {Type: TypeApp, Tech: "Python/Uvicorn", Icon: "python"},
-	"java":           {Type: TypeApp, Tech: "Java", Icon: "java"},
-	"ruby":           {Type: TypeApp, Tech: "Ruby", Icon: "ruby"},
-	"rails":          {Type: TypeApp, Tech: "Ruby on Rails", Icon: "rails"},
-	"php":            {Type: TypeApp, Tech: "PHP", Icon: "php"},
-	"php-fpm":        {Type: TypeApp, Tech: "PHP-FPM", Icon: "php"},
-	"dotnet":         {Type: TypeApp, Tech: ".NET", Icon: "dotnet"},
-	"go":             {Type: TypeApp, Tech: "Go", Icon: "go"},
+	"node":     {Type: TypeApp, Tech: "Node.js", Icon: "nodejs"},
+	"npm":      {Type: TypeApp, Tech: "Node.js", Icon: "nodejs"},
+	"deno":     {Type: TypeApp, Tech: "Deno", Icon: "deno"},
+	"bun":      {Type: TypeApp, Tech: "Bun", Icon: "bun"},
+	"python":   {Type: TypeApp, Tech: "Python", Icon: "python"},
+	"python3":  {Type: TypeApp, Tech: "Python", Icon: "python"},
+	"gunicorn": {Type: TypeApp, Tech: "Python/Gunicorn", Icon: "python"},
+	"uvicorn":  {Type: TypeApp, Tech: "Python/Uvicorn", Icon: "python"},
+	"java":     {Type: TypeApp, Tech: "Java", Icon: "java"},
+	"ruby":     {Type: TypeApp, Tech: "Ruby", Icon: "ruby"},
+	"rails":    {Type: TypeApp, Tech: "Ruby on Rails", Icon: "rails"},
+	"php":      {Type: TypeApp, Tech: "PHP", Icon: "php"},
+	"php-fpm":  {Type: TypeApp, Tech: "PHP-FPM", Icon: "php"},
+	"dotnet":   {Type: TypeApp, Tech: ".NET", Icon: "dotnet"},
+	"go":       {Type: TypeApp, Tech: "Go", Icon: "go"},
 
 	// Monitoring
 	"prometheus":     {Type: TypeMonitoring, Tech: "Prometheus", Icon: "prometheus"},
@@ -143,30 +143,30 @@ var commMap = map[string]ServiceInfo{
 	"loki":           {Type: TypeMonitoring, Tech: "Loki", Icon: "loki"},
 
 	// Container/Orchestration
-	"dockerd":        {Type: TypeApp, Tech: "Docker", Icon: "docker"},
-	"containerd":     {Type: TypeApp, Tech: "containerd", Icon: "containerd"},
-	"kubelet":        {Type: TypeApp, Tech: "Kubernetes", Icon: "kubernetes"},
-	"kube-proxy":     {Type: TypeApp, Tech: "Kubernetes", Icon: "kubernetes"},
-	"etcd":           {Type: TypeDatabase, Tech: "etcd", Icon: "etcd"},
+	"dockerd":    {Type: TypeApp, Tech: "Docker", Icon: "docker"},
+	"containerd": {Type: TypeApp, Tech: "containerd", Icon: "containerd"},
+	"kubelet":    {Type: TypeApp, Tech: "Kubernetes", Icon: "kubernetes"},
+	"kube-proxy": {Type: TypeApp, Tech: "Kubernetes", Icon: "kubernetes"},
+	"etcd":       {Type: TypeDatabase, Tech: "etcd", Icon: "etcd"},
 
 	// Common tools
-	"curl":           {Type: TypeApp, Tech: "cURL", Icon: "curl"},
-	"wget":           {Type: TypeApp, Tech: "wget", Icon: "wget"},
-	
+	"curl": {Type: TypeApp, Tech: "cURL", Icon: "curl"},
+	"wget": {Type: TypeApp, Tech: "wget", Icon: "wget"},
+
 	// InfraLens specific
 	"infralens-agent": {Type: TypeMonitoring, Tech: "InfraLens Agent", Icon: "infralens"},
 	"infralens":       {Type: TypeMonitoring, Tech: "InfraLens", Icon: "infralens"},
 	"backend":         {Type: TypeApp, Tech: "Go Backend", Icon: "go"},
-	
+
 	// Frontend dev servers
-	"vite":            {Type: TypeApp, Tech: "Vite", Icon: "vite"},
-	"webpack":         {Type: TypeApp, Tech: "Webpack", Icon: "webpack"},
-	"next":            {Type: TypeApp, Tech: "Next.js", Icon: "nextjs"},
-	"nuxt":            {Type: TypeApp, Tech: "Nuxt.js", Icon: "nuxtjs"},
-	
+	"vite":    {Type: TypeApp, Tech: "Vite", Icon: "vite"},
+	"webpack": {Type: TypeApp, Tech: "Webpack", Icon: "webpack"},
+	"next":    {Type: TypeApp, Tech: "Next.js", Icon: "nextjs"},
+	"nuxt":    {Type: TypeApp, Tech: "Nuxt.js", Icon: "nuxtjs"},
+
 	// System services (to show proper names)
-	"sshd":            {Type: TypeApp, Tech: "SSH Server", Icon: "ssh"},
-	"systemd":         {Type: TypeApp, Tech: "systemd", Icon: "linux"},
+	"sshd":    {Type: TypeApp, Tech: "SSH Server", Icon: "ssh"},
+	"systemd": {Type: TypeApp, Tech: "systemd", Icon: "linux"},
 }
 
 // Identify determines the service type and technology based on process name and port.

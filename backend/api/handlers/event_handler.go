@@ -153,6 +153,15 @@ func (h *EventHandler) HandleInspection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if report.ServiceID == "" {
+		http.Error(w, "service_id is required", http.StatusBadRequest)
+		return
+	}
+	if report.Inspection == nil {
+		http.Error(w, "inspection is required", http.StatusBadRequest)
+		return
+	}
+
 	log.WithFields(log.Fields{
 		"node":       report.NodeName,
 		"service_id": report.ServiceID,

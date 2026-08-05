@@ -13,13 +13,13 @@ const (
 	ProviderOpenAI    Provider = "openai"
 	ProviderAnthropic Provider = "anthropic"
 	ProviderGemini    Provider = "gemini"
-	ProviderOllama    Provider = "ollama"    // Local LLM
-	ProviderLMStudio  Provider = "lmstudio"  // Local LLM
+	ProviderOllama    Provider = "ollama"   // Local LLM
+	ProviderLMStudio  Provider = "lmstudio" // Local LLM
 )
 
 // Message represents a chat message.
 type Message struct {
-	Role    string `json:"role"`    // "system", "user", "assistant"
+	Role    string `json:"role"` // "system", "user", "assistant"
 	Content string `json:"content"`
 }
 
@@ -44,13 +44,13 @@ type CompletionResponse struct {
 type LLMProvider interface {
 	// Name returns the provider name.
 	Name() string
-	
+
 	// IsConfigured returns true if the provider has valid configuration.
 	IsConfigured() bool
-	
+
 	// Complete generates a completion for the given request.
 	Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error)
-	
+
 	// ListModels returns available models for this provider.
 	ListModels(ctx context.Context) ([]string, error)
 }
@@ -60,23 +60,23 @@ type Config struct {
 	// OpenAI
 	OpenAIAPIKey string `json:"openai_api_key,omitempty"`
 	OpenAIModel  string `json:"openai_model,omitempty"` // Default: gpt-4-turbo-preview
-	
+
 	// Anthropic
 	AnthropicAPIKey string `json:"anthropic_api_key,omitempty"`
 	AnthropicModel  string `json:"anthropic_model,omitempty"` // Default: claude-3-opus-20240229
-	
+
 	// Google Gemini
 	GeminiAPIKey string `json:"gemini_api_key,omitempty"`
 	GeminiModel  string `json:"gemini_model,omitempty"` // Default: gemini-pro
-	
+
 	// Ollama (local)
-	OllamaURL   string `json:"ollama_url,omitempty"` // Default: http://localhost:11434
+	OllamaURL   string `json:"ollama_url,omitempty"`   // Default: http://localhost:11434
 	OllamaModel string `json:"ollama_model,omitempty"` // Default: llama2
-	
+
 	// LM Studio (local)
 	LMStudioURL   string `json:"lmstudio_url,omitempty"` // Default: http://localhost:1234
 	LMStudioModel string `json:"lmstudio_model,omitempty"`
-	
+
 	// Default provider to use
 	DefaultProvider Provider `json:"default_provider,omitempty"`
 }
@@ -92,19 +92,19 @@ func NewManager(config *Config) *Manager {
 	if config == nil {
 		config = &Config{}
 	}
-	
+
 	m := &Manager{
 		config:    config,
 		providers: make(map[Provider]LLMProvider),
 	}
-	
+
 	// Initialize providers
 	m.providers[ProviderOpenAI] = NewOpenAIProvider(config)
 	m.providers[ProviderAnthropic] = NewAnthropicProvider(config)
 	m.providers[ProviderGemini] = NewGeminiProvider(config)
 	m.providers[ProviderOllama] = NewOllamaProvider(config)
 	m.providers[ProviderLMStudio] = NewLMStudioProvider(config)
-	
+
 	return m
 }
 
@@ -137,7 +137,7 @@ func (m *Manager) GetDefaultProvider() (LLMProvider, error) {
 			return p, nil
 		}
 	}
-	
+
 	// Otherwise, return first configured provider
 	// Priority: OpenAI > Anthropic > Gemini > Ollama > LMStudio
 	priority := []Provider{ProviderOpenAI, ProviderAnthropic, ProviderGemini, ProviderOllama, ProviderLMStudio}
@@ -146,7 +146,7 @@ func (m *Manager) GetDefaultProvider() (LLMProvider, error) {
 			return p, nil
 		}
 	}
-	
+
 	return nil, fmt.Errorf("no LLM provider configured")
 }
 
