@@ -84,6 +84,14 @@ func Load() *Config {
 			AutoMigrate:     getBoolEnv("DB_AUTO_MIGRATE", true),
 			PruneInterval:   getDurationEnv("PRUNE_INTERVAL", 5*time.Minute),
 			PruneMaxAge:     getDurationEnv("PRUNE_MAX_AGE", 30*time.Minute),
+
+			// Topology history. Retention is deliberately unrelated to
+			// PRUNE_MAX_AGE above: that governs current state and is measured
+			// in minutes, while history is what makes "show me last week"
+			// possible and is measured in days.
+			HistoryEnabled:   getBoolEnv("HISTORY_ENABLED", true),
+			HistoryRetention: getDurationEnv("HISTORY_RETENTION", storage.DefaultHistoryRetention),
+			HistoryMaxGap:    getDurationEnv("HISTORY_MAX_GAP", storage.DefaultHistoryMaxGap),
 		},
 
 		CORS: middleware.CORSConfig{

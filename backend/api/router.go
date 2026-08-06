@@ -42,6 +42,9 @@ func NewServer(
 
 	// Create topology service
 	topologySvc := service.NewTopologyService(store, eventBus)
+	if cfg.Storage.HistoryEnabled {
+		topologySvc.EnableHistory(cfg.Storage.HistoryMaxGap)
+	}
 
 	// Create event processor
 	processor := service.NewEventProcessor(topologySvc, k8sWatcher)

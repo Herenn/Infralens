@@ -15,6 +15,15 @@ import (
 type TopologyService struct {
 	store    storage.Store
 	eventBus *EventBus
+
+	// historyEnabled records when services and edges existed, in addition to
+	// their current state. Off by default so existing behaviour is unchanged
+	// until a caller opts in.
+	historyEnabled bool
+
+	// historyMaxGap is how long an entity may go unobserved before its
+	// interval is treated as ended.
+	historyMaxGap time.Duration
 }
 
 // NewTopologyService creates a new topology service.
@@ -23,6 +32,66 @@ func NewTopologyService(store storage.Store, eventBus *EventBus) *TopologyServic
 		store:    store,
 		eventBus: eventBus,
 	}
+}
+
+// EnableHistory turns on topology history recording. A non-positive maxGap
+// falls back to the storage default.
+func (ts *TopologyService) EnableHistory(maxGap time.Duration) {
+	if maxGap <= 0 {
+		maxGap = storage.DefaultHistoryMaxGap
+	}
+	ts.historyEnabled = true
+	ts.historyMaxGap = maxGap
+}
+
+// recordServiceHistory records a service sighting.
+//
+// History is strictly additive to the live topology: a failure to record it
+// must not fail the write that keeps the current view correct, so errors are
+// logged rather than returned. Losing a slice of history is a degraded
+// feature; losing the live topology is a broken product.
+func (ts *TopologyService) recordServiceHistory(ctx context.Context, svc *storage.Service, at time.Time) {
+	if !ts.historyEnabled {
+		return
+	}
+	if err := ts.store.History().RecordService(ctx, svc, observationTime(at), ts.historyMaxGap); err != nil {
+		log.WithError(err).WithField("service_id", svc.ID).Warn("Failed to record service history")
+	}
+}
+
+// observationTime resolves when a sighting happened.
+//
+// Callers pass the LastSeen they built the entity with. Note that the current
+// state tables do NOT use that value - ServiceRepo.Upsert stamps time.Now()
+// itself and ignores the caller's LastSeen entirely - so history is the only
+// place an explicitly supplied observation time is honoured. In normal
+// operation the processor sets LastSeen to now and the two agree; honouring it
+// here keeps backfill and replay meaningful rather than silently rewriting
+// every observation to the moment it happened to be processed.
+//
+// A zero time means the caller did not supply one, so fall back to now rather
+// than recording an interval in the year zero.
+func observationTime(at time.Time) time.Time {
+	if at.IsZero() {
+		return time.Now()
+	}
+	return at
+}
+
+// recordConnectionHistory records an edge sighting. See recordServiceHistory
+// for why errors are logged rather than propagated.
+func (ts *TopologyService) recordConnectionHistory(ctx context.Context, conn *storage.Connection, at time.Time) {
+	if !ts.historyEnabled {
+		return
+	}
+	if err := ts.store.History().RecordConnection(ctx, conn, observationTime(at), ts.historyMaxGap); err != nil {
+		log.WithError(err).WithField("conn_id", conn.ID).Warn("Failed to record connection history")
+	}
+}
+
+// HistoryEnabled reports whether topology history is being recorded.
+func (ts *TopologyService) HistoryEnabled() bool {
+	return ts.historyEnabled
 }
 
 // AddOrUpdateService adds or updates a service in the topology.
@@ -39,6 +108,8 @@ func (ts *TopologyService) AddOrUpdateService(ctx context.Context, svc *storage.
 	if err := ts.store.Services().Upsert(ctx, svc); err != nil {
 		return fmt.Errorf("upserting service: %w", err)
 	}
+
+	ts.recordServiceHistory(ctx, svc, svc.LastSeen)
 
 	// Publish event
 	event := ServiceEvent{
@@ -157,6 +228,8 @@ func (ts *TopologyService) AddConnection(ctx context.Context, conn *storage.Conn
 	if err := ts.store.Connections().Upsert(ctx, conn); err != nil {
 		return fmt.Errorf("upserting connection: %w", err)
 	}
+
+	ts.recordConnectionHistory(ctx, conn, conn.LastSeen)
 
 	// Publish event
 	event := ConnectionEvent{

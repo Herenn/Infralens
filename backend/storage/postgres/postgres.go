@@ -28,6 +28,7 @@ type Store struct {
 	services    *ServiceRepo
 	connections *ConnectionRepo
 	metrics     *MetricsRepo
+	history     *HistoryRepo
 	pruneStop   chan struct{}
 	pruneWg     sync.WaitGroup
 }
@@ -78,6 +79,7 @@ func New(cfg storage.Config) (*Store, error) {
 	store.services = &ServiceRepo{db: db}
 	store.connections = &ConnectionRepo{db: db}
 	store.metrics = &MetricsRepo{db: db}
+	store.history = &HistoryRepo{db: db}
 
 	// Run migrations if enabled
 	if cfg.AutoMigrate {
@@ -184,6 +186,11 @@ func (s *Store) Metrics() storage.MetricsRepository {
 	return s.metrics
 }
 
+// History returns the topology history repository.
+func (s *Store) History() storage.HistoryRepository {
+	return s.history
+}
+
 // GetTopology returns the complete topology snapshot.
 func (s *Store) GetTopology(ctx context.Context) (*storage.Topology, error) {
 	services, err := s.services.List(ctx, storage.ServiceFilter{})
@@ -272,6 +279,21 @@ func (s *Store) Prune(ctx context.Context, maxAge time.Duration) (int64, error) 
 		return total, fmt.Errorf("pruning metrics: %w", err)
 	}
 	total += metricsPruned
+
+	// History is pruned on its own, much longer clock. maxAge governs current
+	// state and is measured in minutes; applying it to history would discard
+	// the record almost as fast as it is written.
+	if s.config.HistoryEnabled {
+		retention := s.config.HistoryRetention
+		if retention <= 0 {
+			retention = storage.DefaultHistoryRetention
+		}
+		historyPruned, err := s.history.DeleteStale(ctx, time.Now().Add(-retention))
+		if err != nil {
+			return total, fmt.Errorf("pruning history: %w", err)
+		}
+		total += historyPruned
+	}
 
 	return total, nil
 }

@@ -202,6 +202,10 @@ type Store interface {
 	// Metrics returns the metrics repository.
 	Metrics() MetricsRepository
 
+	// History returns the topology history repository, which records when
+	// services and edges existed rather than only their current state.
+	History() HistoryRepository
+
 	// GetTopology returns the complete topology snapshot.
 	GetTopology(ctx context.Context) (*Topology, error)
 
@@ -228,7 +232,42 @@ type Config struct {
 	AutoMigrate     bool          // Run migrations on startup
 	PruneInterval   time.Duration // Interval for pruning stale data (0 = disabled)
 	PruneMaxAge     time.Duration // Max age for data before pruning
+
+	// HistoryEnabled records topology history alongside current state.
+	HistoryEnabled bool
+
+	// HistoryRetention is how long historical intervals are kept.
+	//
+	// Deliberately separate from PruneMaxAge. That governs current state and
+	// defaults to 30 minutes - reusing it here would delete the history within
+	// half an hour and leave the feature pointless. Retention for history is
+	// measured in days, and is the setting that actually decides how far back
+	// a user can look.
+	HistoryRetention time.Duration
+
+	// HistoryMaxGap is how long an entity can go unobserved before its
+	// interval is considered ended and the next sighting opens a new one.
+	//
+	// This is the knob that decides what counts as "it went away" versus "we
+	// briefly stopped hearing about it". Too small and an agent restart or a
+	// quiet period reads as the service disappearing and coming back; too
+	// large and a real outage is swallowed into one continuous interval.
+	HistoryMaxGap time.Duration
 }
+
+// History defaults. Exported so callers configuring a Store directly get the
+// same behaviour as the server without duplicating the numbers.
+const (
+	// DefaultHistoryRetention keeps roughly a month of architecture history:
+	// long enough to answer "did this change since last release" and to cover
+	// a postmortem, without unbounded growth.
+	DefaultHistoryRetention = 30 * 24 * time.Hour
+
+	// DefaultHistoryMaxGap tolerates an agent restart, a rollout, or a short
+	// network blip without registering a disappearance, while still noticing a
+	// service that is genuinely gone within a few minutes.
+	DefaultHistoryMaxGap = 5 * time.Minute
+)
 
 // DefaultConfig returns a Config with sensible defaults for SQLite.
 func DefaultConfig() Config {
