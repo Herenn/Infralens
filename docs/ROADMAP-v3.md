@@ -6,6 +6,101 @@ patches ship independently as 2.2 / 2.3 / 2.4 / … from `main` and are merged
 
 ---
 
+## Positioning: not "Coroot+"
+
+This has to be settled before scoping features, because it changes what the
+same four features are *for*.
+
+Coroot is a mature, well-resourced adjacent project: 7.9k GitHub stars, 390
+forks, 1,416 commits. It ships eBPF service maps, metrics, logs, distributed
+tracing, continuous CPU/memory profiling, SLO-based health dashboards, cloud
+cost monitoring, and AI root-cause analysis — and it requires Prometheus plus
+ClickHouse to run it. InfraLens today has none of logs, traces, or profiling;
+it does TCP connection tracing.
+
+If v3 becomes "history + alerting + AI RCA," that is not catching up to
+Coroot — it's rebuilding a third of what they already ship, months behind,
+against a project with an enterprise tier and a dedicated AI-RCA product
+page. That fight is close to unwinnable and doesn't need to be fought.
+
+**What Coroot's own materials never mention: architecture documentation or
+explaining what a service is.** Coroot answers "is this healthy, and if not,
+why." It does not answer "what does this thing do, and why does it exist."
+InfraLens already has the seed of that answer and Coroot doesn't — the AI
+docs feature reads a service's README, Dockerfile, and entry-point source and
+explains it in plain English from live, auto-discovered topology. Nobody
+adjacent is doing that.
+
+**Working identity: the living architecture doc for your infra** — onboarding,
+institutional knowledge, drift awareness. Not a Datadog/Coroot alternative.
+Same eBPF, zero-instrumentation foundation; different job.
+
+This reframes the four v3 features below. Same engineering work in most
+cases, different design target:
+
+| Feature | As "Coroot+" (loses) | As architecture understanding (different game) |
+|---|---|---|
+| History | SLA/uptime history — Coroot's exact turf, needs ClickHouse-grade infra | "What did my architecture look like last week" — lighter, fits single-binary/SQLite |
+| Change detection | Incident/SLA-breach alerting — competing on uptime trust incumbents already own | Architecture drift: "a new external dependency appeared," "this stopped talking to Redis" |
+| Auth/RBAC | Table stakes either way | Table stakes either way |
+| Latency (v3) / L7 (v4) | "Which endpoint is slow" — APM territory | "What does this service actually talk to and do" — feeds the docs |
+
+The single-binary, SQLite-first, try-it-in-30-seconds posture stops being a
+limitation under this framing and becomes the point: a tool an individual
+engineer or small team points at their own infra to *understand* it, not a
+platform an ops team stands up to *watch* it.
+
+---
+
+## Will anyone actually use this? (the honest risk)
+
+Worth writing down, not just deciding by momentum, because it should drive
+engineering priority inside v3, not just marketing copy.
+
+**The real risk isn't that the idea is bad — it's that documentation tools
+have a weak habitual-use track record.** Monitoring tools get opened during
+incidents: frequent, urgent, sticky. A tool people open once during
+onboarding and never again doesn't get maintained, doesn't get issues filed
+against it, and stalls as an open-source project regardless of how good the
+underlying idea is. Manually-maintained architecture diagrams (C4 model
+tooling, hand-drawn wiki diagrams) have failed for exactly this reason for
+years — not because diagrams are unwanted, but because nothing forces anyone
+to keep opening the tool that draws them. The one adjacent success story,
+Spotify's Backstage, largely won through top-down platform-engineering
+mandates at large orgs, not organic pull — a distribution path this project
+doesn't have.
+
+**This means change detection (v3 feature #2) is not a peer feature — it's
+the one that determines whether this succeeds.** A live diagram that's always
+accurate but requires you to remember to look at it will get bookmarked and
+forgotten. A diagram that *pings you* — "a new external dependency appeared,"
+"this service stopped talking to what it used to" — creates the same
+recurring, reactive engagement loop that makes monitoring tools sticky,
+without requiring InfraLens to compete on uptime/incident trust. If v3 ships
+history and auth on schedule but change-detection slips, the release still
+looks complete on a roadmap and still risks being a tool people install once
+and never reopen. Prioritize accordingly if the schedule gets tight.
+
+**Where the pull is real, concretely — design around these moments rather
+than "general purpose docs":**
+- **Onboarding.** A new hire's first days are the sharpest, most recurring
+  version of "what does this actually do" — recurring across any growing
+  team, not a one-off.
+- **Incident postmortems.** "Did we know this dependency existed?" is a
+  question every postmortem asks; a topology history answers it directly.
+- **Compliance/audit.** SOC2 and similar audits are painful and infrequent,
+  but teams remember whatever made the last one faster.
+
+None of this guarantees adoption. But the downside of trying is low — v3 is
+incremental on the eBPF/topology core that already exists either way — and
+the upside, if the change-detection hook lands well, is a real and largely
+uncontested niche rather than a losing race against a better-funded
+incumbent. "Worth it" here doesn't require beating Coroot; it requires real
+teams reaching for it at these three moments and the project staying alive
+past launch week.
+
+---
+
 ## Where v2.1 actually stands
 
 Worth stating plainly, because it determines what v3 should be.
@@ -39,7 +134,7 @@ downstream of it.
 
 ## Recommended v3.0 scope
 
-**Theme: InfraLens remembers.**
+**Theme: InfraLens remembers — and explains.**
 
 Three weeks and change is not enough time to do historical storage *and* L7
 protocol parsing *and* an auth system properly. Attempting all three produces
@@ -60,6 +155,12 @@ Store topology over time instead of overwriting current state.
 - A timeline scrubber in the UI. Dragging it re-renders the graph at that
   moment. This is the demo that sells the release.
 
+Framed as architecture history, not SLA history: the goal is "what did the
+diagram look like," not high-frequency metric time series. That keeps this
+buildable on SQLite rather than requiring ClickHouse-grade infrastructure —
+which is also a real product difference from Coroot's stack, not just a
+convenience.
+
 This is mostly backend, schema, and UI work — all domains this codebase
 already handles well, which is exactly why it fits the window.
 
@@ -67,7 +168,7 @@ already handles well, which is exactly why it fits the window.
 node; naive per-sample rows will not survive a real cluster. Design the
 bucketing before writing the migration, not after.
 
-### 2. Change detection & alerting (what history makes possible)
+### 2. Change detection & alerting — the feature that determines adoption
 
 Once there is history, the valuable questions become answerable:
 
@@ -76,9 +177,15 @@ Once there is history, the valuable questions become answerable:
 - An expected dependency disappeared.
 - Traffic to a dependency changed by more than N%.
 
-Delivered as a rules engine plus webhook/Slack output. This is where the
-security and compliance value lives, and it is the reason someone keeps
-InfraLens open rather than looking at it once.
+Delivered as a rules engine plus webhook/Slack output. Framed as *architecture
+drift*, not incident/threshold alerting — "something changed that you should
+know about," not "something is down." That's a smaller, calmer scope than
+SLA-breach alerting, and it doesn't require competing on the uptime-critical
+trust that incumbents already own.
+
+This is also, per the adoption discussion above, the single highest-priority
+item if the schedule gets tight. It's what turns InfraLens from a page that
+gets bookmarked once into one that pings people back.
 
 ### 3. Authentication, sessions, RBAC
 
@@ -105,6 +212,11 @@ eBPF can read smoothed RTT directly off the socket (`tcp_sock->srtt_us`) at
 the points where the agent already has the socket in hand. The plumbing exists;
 this is the cheapest real capability on the list.
 
+Framed as a dependency-health signal for the documentation ("this dependency
+is typically fast/slow"), not an APM percentile dashboard — same data, but
+the UI and narrative should support understanding a service, not paging
+someone.
+
 *(If v3 slips, this one can be pulled forward into a 2.x — it needs no schema
 change and no API change.)*
 
@@ -119,8 +231,10 @@ Kafka topics. Turning "service A → service B on 5432" into "service A runs
 `SELECT` against the `users` table."
 
 This is the biggest single capability jump available and the strongest
-differentiator. It also dramatically improves the AI documentation, which
-would be describing a real API surface instead of a port number.
+differentiator. Under the architecture-understanding framing it's especially
+valuable: it feeds the AI documentation a real API surface to describe
+instead of a port number, which is a docs improvement, not just a monitoring
+one.
 
 It is deferred **because it is the riskiest item, not the least valuable one**:
 
@@ -171,7 +285,13 @@ This branch will live for roughly a month while 2.x releases continue from
   changes the storage design very differently from 90 days.
 - **Does SQLite remain a supported backend for historical data,** or does
   history require Postgres? This affects whether the demo path still works
-  single-binary.
+  single-binary, and whether "lighter than Coroot's ClickHouse+Prometheus
+  stack" stays true.
 - **Is alerting in-product, or does it delegate** to Prometheus/Alertmanager
   via exported metrics? Delegating is far less code and integrates with what
-  people already run.
+  people already run — but the change-detection notifications (new
+  dependency, disappeared dependency) are architecture events, not metrics,
+  so they likely need to stay in-product regardless of this answer.
+- **What's the first-week experience for the three wedge moments**
+  (onboarding, postmortem, audit)? Worth prototyping the UI for these
+  specifically rather than a generic "browse history" screen.
