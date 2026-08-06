@@ -91,6 +91,44 @@ func (h *TopologyHandler) HandleGetHistoryRange(w http.ResponseWriter, r *http.R
 	json.NewEncoder(w).Encode(response)
 }
 
+// HandleGetTopologyDiff returns what appeared and disappeared between two
+// instants (?from=&to=, both required RFC 3339 timestamps) - the on-demand
+// sibling of continuous change detection.
+func (h *TopologyHandler) HandleGetTopologyDiff(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	fromParam := r.URL.Query().Get("from")
+	toParam := r.URL.Query().Get("to")
+	if fromParam == "" || toParam == "" {
+		http.Error(w, "Both 'from' and 'to' query parameters are required (RFC 3339 timestamps)", http.StatusBadRequest)
+		return
+	}
+
+	from, err := time.Parse(time.RFC3339, fromParam)
+	if err != nil {
+		http.Error(w, "Invalid 'from' parameter: expected RFC 3339 timestamp", http.StatusBadRequest)
+		return
+	}
+	to, err := time.Parse(time.RFC3339, toParam)
+	if err != nil {
+		http.Error(w, "Invalid 'to' parameter: expected RFC 3339 timestamp", http.StatusBadRequest)
+		return
+	}
+
+	diff, err := h.topology.GetTopologyDiff(ctx, from, to)
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Failed to get topology diff", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(convertTopologyDiffToResponse(diff))
+}
+
 // HandleGetStaleServices returns decommission candidates: services whose
 // most recent observation is older than ?olderThan=<Go duration> (default
 // and unit: the storage history retention window, e.g. "720h").
@@ -231,6 +269,64 @@ func (h *TopologyHandler) HandleGetStats(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(stats)
 }
 
+// HandleGetCriticality ranks services by upstream blast radius - the
+// riskiest single points of failure in one list, instead of clicking
+// through the impact view service by service. ?limit=<n> caps the results
+// (default 20).
+func (h *TopologyHandler) HandleGetCriticality(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			http.Error(w, "Invalid 'limit' parameter: expected a positive integer", http.StatusBadRequest)
+			return
+		}
+		limit = parsed
+	}
+
+	ranked, err := h.topology.GetCriticality(ctx, limit)
+	if err != nil {
+		http.Error(w, "Failed to get criticality ranking", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]CriticalityResponse, 0, len(ranked))
+	for _, sc := range ranked {
+		response = append(response, CriticalityResponse{
+			ID:          sc.Service.ID,
+			Name:        sc.Service.Name,
+			Type:        sc.Service.Type,
+			Node:        sc.Service.Node,
+			BlastRadius: sc.BlastRadius,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// HandleGetOrphans returns services with no connections at all - neither
+// caller nor callee - a fact about the live graph, not a history query.
+func (h *TopologyHandler) HandleGetOrphans(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	orphans, err := h.topology.GetOrphanServices(ctx)
+	if err != nil {
+		http.Error(w, "Failed to get orphan services", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]ServiceResponse, 0, len(orphans))
+	for _, svc := range orphans {
+		response = append(response, convertServiceToResponse(svc))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 // Response types to maintain frontend compatibility
 
 // TopologyResponse is the topology format expected by the frontend.
@@ -293,6 +389,15 @@ type StaleServiceResponse struct {
 	Namespace string `json:"namespace,omitempty"`
 	Node      string `json:"node,omitempty"`
 	LastSeen  string `json:"last_seen"`
+}
+
+// CriticalityResponse is a service's rank in the blast-radius-size ranking.
+type CriticalityResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Node        string `json:"node,omitempty"`
+	BlastRadius int    `json:"blast_radius"`
 }
 
 // MetricsResponse is the metrics format expected by the frontend.
@@ -376,5 +481,42 @@ func convertMetricsToResponse(m storage.NodeMetrics) MetricsResponse {
 		MemUsed:    m.MemUsed,
 		MemTotal:   m.MemTotal,
 		LastSeen:   m.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
+	}
+}
+
+// TopologyDiffResponse is what appeared and disappeared between two instants.
+type TopologyDiffResponse struct {
+	From                string                `json:"from"`
+	To                  string                `json:"to"`
+	AddedServices       []ServiceResponse     `json:"added_services"`
+	RemovedServices     []ServiceResponse     `json:"removed_services"`
+	AddedConnections    []ConnectionResponse  `json:"added_connections"`
+	RemovedConnections  []ConnectionResponse  `json:"removed_connections"`
+}
+
+func convertTopologyDiffToResponse(d *service.TopologyDiff) TopologyDiffResponse {
+	addedSvc := make([]ServiceResponse, 0, len(d.AddedServices))
+	for _, svc := range d.AddedServices {
+		addedSvc = append(addedSvc, convertServiceToResponse(svc))
+	}
+	removedSvc := make([]ServiceResponse, 0, len(d.RemovedServices))
+	for _, svc := range d.RemovedServices {
+		removedSvc = append(removedSvc, convertServiceToResponse(svc))
+	}
+	addedConn := make([]ConnectionResponse, 0, len(d.AddedConnections))
+	for _, conn := range d.AddedConnections {
+		addedConn = append(addedConn, convertConnectionToResponse(conn))
+	}
+	removedConn := make([]ConnectionResponse, 0, len(d.RemovedConnections))
+	for _, conn := range d.RemovedConnections {
+		removedConn = append(removedConn, convertConnectionToResponse(conn))
+	}
+	return TopologyDiffResponse{
+		From:               d.From.Format(time.RFC3339),
+		To:                 d.To.Format(time.RFC3339),
+		AddedServices:      addedSvc,
+		RemovedServices:    removedSvc,
+		AddedConnections:   addedConn,
+		RemovedConnections: removedConn,
 	}
 }

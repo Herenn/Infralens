@@ -165,6 +165,77 @@ func TestGetImpact_UnknownService(t *testing.T) {
 	}
 }
 
+// TestGetCriticality_RanksByBlastRadius checks the ranking order on a chain
+// A->B->C->D, where each service's upstream blast radius is exactly the
+// count of services before it: D has 3 (A,B,C), C has 2, B has 1, A has 0.
+func TestGetCriticality_RanksByBlastRadius(t *testing.T) {
+	ts := newImpactTestService(t)
+	addChain(t, ts, "A", "B", "C", "D")
+
+	ranked, err := ts.GetCriticality(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("GetCriticality: %v", err)
+	}
+	if len(ranked) != 4 {
+		t.Fatalf("expected 4 ranked services, got %d: %+v", len(ranked), ranked)
+	}
+
+	want := map[string]int{"A": 0, "B": 1, "C": 2, "D": 3}
+	for _, r := range ranked {
+		if r.BlastRadius != want[r.Service.ID] {
+			t.Errorf("BlastRadius(%s) = %d, want %d", r.Service.ID, r.BlastRadius, want[r.Service.ID])
+		}
+	}
+
+	// Descending order: D (3) first, A (0) last.
+	if ranked[0].Service.ID != "D" || ranked[len(ranked)-1].Service.ID != "A" {
+		var ids []string
+		for _, r := range ranked {
+			ids = append(ids, r.Service.ID)
+		}
+		t.Errorf("expected descending order starting with D and ending with A, got %v", ids)
+	}
+}
+
+// TestGetCriticality_Limit checks that limit caps the result to the
+// highest-ranked entries, not an arbitrary subset.
+func TestGetCriticality_Limit(t *testing.T) {
+	ts := newImpactTestService(t)
+	addChain(t, ts, "A", "B", "C", "D")
+
+	ranked, err := ts.GetCriticality(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("GetCriticality: %v", err)
+	}
+	if len(ranked) != 2 {
+		t.Fatalf("expected 2 results with limit=2, got %d", len(ranked))
+	}
+	if ranked[0].Service.ID != "D" || ranked[1].Service.ID != "C" {
+		t.Errorf("expected [D C] (the two highest-ranked), got [%s %s]", ranked[0].Service.ID, ranked[1].Service.ID)
+	}
+}
+
+// TestGetOrphanServices_FindsOnlyUnconnected checks that a service with no
+// connections at all is flagged, and that services with even one edge are
+// not.
+func TestGetOrphanServices_FindsOnlyUnconnected(t *testing.T) {
+	ts := newImpactTestService(t)
+	ctx := context.Background()
+	addChain(t, ts, "A", "B") // A->B: neither is an orphan
+
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "Z", Name: "isolated", LastSeen: time.Now()}); err != nil {
+		t.Fatalf("adding isolated service: %v", err)
+	}
+
+	orphans, err := ts.GetOrphanServices(ctx)
+	if err != nil {
+		t.Fatalf("GetOrphanServices: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].ID != "Z" {
+		t.Errorf("expected exactly [Z], got %+v", orphans)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -322,3 +322,87 @@ func TestGetStaleServicesOnlyReturnsWhatsOlderThanCutoff(t *testing.T) {
 		t.Errorf("the service last seen 1h ago should not be stale at a 48h cutoff, got %v", ids)
 	}
 }
+
+// TestGetTopologyDiffRequiresHistoryEnabled matches every other history
+// query's opt-in contract.
+func TestGetTopologyDiffRequiresHistoryEnabled(t *testing.T) {
+	ts, _ := newHistoryTestService(t, false)
+
+	if _, err := ts.GetTopologyDiff(context.Background(), time.Now().Add(-time.Hour), time.Now()); !errors.Is(err, ErrHistoryDisabled) {
+		t.Errorf("expected ErrHistoryDisabled, got %v", err)
+	}
+}
+
+// TestGetTopologyDiffFindsAddedAndRemoved checks both directions of the set
+// difference: a service present only at `to` is added, a service present
+// only at `from` is removed - through the same recording path a real agent
+// uses, not by poking storage directly.
+func TestGetTopologyDiffFindsAddedAndRemoved(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	t0 := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	t1 := t0.Add(time.Hour)
+
+	// "old" exists only at t0 - never observed again, so it has aged out of
+	// the t1 snapshot and should show up as removed.
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "svc-old", Name: "old", LastSeen: t0}); err != nil {
+		t.Fatalf("adding old service: %v", err)
+	}
+	// "new" exists only at t1 - didn't exist yet at t0, so it should show up
+	// as added.
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "svc-new", Name: "new", LastSeen: t1}); err != nil {
+		t.Fatalf("adding new service: %v", err)
+	}
+	if err := ts.AddConnection(ctx, &storage.Connection{
+		ID: "svc-old->svc-new", SourceID: "svc-old", TargetID: "svc-new",
+		Port: 80, Protocol: "tcp", LastSeen: t1,
+	}); err != nil {
+		t.Fatalf("adding connection: %v", err)
+	}
+
+	diff, err := ts.GetTopologyDiff(ctx, t0, t1)
+	if err != nil {
+		t.Fatalf("GetTopologyDiff: %v", err)
+	}
+
+	if len(diff.AddedServices) != 1 || diff.AddedServices[0].ID != "svc-new" {
+		t.Errorf("AddedServices = %+v, want exactly [svc-new]", diff.AddedServices)
+	}
+	if len(diff.RemovedServices) != 1 || diff.RemovedServices[0].ID != "svc-old" {
+		t.Errorf("RemovedServices = %+v, want exactly [svc-old]", diff.RemovedServices)
+	}
+	if len(diff.AddedConnections) != 1 || diff.AddedConnections[0].ID != "svc-old->svc-new" {
+		t.Errorf("AddedConnections = %+v, want exactly [svc-old->svc-new]", diff.AddedConnections)
+	}
+	if len(diff.RemovedConnections) != 0 {
+		t.Errorf("RemovedConnections = %+v, want none", diff.RemovedConnections)
+	}
+}
+
+// TestGetTopologyDiffIsEmptyWhenNothingChanged checks the boring but
+// important case: a service present at both instants shows up in neither
+// added nor removed.
+func TestGetTopologyDiffIsEmptyWhenNothingChanged(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	t0 := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	t1 := t0.Add(time.Minute) // within maxGap, extends the same interval
+
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "svc-steady", Name: "steady", LastSeen: t0}); err != nil {
+		t.Fatalf("adding service at t0: %v", err)
+	}
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "svc-steady", Name: "steady", LastSeen: t1}); err != nil {
+		t.Fatalf("adding service at t1: %v", err)
+	}
+
+	diff, err := ts.GetTopologyDiff(ctx, t0, t1)
+	if err != nil {
+		t.Fatalf("GetTopologyDiff: %v", err)
+	}
+	if len(diff.AddedServices) != 0 || len(diff.RemovedServices) != 0 {
+		t.Errorf("expected no service changes for a steady service, got added=%+v removed=%+v",
+			diff.AddedServices, diff.RemovedServices)
+	}
+}

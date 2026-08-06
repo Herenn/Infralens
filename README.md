@@ -241,7 +241,7 @@ DEFAULT_LLM_PROVIDER=openai
 `POST /api/v1/events`, `/api/v1/stats`, `/api/v1/metrics`, `/api/v1/inspection`
 
 **Public endpoints (always accessible):**
-`GET /api/v1/topology`, `/api/v1/topology/history/range`, `/api/v1/topology/history/stale`, `/api/v1/services` (including `/{id}` and `/{id}/impact`), `/api/v1/ws` (WebSocket), `/health`, `/ready`
+`GET /api/v1/topology`, `/api/v1/topology/history/range`, `/api/v1/topology/history/stale`, `/api/v1/topology/history/diff`, `/api/v1/services` (including `/{id}` and `/{id}/impact`), `/api/v1/graph/stats`, `/api/v1/graph/criticality`, `/api/v1/graph/orphans`, `/api/v1/ws` (WebSocket), `/health`, `/ready`
 
 **CORS:**
 
@@ -332,11 +332,14 @@ infralens/
 | `/api/v1/topology/export` | GET | Export topology as Mermaid or DOT (`?format=mermaid\|dot`) |
 | `/api/v1/topology/history/range` | GET | Earliest/latest instants covered by recorded history, for sizing a timeline control (requires `HISTORY_ENABLED`) |
 | `/api/v1/topology/history/stale` | GET | Decommission candidates: services not seen since `?olderThan=<Go duration>` (default: history retention window, requires `HISTORY_ENABLED`) |
+| `/api/v1/topology/history/diff` | GET | What appeared/disappeared between `?from=` and `?to=` (both required RFC 3339 timestamps, requires `HISTORY_ENABLED`) |
 | `/api/v1/services` | GET | List all discovered services |
 | `/api/v1/services/{id}` | GET | Service details |
 | `/api/v1/services/{id}/impact` | GET | Blast radius: the subgraph reachable from this service. `?direction=upstream` (default) is what calls it, transitively; `downstream` is what it calls. `?depth=` caps traversal hops (default 5, max 20) |
 | `/api/v1/ws` | WebSocket | Real-time topology updates (snapshot + deltas) |
 | `/api/v1/graph/stats` | GET | Graph statistics |
+| `/api/v1/graph/criticality` | GET | Services ranked by upstream blast radius - the riskiest single points of failure. `?limit=` caps results (default 20) |
+| `/api/v1/graph/orphans` | GET | Services with no connections at all (neither caller nor callee) |
 | `/api/v1/k8s/status` | GET | K8s watcher status |
 | `/api/v1/ai/*` | GET/POST | AI status, config, docs generation, Q&A |
 | `/api/v1/version` | GET | Backend version info |

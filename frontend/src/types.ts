@@ -75,6 +75,16 @@ export interface StaleService {
   last_seen: string
 }
 
+// A service's rank in the blast-radius-size ranking: how many other
+// services (transitively) depend on it.
+export interface CriticalityEntry {
+  id: string
+  name?: string
+  type?: string
+  node?: string
+  blast_radius: number
+}
+
 // Service type constants
 export const ServiceTypes = {
   DATABASE: 'database',

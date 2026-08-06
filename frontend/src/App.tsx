@@ -25,6 +25,9 @@ import ServiceDrawer from './components/ServiceDrawer'
 import Header from './components/Header'
 import TimelineScrubber, { HistoryRange } from './components/TimelineScrubber'
 import DecommissionPanel from './components/DecommissionPanel'
+import OrphansPanel from './components/OrphansPanel'
+import CriticalityPanel from './components/CriticalityPanel'
+import DiffPanel from './components/DiffPanel'
 import { Service, Topology } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { apiUrl } from './lib/api'
@@ -799,7 +802,12 @@ function App() {
             loading={historyLoading}
           />
 
-          {historyRange && <DecommissionPanel />}
+          <div className="absolute top-4 right-4 z-10 flex flex-col items-end gap-2">
+            <CriticalityPanel />
+            <OrphansPanel />
+            {historyRange && <DecommissionPanel />}
+            {historyRange && <DiffPanel range={historyRange} />}
+          </div>
         </div>
       </div>
 

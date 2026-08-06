@@ -91,6 +91,7 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/topology/export", exportHandler.HandleExport).Methods("GET")
 	api.HandleFunc("/topology/history/range", topologyHandler.HandleGetHistoryRange).Methods("GET")
 	api.HandleFunc("/topology/history/stale", topologyHandler.HandleGetStaleServices).Methods("GET")
+	api.HandleFunc("/topology/history/diff", topologyHandler.HandleGetTopologyDiff).Methods("GET")
 	api.HandleFunc("/services", topologyHandler.HandleGetServices).Methods("GET")
 	// Service IDs routinely contain a literal "/" (e.g. "10.0.1.10/nginx"),
 	// so {id} must be greedy (".+", not the default "[^/]+") to match them at
@@ -101,6 +102,8 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/services/{id:.+}/impact", topologyHandler.HandleGetImpact).Methods("GET")
 	api.HandleFunc("/services/{id:.+}", topologyHandler.HandleGetService).Methods("GET")
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
+	api.HandleFunc("/graph/criticality", topologyHandler.HandleGetCriticality).Methods("GET")
+	api.HandleFunc("/graph/orphans", topologyHandler.HandleGetOrphans).Methods("GET")
 
 	// WebSocket endpoint
 	api.HandleFunc("/ws", wsHandler.HandleWebSocket)

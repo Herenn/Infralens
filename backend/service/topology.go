@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Herenn/Infralens/backend/storage"
@@ -373,39 +374,8 @@ func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, dire
 		maxDepth = maxImpactDepth
 	}
 
-	// Index edges by the endpoint we'll be expanding from: for upstream
-	// that's the target (find who calls this ID), for downstream the
-	// source (find what this ID calls).
-	byEndpoint := make(map[string][]storage.Connection, len(topo.Connections))
-	for _, conn := range topo.Connections {
-		if direction == ImpactDownstream {
-			byEndpoint[conn.SourceID] = append(byEndpoint[conn.SourceID], conn)
-		} else {
-			byEndpoint[conn.TargetID] = append(byEndpoint[conn.TargetID], conn)
-		}
-	}
-
-	visited := map[string]bool{serviceID: true}
-	reachedConns := make(map[string]storage.Connection)
-	frontier := []string{serviceID}
-
-	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
-		var next []string
-		for _, id := range frontier {
-			for _, conn := range byEndpoint[id] {
-				reachedConns[conn.ID] = conn
-				neighbor := conn.SourceID
-				if direction == ImpactDownstream {
-					neighbor = conn.TargetID
-				}
-				if !visited[neighbor] {
-					visited[neighbor] = true
-					next = append(next, neighbor)
-				}
-			}
-		}
-		frontier = next
-	}
+	byEndpoint := buildImpactIndex(topo.Connections, direction)
+	visited, reachedConns := impactBFS(serviceID, byEndpoint, direction, maxDepth)
 
 	services := make([]storage.Service, 0, len(visited))
 	for id := range visited {
@@ -427,6 +397,131 @@ func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, dire
 		Connections: connections,
 		UpdatedAt:   topo.UpdatedAt,
 	}, nil
+}
+
+// buildImpactIndex indexes connections by the endpoint impactBFS expands
+// from: for upstream that's the target (find who calls this ID), for
+// downstream the source (find what this ID calls). Built once and reused
+// across many BFS runs - GetCriticality runs one per service in the graph
+// rather than rebuilding this per seed.
+func buildImpactIndex(connections []storage.Connection, direction ImpactDirection) map[string][]storage.Connection {
+	byEndpoint := make(map[string][]storage.Connection, len(connections))
+	for _, conn := range connections {
+		if direction == ImpactDownstream {
+			byEndpoint[conn.SourceID] = append(byEndpoint[conn.SourceID], conn)
+		} else {
+			byEndpoint[conn.TargetID] = append(byEndpoint[conn.TargetID], conn)
+		}
+	}
+	return byEndpoint
+}
+
+// impactBFS is the traversal core shared by GetImpact and GetCriticality:
+// breadth-first from seed over byEndpoint, capped at maxDepth hops. Returns
+// every reached node (including seed) and every edge walked to reach them.
+func impactBFS(seed string, byEndpoint map[string][]storage.Connection, direction ImpactDirection, maxDepth int) (visited map[string]bool, reachedConns map[string]storage.Connection) {
+	visited = map[string]bool{seed: true}
+	reachedConns = make(map[string]storage.Connection)
+	frontier := []string{seed}
+
+	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, id := range frontier {
+			for _, conn := range byEndpoint[id] {
+				reachedConns[conn.ID] = conn
+				neighbor := conn.SourceID
+				if direction == ImpactDownstream {
+					neighbor = conn.TargetID
+				}
+				if !visited[neighbor] {
+					visited[neighbor] = true
+					next = append(next, neighbor)
+				}
+			}
+		}
+		frontier = next
+	}
+	return visited, reachedConns
+}
+
+// ServiceCriticality is a service's blast radius size: how many other
+// services (transitively) depend on it, upstream. Higher means more breaks
+// if this one goes down.
+type ServiceCriticality struct {
+	Service     storage.Service
+	BlastRadius int
+}
+
+// defaultCriticalityLimit caps the ranking to a reviewable list by default -
+// "your riskiest handful," not a full sort of every service in the graph.
+const defaultCriticalityLimit = 20
+
+// GetCriticality ranks every service in the current topology by upstream
+// blast radius (excluding itself), descending, capped to limit results. A
+// non-positive limit falls back to defaultCriticalityLimit.
+//
+// Unlike GetImpact's default depth (tuned for a single readable lookup),
+// this always traverses to maxImpactDepth - a criticality score computed
+// from a truncated blast radius would understate exactly the services it's
+// meant to flag.
+func (ts *TopologyService) GetCriticality(ctx context.Context, limit int) ([]ServiceCriticality, error) {
+	topo, err := ts.store.GetTopology(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getting topology: %w", err)
+	}
+	if limit <= 0 {
+		limit = defaultCriticalityLimit
+	}
+
+	byEndpoint := buildImpactIndex(topo.Connections, ImpactUpstream)
+
+	ranked := make([]ServiceCriticality, 0, len(topo.Services))
+	for _, svc := range topo.Services {
+		visited, _ := impactBFS(svc.ID, byEndpoint, ImpactUpstream, maxImpactDepth)
+		ranked = append(ranked, ServiceCriticality{
+			Service:     svc,
+			BlastRadius: len(visited) - 1, // exclude the seed itself
+		})
+	}
+
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].BlastRadius != ranked[j].BlastRadius {
+			return ranked[i].BlastRadius > ranked[j].BlastRadius
+		}
+		return ranked[i].Service.ID < ranked[j].Service.ID // stable tie-break
+	})
+
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	return ranked, nil
+}
+
+// GetOrphanServices returns services with no connections at all - neither
+// caller nor callee in the current topology. Often misconfigured, leftover,
+// or something the agent hasn't captured traffic for yet. Unlike
+// GetStaleServices this needs no history: an orphan is a fact about the
+// live graph, not something that only shows up after being unobserved for a
+// while.
+func (ts *TopologyService) GetOrphanServices(ctx context.Context) ([]storage.Service, error) {
+	topo, err := ts.store.GetTopology(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getting topology: %w", err)
+	}
+
+	connected := make(map[string]bool, len(topo.Connections)*2)
+	for _, conn := range topo.Connections {
+		connected[conn.SourceID] = true
+		connected[conn.TargetID] = true
+	}
+
+	orphans := make([]storage.Service, 0)
+	for _, svc := range topo.Services {
+		if !connected[svc.ID] {
+			orphans = append(orphans, svc)
+		}
+	}
+	return orphans, nil
 }
 
 // GetTopologyAt reconstructs the topology as it existed at a specific
@@ -479,6 +574,96 @@ func (ts *TopologyService) GetStaleServices(ctx context.Context, olderThan time.
 		olderThan = storage.DefaultHistoryRetention
 	}
 	return ts.store.History().StaleServices(ctx, time.Now().Add(-olderThan))
+}
+
+// TopologyDiff is the set difference between the topology at two instants:
+// what appeared and what disappeared between From and To.
+type TopologyDiff struct {
+	From                time.Time
+	To                  time.Time
+	AddedServices       []storage.Service
+	RemovedServices     []storage.Service
+	AddedConnections    []storage.Connection
+	RemovedConnections  []storage.Connection
+}
+
+// GetTopologyDiff compares the topology at two instants and returns what
+// appeared and disappeared between them. This is the on-demand, manual
+// sibling of continuous change detection: no rules engine, no persisted
+// alert log, just "what's different between these two points" computed from
+// the same interval data GetTopologyAt already reconstructs from.
+func (ts *TopologyService) GetTopologyDiff(ctx context.Context, from, to time.Time) (*TopologyDiff, error) {
+	if !ts.historyEnabled {
+		return nil, ErrHistoryDisabled
+	}
+
+	fromSvc, err := ts.store.History().ServicesAt(ctx, from)
+	if err != nil {
+		return nil, fmt.Errorf("querying services at %s: %w", from, err)
+	}
+	toSvc, err := ts.store.History().ServicesAt(ctx, to)
+	if err != nil {
+		return nil, fmt.Errorf("querying services at %s: %w", to, err)
+	}
+	fromConn, err := ts.store.History().ConnectionsAt(ctx, from)
+	if err != nil {
+		return nil, fmt.Errorf("querying connections at %s: %w", from, err)
+	}
+	toConn, err := ts.store.History().ConnectionsAt(ctx, to)
+	if err != nil {
+		return nil, fmt.Errorf("querying connections at %s: %w", to, err)
+	}
+
+	fromSvcIDs := make(map[string]bool, len(fromSvc))
+	for _, si := range fromSvc {
+		fromSvcIDs[si.ServiceID] = true
+	}
+	toSvcIDs := make(map[string]bool, len(toSvc))
+	for _, si := range toSvc {
+		toSvcIDs[si.ServiceID] = true
+	}
+
+	var addedSvc, removedSvc []storage.ServiceInterval
+	for _, si := range toSvc {
+		if !fromSvcIDs[si.ServiceID] {
+			addedSvc = append(addedSvc, si)
+		}
+	}
+	for _, si := range fromSvc {
+		if !toSvcIDs[si.ServiceID] {
+			removedSvc = append(removedSvc, si)
+		}
+	}
+
+	fromConnIDs := make(map[string]bool, len(fromConn))
+	for _, ci := range fromConn {
+		fromConnIDs[ci.ConnectionID] = true
+	}
+	toConnIDs := make(map[string]bool, len(toConn))
+	for _, ci := range toConn {
+		toConnIDs[ci.ConnectionID] = true
+	}
+
+	var addedConn, removedConn []storage.ConnectionInterval
+	for _, ci := range toConn {
+		if !fromConnIDs[ci.ConnectionID] {
+			addedConn = append(addedConn, ci)
+		}
+	}
+	for _, ci := range fromConn {
+		if !toConnIDs[ci.ConnectionID] {
+			removedConn = append(removedConn, ci)
+		}
+	}
+
+	return &TopologyDiff{
+		From:               from,
+		To:                 to,
+		AddedServices:      servicesFromIntervals(addedSvc),
+		RemovedServices:    servicesFromIntervals(removedSvc),
+		AddedConnections:   connectionsFromIntervals(addedConn),
+		RemovedConnections: connectionsFromIntervals(removedConn),
+	}, nil
 }
 
 func servicesFromIntervals(intervals []storage.ServiceInterval) []storage.Service {
