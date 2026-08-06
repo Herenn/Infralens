@@ -149,7 +149,7 @@ func (p *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
+		return nil, fmt.Errorf("sending request: %w", sanitizeTransportError(err))
 	}
 	defer resp.Body.Close()
 
@@ -184,7 +184,7 @@ func (p *OllamaProvider) ListModels(ctx context.Context) ([]string, error) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching models: %w", err)
+		return nil, fmt.Errorf("fetching models: %w", sanitizeTransportError(err))
 	}
 	defer resp.Body.Close()
 
@@ -289,7 +289,7 @@ func (p *LMStudioProvider) Complete(ctx context.Context, req CompletionRequest) 
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
+		return nil, fmt.Errorf("sending request: %w", sanitizeTransportError(err))
 	}
 	defer resp.Body.Close()
 
@@ -328,7 +328,7 @@ func (p *LMStudioProvider) ListModels(ctx context.Context) ([]string, error) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching models: %w", err)
+		return nil, fmt.Errorf("fetching models: %w", sanitizeTransportError(err))
 	}
 	defer resp.Body.Close()
 

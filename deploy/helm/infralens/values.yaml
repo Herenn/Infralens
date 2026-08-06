@@ -38,6 +38,9 @@ backend:
   # Generate one with: openssl rand -hex 32
   auth:
     apiKey: ""
+    # The backend refuses to start without apiKey unless this is set to true.
+    # Only enable it for evaluation or a trusted, isolated network.
+    allowNoAuth: false
   
   # Demo mode - simulate a live topology without any agents (for evaluation)
   demoMode: false

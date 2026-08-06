@@ -62,8 +62,21 @@ func ParseCORSOrigins(origins string) []string {
 
 // CORS creates a CORS middleware handler.
 func CORS(cfg CORSConfig) func(http.Handler) http.Handler {
+	wildcard := len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "*"
+
+	// A wildcard origin and credentials are mutually exclusive per the CORS
+	// spec: browsers reject "Access-Control-Allow-Origin: *" alongside
+	// "Access-Control-Allow-Credentials: true", so emitting both just makes
+	// every credentialed cross-origin request fail. Drop credentials rather
+	// than ship a combination that cannot work.
+	if wildcard && cfg.AllowCredentials {
+		log.Warn("CORS: ignoring AllowCredentials because all origins (*) are allowed - " +
+			"browsers reject that combination. Set CORS_ORIGINS to explicit origins to use credentials.")
+		cfg.AllowCredentials = false
+	}
+
 	// Log configuration
-	if len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "*" {
+	if wildcard {
 		log.Warn("CORS is allowing all origins (*) - not recommended for production")
 	} else {
 		log.WithField("origins", cfg.AllowedOrigins).Info("CORS configured with allowed origins")

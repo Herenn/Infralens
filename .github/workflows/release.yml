@@ -109,6 +109,24 @@ jobs:
           asset_name: infralens-agent-${{ matrix.goos }}-${{ matrix.goarch }}
           asset_content_type: application/octet-stream
 
+      # The agent verifies this before installing an update. Without a
+      # published digest a self-updating agent has no way to tell a genuine
+      # release binary from anything else it was pointed at.
+      - name: Generate checksum
+        run: |
+          sha256sum "infralens-agent-${{ matrix.goos }}-${{ matrix.goarch }}" \
+            | awk '{print $1}' > "infralens-agent-${{ matrix.goos }}-${{ matrix.goarch }}.sha256"
+
+      - name: Upload Checksum
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.release.outputs.upload_url }}
+          asset_path: ./infralens-agent-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+          asset_name: infralens-agent-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+          asset_content_type: text/plain
+
   docker-images:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest

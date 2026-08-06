@@ -206,8 +206,27 @@ function parseMarkdown(content: string): React.ReactNode[] {
   return elements
 }
 
-// Format inline code, bold, and line number references
+// Escape HTML so text can be safely placed inside dangerouslySetInnerHTML.
+// This must run before any markup is inserted, otherwise the tags added below
+// would be escaped too.
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+// Format inline code, bold, and line number references.
+//
+// The result is injected via dangerouslySetInnerHTML, and the input is model
+// output derived from data the agent collected (process names, command lines,
+// README and Dockerfile contents). None of that is trustworthy, so escape
+// first and only then add our own markup.
 function formatInlineCode(text: string): string {
+  text = escapeHtml(text)
+
   // Code blocks: `code`
   text = text.replace(/`([^`]+)`/g, '<code class="bg-slate-700/50 text-cyan-300 px-1.5 py-0.5 rounded text-xs font-mono">$1</code>')
   

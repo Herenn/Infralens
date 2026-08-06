@@ -108,10 +108,10 @@ func (h *EventHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	timer := metrics.NewTimer()
-	for _, stats := range report.Connections {
-		if err := h.processor.ProcessThroughputStats(ctx, nodeName, stats); err != nil {
-			log.WithError(err).Warn("Failed to process throughput stats")
-		}
+	// Processed as a batch so samples that share a topology edge are summed
+	// rather than overwriting one another.
+	if err := h.processor.ProcessThroughputBatch(ctx, nodeName, report.Connections); err != nil {
+		log.WithError(err).Warn("Failed to process throughput stats")
 	}
 	timer.ObserveEvent("throughput")
 

@@ -122,7 +122,7 @@ func main() {
 	// Auto-update checker
 	stopUpdateCh := make(chan struct{})
 	if *autoUpdate && backendURL != "" {
-		agentUpdater := updater.NewUpdater(backendURL, *updateCheckInterval)
+		agentUpdater := updater.NewUpdater(backendURL, *apiKey, *updateCheckInterval)
 		agentUpdater.SetUpdateCallback(func() {
 			fmt.Println("📦 New version available! Attempting self-update...")
 			if err := agentUpdater.SelfUpdate(); err != nil {

@@ -40,6 +40,11 @@ type ServerConfig struct {
 	// DemoMode enables the built-in topology simulator so the UI can be
 	// explored without any agents (no Linux/eBPF required).
 	DemoMode bool
+
+	// MaxRequestBytes caps the size of any request body. Agents post batched
+	// events, so this needs headroom, but unbounded decoding lets a single
+	// request exhaust memory.
+	MaxRequestBytes int64
 }
 
 // LLMConfig holds LLM provider configuration.
@@ -61,12 +66,13 @@ type LLMConfig struct {
 func Load() *Config {
 	cfg := &Config{
 		Server: ServerConfig{
-			ListenAddr:   getEnv("LISTEN_ADDR", ":8080"),
-			ReadTimeout:  getDurationEnv("READ_TIMEOUT", 15*time.Second),
-			WriteTimeout: getDurationEnv("WRITE_TIMEOUT", 15*time.Second),
-			IdleTimeout:  getDurationEnv("IDLE_TIMEOUT", 60*time.Second),
-			Debug:        getBoolEnv("DEBUG", false),
-			DemoMode:     getBoolEnv("DEMO_MODE", false),
+			ListenAddr:      getEnv("LISTEN_ADDR", ":8080"),
+			ReadTimeout:     getDurationEnv("READ_TIMEOUT", 15*time.Second),
+			WriteTimeout:    getDurationEnv("WRITE_TIMEOUT", 15*time.Second),
+			IdleTimeout:     getDurationEnv("IDLE_TIMEOUT", 60*time.Second),
+			Debug:           getBoolEnv("DEBUG", false),
+			DemoMode:        getBoolEnv("DEMO_MODE", false),
+			MaxRequestBytes: int64(getIntEnv("MAX_REQUEST_BYTES", 10<<20)), // 10 MiB
 		},
 
 		Storage: storage.Config{
@@ -81,17 +87,26 @@ func Load() *Config {
 		},
 
 		CORS: middleware.CORSConfig{
-			AllowedOrigins:   middleware.ParseCORSOrigins(getEnv("CORS_ORIGINS", "*")),
-			AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Content-Type", "Authorization", "X-API-Key"},
-			AllowCredentials: getBoolEnv("CORS_CREDENTIALS", true),
+			AllowedOrigins: middleware.ParseCORSOrigins(getEnv("CORS_ORIGINS", "*")),
+			AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+			AllowedHeaders: []string{"Content-Type", "Authorization", "X-API-Key"},
+			// Defaults to false: with the default wildcard origin, browsers
+			// reject "Access-Control-Allow-Origin: *" combined with
+			// "Access-Control-Allow-Credentials: true" outright, so defaulting
+			// it on only produced silently failing cross-origin requests.
+			AllowCredentials: getBoolEnv("CORS_CREDENTIALS", false),
 			MaxAge:           getIntEnv("CORS_MAX_AGE", 3600),
 		},
 
 		Auth: middleware.AuthConfig{
-			APIKey:     getEnv("API_KEY", ""),
-			HeaderName: getEnv("API_KEY_HEADER", "X-API-Key"),
-			SkipPaths:  middleware.DefaultAuthConfig().SkipPaths,
+			APIKey:       getEnv("API_KEY", ""),
+			HeaderName:   getEnv("API_KEY_HEADER", "X-API-Key"),
+			SkipPaths:    middleware.DefaultAuthConfig().SkipPaths,
+			SkipPrefixes: middleware.DefaultAuthConfig().SkipPrefixes,
+			// Running with no API key leaves every ingest and AI endpoint open.
+			// That has to be a deliberate choice, not something you get by
+			// forgetting to set a variable.
+			AllowNoAuth: getBoolEnv("ALLOW_NO_AUTH", false),
 		},
 
 		LLM: LLMConfig{

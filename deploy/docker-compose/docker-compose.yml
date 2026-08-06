@@ -27,6 +27,8 @@ services:
     environment:
       # Agent authentication (optional, empty = disabled)
       - API_KEY=${API_KEY:-}
+      # Set ALLOW_NO_AUTH=true to start without an API key (development only).
+      - ALLOW_NO_AUTH=${ALLOW_NO_AUTH:-}
       # AI Documentation (optional)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}

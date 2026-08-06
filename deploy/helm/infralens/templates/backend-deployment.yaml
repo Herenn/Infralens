@@ -33,6 +33,10 @@ spec:
                   name: {{ include "infralens.fullname" . }}-secrets
                   key: api-key
             {{- end }}
+            {{- if .Values.backend.auth.allowNoAuth }}
+            - name: ALLOW_NO_AUTH
+              value: "true"
+            {{- end }}
             {{- if .Values.backend.demoMode }}
             - name: DEMO_MODE
               value: "true"

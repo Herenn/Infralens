@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/Herenn/Infralens/backend/pkg/llm"
 	"github.com/Herenn/Infralens/backend/service"
@@ -14,7 +15,11 @@ import (
 
 // AIHandler handles AI documentation endpoints.
 type AIHandler struct {
-	topology   *service.TopologyService
+	topology *service.TopologyService
+
+	// mu guards llmManager/docsGen, which HandleConfig replaces while other
+	// requests are reading them.
+	mu         sync.RWMutex
 	llmManager *llm.Manager
 	docsGen    *llm.DocsGenerator
 }
@@ -31,11 +36,19 @@ func NewAIHandler(topology *service.TopologyService, llmManager *llm.Manager) *A
 	return h
 }
 
+// deps returns the current manager and docs generator under a read lock.
+func (h *AIHandler) deps() (*llm.Manager, *llm.DocsGenerator) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.llmManager, h.docsGen
+}
+
 // HandleStatus returns the status of AI providers.
 func (h *AIHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	if h.llmManager == nil {
+	llmManager, _ := h.deps()
+	if llmManager == nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"enabled":   false,
 			"providers": map[string]bool{},
@@ -44,7 +57,7 @@ func (h *AIHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := h.llmManager.Status()
+	status := llmManager.Status()
 	hasConfigured := false
 	for _, configured := range status {
 		if configured {
@@ -60,6 +73,13 @@ func (h *AIHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // AIConfigRequest represents a request to update AI configuration.
+//
+// Deliberately no ollama_url / lmstudio_url fields. Those name hosts the
+// backend then issues requests to, so accepting them over the API turns this
+// endpoint into a server-side request forgery primitive (cloud metadata
+// endpoints, internal services) with the response surfaced back to the caller.
+// Local-LLM endpoints are configuration, not user input: set OLLAMA_URL and
+// LMSTUDIO_URL in the environment instead.
 type AIConfigRequest struct {
 	OpenAIAPIKey    string `json:"openai_api_key,omitempty"`
 	OpenAIModel     string `json:"openai_model,omitempty"`
@@ -67,9 +87,7 @@ type AIConfigRequest struct {
 	AnthropicModel  string `json:"anthropic_model,omitempty"`
 	GeminiAPIKey    string `json:"gemini_api_key,omitempty"`
 	GeminiModel     string `json:"gemini_model,omitempty"`
-	OllamaURL       string `json:"ollama_url,omitempty"`
 	OllamaModel     string `json:"ollama_model,omitempty"`
-	LMStudioURL     string `json:"lmstudio_url,omitempty"`
 	LMStudioModel   string `json:"lmstudio_model,omitempty"`
 	DefaultProvider string `json:"default_provider,omitempty"`
 }
@@ -78,18 +96,19 @@ type AIConfigRequest struct {
 func (h *AIHandler) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	llmManager, _ := h.deps()
+
 	if r.Method == "GET" {
-		if h.llmManager == nil {
+		if llmManager == nil {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"configured": false,
 			})
 			return
 		}
 
-		status := h.llmManager.Status()
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"configured": true,
-			"providers":  status,
+			"providers":  llmManager.Status(),
 		})
 		return
 	}
@@ -108,25 +127,35 @@ func (h *AIHandler) HandleConfig(w http.ResponseWriter, r *http.Request) {
 		AnthropicModel:  req.AnthropicModel,
 		GeminiAPIKey:    req.GeminiAPIKey,
 		GeminiModel:     req.GeminiModel,
-		OllamaURL:       req.OllamaURL,
 		OllamaModel:     req.OllamaModel,
-		LMStudioURL:     req.LMStudioURL,
 		LMStudioModel:   req.LMStudioModel,
 		DefaultProvider: llm.Provider(req.DefaultProvider),
 	}
 
+	// Local-LLM endpoints stay whatever the environment configured them to be;
+	// they are never taken from the request body.
+	if llmManager != nil {
+		if existing := llmManager.Config(); existing != nil {
+			config.OllamaURL = existing.OllamaURL
+			config.LMStudioURL = existing.LMStudioURL
+		}
+	}
+
+	h.mu.Lock()
 	if h.llmManager == nil {
 		h.llmManager = llm.NewManager(config)
 		h.docsGen = llm.NewDocsGenerator(h.llmManager)
 	} else {
 		h.llmManager.UpdateConfig(config)
 	}
+	manager := h.llmManager
+	h.mu.Unlock()
 
 	log.Info("AI configuration updated")
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":    "updated",
-		"providers": h.llmManager.Status(),
+		"providers": manager.Status(),
 	})
 }
 
@@ -139,7 +168,8 @@ type AIDocsRequest struct {
 func (h *AIHandler) HandleDocs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	if h.docsGen == nil {
+	_, docsGen := h.deps()
+	if docsGen == nil {
 		http.Error(w, "AI documentation not configured. Please set API keys first.", http.StatusServiceUnavailable)
 		return
 	}
@@ -177,9 +207,9 @@ func (h *AIHandler) HandleDocs(w http.ResponseWriter, r *http.Request) {
 
 	var resp *llm.DocumentationResponse
 	if req.Provider != "" {
-		resp, err = h.docsGen.GenerateWithProvider(ctx, llm.Provider(req.Provider), docReq)
+		resp, err = docsGen.GenerateWithProvider(ctx, llm.Provider(req.Provider), docReq)
 	} else {
-		resp, err = h.docsGen.GenerateDocumentation(ctx, docReq)
+		resp, err = docsGen.GenerateDocumentation(ctx, docReq)
 	}
 
 	if err != nil {
@@ -201,7 +231,8 @@ type AIAskRequest struct {
 func (h *AIHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	if h.docsGen == nil {
+	_, docsGen := h.deps()
+	if docsGen == nil {
 		http.Error(w, "AI documentation not configured. Please set API keys first.", http.StatusServiceUnavailable)
 		return
 	}
@@ -241,7 +272,7 @@ func (h *AIHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 		Question: req.Question,
 	}
 
-	resp, err := h.docsGen.AskQuestion(ctx, docReq)
+	resp, err := docsGen.AskQuestion(ctx, docReq)
 	if err != nil {
 		log.WithError(err).Error("Failed to answer question")
 		http.Error(w, fmt.Sprintf("AI query failed: %v", err), http.StatusInternalServerError)

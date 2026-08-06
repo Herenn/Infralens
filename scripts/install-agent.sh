@@ -125,7 +125,20 @@ if ! command -v go &> /dev/null || [[ $(go version | grep -oP '\d+\.\d+' | head 
         *) log_error "Unsupported architecture: $ARCH"; exit 1 ;;
     esac
     
+    # Pinned digests for go1.24.0, published at https://go.dev/dl/.
+    # The tarball is extracted into /usr/local and everything below is built
+    # with it, so an unverified download here compromises the whole install.
+    case $GO_ARCH in
+        amd64) GO_SHA256="dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858" ;;
+        arm64) GO_SHA256="c3fa6d16ffa261091a5617145553c71d21435ce547e44cc6dfb7470865527cc7" ;;
+    esac
+
     wget -q "https://go.dev/dl/go1.24.0.linux-${GO_ARCH}.tar.gz" -O /tmp/go.tar.gz
+    echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - || {
+        log_error "Go toolchain checksum mismatch - refusing to install"
+        rm -f /tmp/go.tar.gz
+        exit 1
+    }
     rm -rf /usr/local/go
     tar -C /usr/local -xzf /tmp/go.tar.gz
     rm /tmp/go.tar.gz

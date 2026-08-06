@@ -4,6 +4,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // Provider represents an LLM provider type.
@@ -82,7 +83,13 @@ type Config struct {
 }
 
 // Manager manages multiple LLM providers.
+//
+// A Manager is used concurrently by HTTP handlers: UpdateConfig rebuilds the
+// provider set while other requests read it. All access to config/providers
+// must hold mu — an unsynchronised map here is not a mere data race but a
+// runtime fatal error ("concurrent map writes") that recover() cannot catch.
 type Manager struct {
+	mu        sync.RWMutex
 	config    *Config
 	providers map[Provider]LLMProvider
 }
@@ -110,6 +117,13 @@ func NewManager(config *Config) *Manager {
 
 // GetProvider returns a specific provider.
 func (m *Manager) GetProvider(p Provider) (LLMProvider, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.getProviderLocked(p)
+}
+
+// getProviderLocked returns a provider. Callers must hold at least a read lock.
+func (m *Manager) getProviderLocked(p Provider) (LLMProvider, error) {
 	provider, ok := m.providers[p]
 	if !ok {
 		return nil, fmt.Errorf("unknown provider: %s", p)
@@ -119,6 +133,9 @@ func (m *Manager) GetProvider(p Provider) (LLMProvider, error) {
 
 // GetConfiguredProviders returns all providers that have valid configuration.
 func (m *Manager) GetConfiguredProviders() []LLMProvider {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	var configured []LLMProvider
 	for _, p := range m.providers {
 		if p.IsConfigured() {
@@ -130,9 +147,12 @@ func (m *Manager) GetConfiguredProviders() []LLMProvider {
 
 // GetDefaultProvider returns the default provider (first configured one).
 func (m *Manager) GetDefaultProvider() (LLMProvider, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	// If a default is set and configured, use it
 	if m.config.DefaultProvider != "" {
-		p, err := m.GetProvider(m.config.DefaultProvider)
+		p, err := m.getProviderLocked(m.config.DefaultProvider)
 		if err == nil && p.IsConfigured() {
 			return p, nil
 		}
@@ -152,12 +172,31 @@ func (m *Manager) GetDefaultProvider() (LLMProvider, error) {
 
 // UpdateConfig updates the configuration and reinitializes providers.
 func (m *Manager) UpdateConfig(config *Config) {
+	if config == nil {
+		config = &Config{}
+	}
+
+	// Build the replacement set outside the lock, then swap the map wholesale
+	// so readers never observe a partially rebuilt provider set.
+	providers := map[Provider]LLMProvider{
+		ProviderOpenAI:    NewOpenAIProvider(config),
+		ProviderAnthropic: NewAnthropicProvider(config),
+		ProviderGemini:    NewGeminiProvider(config),
+		ProviderOllama:    NewOllamaProvider(config),
+		ProviderLMStudio:  NewLMStudioProvider(config),
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.config = config
-	m.providers[ProviderOpenAI] = NewOpenAIProvider(config)
-	m.providers[ProviderAnthropic] = NewAnthropicProvider(config)
-	m.providers[ProviderGemini] = NewGeminiProvider(config)
-	m.providers[ProviderOllama] = NewOllamaProvider(config)
-	m.providers[ProviderLMStudio] = NewLMStudioProvider(config)
+	m.providers = providers
+}
+
+// Config returns the manager's current configuration.
+func (m *Manager) Config() *Config {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config
 }
 
 // Complete generates a completion using the default provider.
@@ -183,6 +222,9 @@ func (m *Manager) CompleteWith(ctx context.Context, providerName Provider, req C
 
 // Status returns the configuration status of all providers.
 func (m *Manager) Status() map[string]bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	status := make(map[string]bool)
 	for name, p := range m.providers {
 		status[string(name)] = p.IsConfigured()

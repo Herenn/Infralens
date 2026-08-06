@@ -212,43 +212,115 @@ func (p *EventProcessor) ProcessTCPEvent(ctx context.Context, nodeName string, e
 	return nil
 }
 
-// ProcessThroughputStats processes throughput statistics.
+// aggregatedStats accumulates several sockets' counters onto one topology edge.
+type aggregatedStats struct {
+	bytesSent     uint64
+	bytesRecv     uint64
+	bytesSentRate float64
+	bytesRecvRate float64
+	packetsSent   uint64
+	packetsRecv   uint64
+}
+
+// connectionIDsForStats returns every connection ID a throughput sample could
+// belong to.
+//
+// The agent reports one sample per socket, always from the local socket's point
+// of view: src is the local end, dst is the peer, dst_port is the peer's port
+// and src_port is the local port. For a connection this host opened that lines
+// up with the outbound connection ID directly. For a connection this host
+// *accepted* it does not: the accept event recorded client -> server on the
+// listening port, while the sample says server -> client on the client's
+// ephemeral port. Those never matched, so inbound edges silently never received
+// any throughput at all.
+//
+// Both forms are returned. Only one of them corresponds to a row that exists,
+// and updating a connection ID that isn't stored affects no rows, so trying
+// both is harmless and avoids a lookup per sample.
+func (p *EventProcessor) connectionIDsForStats(stats ThroughputStats) []string {
+	resolve := func(addr string) string {
+		if p.k8sWatcher != nil {
+			return p.k8sWatcher.Resolve(addr)
+		}
+		return addr
+	}
+
+	localResolved := resolve(stats.SrcAddr)
+	peerResolved := resolve(stats.DstAddr)
+
+	// Identity of the local process, as both directions record it.
+	localID := localResolved
+	if !isK8sResource(localResolved) {
+		localID = makeServiceIDWithProcess(stats.SrcAddr, stats.Comm)
+	}
+
+	// Outbound: local/comm -> peer:peerPort, keyed on the peer's port.
+	peerAsDest := peerResolved
+	if !isK8sResource(peerResolved) {
+		peerAsDest = makeServiceIDWithPort(stats.DstAddr, stats.DstPort)
+	}
+	ids := []string{makeConnectionID(localID, peerAsDest, stats.DstPort, stats.Protocol)}
+
+	// Inbound: peer -> local/comm, keyed on our listening port (src_port).
+	// Only meaningful when we actually have a local port to key on.
+	if stats.SrcPort != 0 {
+		peerAsSource := peerResolved
+		if !isK8sResource(peerResolved) {
+			peerAsSource = makeServiceID(stats.DstAddr)
+		}
+		inbound := makeConnectionID(peerAsSource, localID, stats.SrcPort, stats.Protocol)
+		if inbound != ids[0] {
+			ids = append(ids, inbound)
+		}
+	}
+
+	return ids
+}
+
+// ProcessThroughputStats processes throughput statistics for a single socket.
 func (p *EventProcessor) ProcessThroughputStats(ctx context.Context, nodeName string, stats ThroughputStats) error {
-	// Build connection ID
-	var srcResolved, dstResolved string
-	if p.k8sWatcher != nil {
-		srcResolved = p.k8sWatcher.Resolve(stats.SrcAddr)
-		dstResolved = p.k8sWatcher.Resolve(stats.DstAddr)
-	} else {
-		srcResolved = stats.SrcAddr
-		dstResolved = stats.DstAddr
+	return p.ProcessThroughputBatch(ctx, nodeName, []ThroughputStats{stats})
+}
+
+// ProcessThroughputBatch processes a report's worth of throughput samples.
+//
+// Samples are summed per connection ID before being written. A topology edge
+// can cover many sockets — every client connected to one listening port
+// collapses onto a single inbound edge — and the stats update sets absolute
+// values, so writing each sample individually meant the last one processed
+// overwrote the rest instead of the edge showing their total.
+func (p *EventProcessor) ProcessThroughputBatch(ctx context.Context, nodeName string, batch []ThroughputStats) error {
+	if len(batch) == 0 {
+		return nil
 	}
 
-	srcIsK8s := isK8sResource(srcResolved)
-	dstIsK8s := isK8sResource(dstResolved)
-
-	var srcID, dstID string
-	if srcIsK8s {
-		srcID = srcResolved
-	} else {
-		srcID = makeServiceIDWithProcess(stats.SrcAddr, stats.Comm)
+	totals := make(map[string]*aggregatedStats, len(batch))
+	for _, stats := range batch {
+		for _, connID := range p.connectionIDsForStats(stats) {
+			agg, ok := totals[connID]
+			if !ok {
+				agg = &aggregatedStats{}
+				totals[connID] = agg
+			}
+			agg.bytesSent += stats.BytesSent
+			agg.bytesRecv += stats.BytesRecv
+			agg.bytesSentRate += stats.BytesSentRate
+			agg.bytesRecvRate += stats.BytesRecvRate
+			agg.packetsSent += stats.PacketsSent
+			agg.packetsRecv += stats.PacketsRecv
+		}
 	}
-	if dstIsK8s {
-		dstID = dstResolved
-	} else {
-		dstID = makeServiceIDWithPort(stats.DstAddr, stats.DstPort)
-	}
 
-	connID := makeConnectionID(srcID, dstID, stats.DstPort, stats.Protocol)
-
-	// Update connection stats
-	err := p.topology.UpdateConnectionStats(ctx, connID,
-		stats.BytesSent, stats.BytesRecv,
-		stats.BytesSentRate, stats.BytesRecvRate,
-		stats.PacketsSent, stats.PacketsRecv)
-	if err != nil {
-		// Connection might not exist yet - this is okay
-		log.WithField("conn_id", connID).Debug("Connection not found for stats update")
+	for connID, agg := range totals {
+		err := p.topology.UpdateConnectionStats(ctx, connID,
+			agg.bytesSent, agg.bytesRecv,
+			agg.bytesSentRate, agg.bytesRecvRate,
+			agg.packetsSent, agg.packetsRecv)
+		if err != nil {
+			// The connection may not exist: either it hasn't been seen yet, or
+			// this is the candidate ID for the direction that doesn't apply.
+			log.WithField("conn_id", connID).Debug("Connection not found for stats update")
+		}
 	}
 
 	return nil

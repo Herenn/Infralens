@@ -357,23 +357,24 @@ func (g *DocsGenerator) buildPrompt(req DocumentationRequest) string {
 			if len(readme) > 2000 {
 				readme = readme[:2000] + "\n... (truncated)"
 			}
-			sb.WriteString(readme)
+			sb.WriteString(redactSecrets(readme))
 			sb.WriteString("\n```\n\n")
 		}
 
-		// Entry point code
+		// Entry point code. This is the file most likely to hold a hardcoded
+		// credential, so it goes through the same redaction as the rest.
 		if req.Context.EntryPointCode != "" {
 			sb.WriteString(fmt.Sprintf("### Main Entry Point (%s)\n", req.Context.EntryPointFile))
 			sb.WriteString("```\n")
-			sb.WriteString(req.Context.EntryPointCode)
+			sb.WriteString(redactSecrets(req.Context.EntryPointCode))
 			sb.WriteString("\n```\n\n")
 		}
 
-		// Dockerfile
+		// Dockerfile. ENV/ARG lines are a common place for a baked-in secret.
 		if req.Context.Dockerfile != "" {
 			sb.WriteString("### Dockerfile\n")
 			sb.WriteString("```dockerfile\n")
-			sb.WriteString(req.Context.Dockerfile)
+			sb.WriteString(redactSecrets(req.Context.Dockerfile))
 			sb.WriteString("\n```\n\n")
 		}
 	}

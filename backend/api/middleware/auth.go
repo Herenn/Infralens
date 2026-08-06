@@ -3,7 +3,9 @@ package middleware
 
 import (
 	"crypto/subtle"
+	"errors"
 	"net/http"
+	stdpath "path"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -18,11 +20,36 @@ type AuthConfig struct {
 	// HeaderName is the header to look for the API key (default: X-API-Key).
 	HeaderName string
 
-	// SkipPaths are paths that don't require authentication.
+	// SkipPaths are exact request paths that don't require authentication.
 	SkipPaths []string
+
+	// SkipPrefixes are path prefixes that don't require authentication. Keep
+	// this list short and specific: a prefix exempts everything beneath it,
+	// including routes that don't exist yet.
+	SkipPrefixes []string
+
+	// AllowNoAuth permits running with no APIKey configured. Without it, an
+	// empty APIKey is a startup error rather than a silently open server.
+	AllowNoAuth bool
+}
+
+// Validate reports whether the configuration is safe to serve with.
+func (cfg AuthConfig) Validate() error {
+	if cfg.APIKey == "" && !cfg.AllowNoAuth {
+		return errors.New(
+			"no API_KEY configured: event ingestion and AI endpoints would accept " +
+				"unauthenticated requests. Set API_KEY, or set ALLOW_NO_AUTH=true to " +
+				"run without authentication deliberately")
+	}
+	return nil
 }
 
 // DefaultAuthConfig returns the default auth configuration.
+//
+// These are matched exactly rather than by prefix. Prefix matching previously
+// meant "/api/v1/topology" also exempted anything that might later be routed
+// beneath it, so a new endpoint could silently lose authentication just by
+// virtue of where it was mounted.
 func DefaultAuthConfig() AuthConfig {
 	return AuthConfig{
 		HeaderName: "X-API-Key",
@@ -31,11 +58,17 @@ func DefaultAuthConfig() AuthConfig {
 			"/ready",
 			"/api/v1/ws",       // WebSocket has its own auth if needed
 			"/api/v1/topology", // Read endpoints can be public
+			"/api/v1/topology/export",
 			"/api/v1/services",
 			"/api/v1/graph/stats",
 			"/api/v1/k8s/status",
 			"/api/v1/ai/status",
 			"/api/v1/ai/providers",
+		},
+		SkipPrefixes: []string{
+			// Only to cover /api/v1/services/{id}. The trailing slash matters:
+			// without it this would also exempt e.g. /api/v1/services-admin.
+			"/api/v1/services/",
 		},
 	}
 }
@@ -63,19 +96,34 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check if path should skip auth
-			path := r.URL.Path
+			// The skip-list decision is made on the cleaned path, not the raw
+			// one. net/url.Parse does not collapse "." / ".." segments, so a
+			// request for "/api/v1/services/../events" arrives with that
+			// literal path; naive prefix matching against it would exempt a
+			// protected route it merely starts with the text of. gorilla/mux
+			// happens to intercept dirty paths on its own and redirect before
+			// any handler runs, which is what actually prevents this today -
+			// but that is mux's default, not a guarantee this middleware
+			// controls, and it would silently stop applying if the router
+			// ever called SkipClean(true) for an unrelated reason. Cleaning
+			// here makes the auth decision correct on its own.
+			path := stdpath.Clean(r.URL.Path)
 			if skipSet[path] {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// Also check prefix matches for paths like /api/v1/services/{id}
-			for skipPath := range skipSet {
-				if strings.HasPrefix(path, skipPath) {
-					next.ServeHTTP(w, r)
-					return
+			// Explicitly declared prefixes only (e.g. /api/v1/services/{id})
+			skipped := false
+			for _, prefix := range cfg.SkipPrefixes {
+				if strings.HasPrefix(path, prefix) {
+					skipped = true
+					break
 				}
+			}
+			if skipped {
+				next.ServeHTTP(w, r)
+				return
 			}
 
 			// Get API key from header

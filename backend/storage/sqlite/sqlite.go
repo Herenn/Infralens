@@ -115,7 +115,7 @@ func New(cfg storage.Config) (*Store, error) {
 
 	log.WithFields(log.Fields{
 		"driver": cfg.Driver,
-		"dsn":    cfg.DSN,
+		"dsn":    storage.RedactDSN(cfg.DSN),
 	}).Info("SQLite store initialized")
 
 	return store, nil
