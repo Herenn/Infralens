@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -61,8 +62,13 @@ func newTestServer(t *testing.T) *testServer {
 	api.HandleFunc("/inspection", eventHandler.HandleInspection).Methods("POST")
 	api.HandleFunc("/topology", topologyHandler.HandleGetTopology).Methods("GET")
 	api.HandleFunc("/topology/history/range", topologyHandler.HandleGetHistoryRange).Methods("GET")
+	api.HandleFunc("/topology/history/stale", topologyHandler.HandleGetStaleServices).Methods("GET")
 	api.HandleFunc("/services", topologyHandler.HandleGetServices).Methods("GET")
-	api.HandleFunc("/services/{id}", topologyHandler.HandleGetService).Methods("GET")
+	// Route order/pattern mirrors router.go: /impact must be registered
+	// before the bare route, and {id} must be greedy to match IDs
+	// containing a literal "/" - see the comment there for why.
+	api.HandleFunc("/services/{id:.+}/impact", topologyHandler.HandleGetImpact).Methods("GET")
+	api.HandleFunc("/services/{id:.+}", topologyHandler.HandleGetService).Methods("GET")
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
 
 	t.Cleanup(func() {
@@ -348,6 +354,32 @@ func TestHandleGetService_NotFound(t *testing.T) {
 	}
 }
 
+// TestHandleGetService_IDContainsSlash guards against a routing regression:
+// service IDs routinely contain a literal "/" (e.g. "10.0.1.10/nginx", the
+// IP+process-name format processor.go generates for non-K8s services), and
+// gorilla/mux's default {id} pattern only matches a single path segment.
+// Without the greedy {id:.+} pattern in router.go, this 404s even though the
+// service exists.
+func TestHandleGetService_IDContainsSlash(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "10.0.1.10/nginx")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/10.0.1.10%2Fnginx", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if resp["id"] != "10.0.1.10/nginx" {
+		t.Errorf("id = %v, want 10.0.1.10/nginx", resp["id"])
+	}
+}
+
 // =============================================================================
 // Graph Stats Tests
 // =============================================================================
@@ -598,6 +630,122 @@ func TestHandleInspection_Valid(t *testing.T) {
 }
 
 // =============================================================================
+// Impact (Blast Radius) API Tests
+// =============================================================================
+
+// seedChain wires services and connections directly through the topology
+// service rather than HTTP event ingestion - ingestion derives service IDs
+// from IP/process-name heuristics, which makes an intentional graph shape
+// like a chain awkward to construct; a direct call gives a deterministic,
+// readable graph to assert against.
+func seedChain(t *testing.T, ts *testServer, names ...string) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, name := range names {
+		if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: name, Name: name, LastSeen: now}); err != nil {
+			t.Fatalf("adding service %s: %v", name, err)
+		}
+	}
+	for i := 0; i < len(names)-1; i++ {
+		src, dst := names[i], names[i+1]
+		if err := ts.topology.AddConnection(ctx, &storage.Connection{
+			ID: src + "->" + dst, SourceID: src, TargetID: dst,
+			Port: 80, Protocol: "tcp", LastSeen: now,
+		}); err != nil {
+			t.Fatalf("adding connection %s->%s: %v", src, dst, err)
+		}
+	}
+}
+
+func TestHandleGetImpact_Upstream(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B", "C", "D")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/C/impact?direction=upstream", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	services := resp["services"].([]interface{})
+	if len(services) != 3 {
+		t.Errorf("expected 3 services (A, B, C) upstream of C, got %d: %+v", len(services), services)
+	}
+}
+
+// TestHandleGetImpact_IDContainsSlash is TestHandleGetService_IDContainsSlash
+// for the impact route - the same routing regression risk, doubled: {id}
+// must be greedy AND the /impact route must be registered before the bare
+// one, or a greedy bare route swallows ".../impact" as part of the id.
+func TestHandleGetImpact_IDContainsSlash(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "10.0.1.10/nginx", "10.0.2.10/api-gateway")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/10.0.1.10%2Fnginx/impact?direction=downstream", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	services := resp["services"].([]interface{})
+	if len(services) != 2 {
+		t.Errorf("expected 2 services, got %d: %+v", len(services), services)
+	}
+}
+
+func TestHandleGetImpact_InvalidDirection(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/A/impact?direction=sideways", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetImpact_InvalidDepth(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/A/impact?depth=0", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetImpact_NotFound(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/does-not-exist/impact", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusNotFound, rr.Code, rr.Body.String())
+	}
+}
+
+// =============================================================================
 // History API Tests
 // =============================================================================
 
@@ -720,6 +868,60 @@ func TestHandleGetHistoryRange_WithData(t *testing.T) {
 	}
 	if _, err := time.Parse(time.RFC3339, *resp.Latest); err != nil {
 		t.Errorf("latest %q is not RFC3339: %v", *resp.Latest, err)
+	}
+}
+
+func TestHandleGetStaleServices_HistoryDisabled(t *testing.T) {
+	ts := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/stale", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetStaleServices_InvalidOlderThan(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/stale?olderThan=not-a-duration", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetStaleServices_ReturnsOnlyOldServices(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+
+	old := time.Now().Add(-72 * time.Hour)
+	recent := time.Now().Add(-time.Hour)
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: "old-svc", Name: "old", LastSeen: old}); err != nil {
+		t.Fatalf("adding old service: %v", err)
+	}
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: "recent-svc", Name: "recent", LastSeen: recent}); err != nil {
+		t.Fatalf("adding recent service: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/stale?olderThan=48h", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp []handlers.StaleServiceResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 1 || resp[0].ID != "old-svc" {
+		t.Errorf("expected exactly [old-svc], got %+v", resp)
 	}
 }
 

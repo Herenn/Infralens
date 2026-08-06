@@ -63,6 +63,18 @@ export interface Service {
   aggregated_count?: number // Number of services aggregated (for display)
 }
 
+// A decommission candidate: a service's most recent observation, for
+// services not seen since before a requested cutoff.
+export interface StaleService {
+  id: string
+  name?: string
+  type?: string
+  tech?: string
+  namespace?: string
+  node?: string
+  last_seen: string
+}
+
 // Service type constants
 export const ServiceTypes = {
   DATABASE: 'database',

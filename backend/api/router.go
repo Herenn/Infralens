@@ -90,8 +90,16 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/topology", topologyHandler.HandleGetTopology).Methods("GET")
 	api.HandleFunc("/topology/export", exportHandler.HandleExport).Methods("GET")
 	api.HandleFunc("/topology/history/range", topologyHandler.HandleGetHistoryRange).Methods("GET")
+	api.HandleFunc("/topology/history/stale", topologyHandler.HandleGetStaleServices).Methods("GET")
 	api.HandleFunc("/services", topologyHandler.HandleGetServices).Methods("GET")
-	api.HandleFunc("/services/{id}", topologyHandler.HandleGetService).Methods("GET")
+	// Service IDs routinely contain a literal "/" (e.g. "10.0.1.10/nginx"),
+	// so {id} must be greedy (".+", not the default "[^/]+") to match them at
+	// all. The /impact route has to be registered before the bare one:
+	// gorilla/mux tries routes in registration order, and a greedy bare
+	// "/services/{id:.+}" checked first would swallow ".../impact" as part
+	// of the id instead of matching the more specific route.
+	api.HandleFunc("/services/{id:.+}/impact", topologyHandler.HandleGetImpact).Methods("GET")
+	api.HandleFunc("/services/{id:.+}", topologyHandler.HandleGetService).Methods("GET")
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
 
 	// WebSocket endpoint

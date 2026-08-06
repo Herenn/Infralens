@@ -24,6 +24,7 @@ import ConnectionEdge from './components/ConnectionEdge'
 import ServiceDrawer from './components/ServiceDrawer'
 import Header from './components/Header'
 import TimelineScrubber, { HistoryRange } from './components/TimelineScrubber'
+import DecommissionPanel from './components/DecommissionPanel'
 import { Service, Topology } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { apiUrl } from './lib/api'
@@ -221,6 +222,11 @@ function App() {
   })
   const [stats, setStats] = useState({ services: 0, connections: 0 })
   const [searchQuery, setSearchQuery] = useState('')
+
+  // Blast radius: which service is the current root, and the resulting set
+  // of service IDs to highlight (null = no impact view active).
+  const [impactRoot, setImpactRoot] = useState<{ id: string; direction: 'upstream' | 'downstream' } | null>(null)
+  const [impactIds, setImpactIds] = useState<Set<string> | null>(null)
   const [filters, setFilters] = useState<FilterState>({
     hideLocalhost: false,
     minConnections: 1,
@@ -316,46 +322,82 @@ function App() {
     return matches
   }, [searchQuery, filteredTopology])
 
-  // Apply search highlighting: dim non-matching services and their edges
+  // Fetch the blast radius whenever the root/direction changes. An active
+  // impact view takes priority over search highlighting - it's a more
+  // specific, explicitly-requested intent.
+  useEffect(() => {
+    if (!impactRoot) {
+      setImpactIds(null)
+      return
+    }
+    let cancelled = false
+    fetch(apiUrl(`/api/v1/services/${encodeURIComponent(impactRoot.id)}/impact?direction=${impactRoot.direction}`))
+      .then(res => {
+        if (!res.ok) throw new Error(`Failed to load impact: ${res.status}`)
+        return res.json()
+      })
+      .then((data: Topology) => {
+        if (cancelled) return
+        setImpactIds(new Set(data.services.map(s => s.id)))
+      })
+      .catch(err => {
+        console.error('Failed to load impact:', err)
+        if (!cancelled) setImpactIds(null)
+      })
+    return () => { cancelled = true }
+  }, [impactRoot])
+
+  const handleShowImpact = useCallback((serviceId: string, direction: 'upstream' | 'downstream') => {
+    setImpactRoot({ id: serviceId, direction })
+  }, [])
+
+  const handleClearImpact = useCallback(() => {
+    setImpactRoot(null)
+  }, [])
+
+  const highlightIds = impactIds || searchMatchIds
+
+  // Apply highlighting: dim everything outside the active impact view or
+  // search match, whichever is active.
   const displayNodes = useMemo(() => {
-    if (!searchMatchIds) return nodes
+    if (!highlightIds) return nodes
     return nodes.map(node => {
       if (node.type !== 'service') return node
-      const matched = searchMatchIds.has(node.id)
+      const matched = highlightIds.has(node.id)
       return {
         ...node,
         style: { ...node.style, opacity: matched ? 1 : 0.2 },
       }
     })
-  }, [nodes, searchMatchIds])
+  }, [nodes, highlightIds])
 
   const displayEdges = useMemo(() => {
-    if (!searchMatchIds) return edges
+    if (!highlightIds) return edges
     return edges.map(edge => {
-      const matched = searchMatchIds.has(edge.source) || searchMatchIds.has(edge.target)
+      const matched = highlightIds.has(edge.source) || highlightIds.has(edge.target)
       return {
         ...edge,
         style: { ...edge.style, opacity: matched ? 1 : 0.1 },
       }
     })
-  }, [edges, searchMatchIds])
+  }, [edges, highlightIds])
 
-  // Zoom to search matches
+  // Zoom to the active highlight set (impact view or search match)
   useEffect(() => {
-    if (!searchMatchIds || searchMatchIds.size === 0) return
+    if (!highlightIds || highlightIds.size === 0) return
     const instance = reactFlowInstanceRef.current
     if (!instance) return
 
     const timeout = window.setTimeout(() => {
       instance.fitView({
-        nodes: [...searchMatchIds].map(id => ({ id })),
+        nodes: [...highlightIds].map(id => ({ id })),
         duration: 400,
         padding: 0.4,
         maxZoom: 1.2,
       })
     }, 250) // debounce while typing
     return () => window.clearTimeout(timeout)
-  }, [searchMatchIds])
+  }, [highlightIds])
 
   // Update graph when topology changes - ONLY re-layout on structural changes
   useEffect(() => {
@@ -756,6 +798,8 @@ function App() {
             onChange={setTimelineAt}
             loading={historyLoading}
           />
+
+          {historyRange && <DecommissionPanel />}
         </div>
       </div>
 
@@ -768,6 +812,9 @@ function App() {
         ports={selectedNode.ports}
         serverData={selectedNode.serverData}
         nodeType={selectedNode.type}
+        onShowImpact={handleShowImpact}
+        onClearImpact={handleClearImpact}
+        activeImpactDirection={impactRoot && selectedNode.service?.id === impactRoot.id ? impactRoot.direction : null}
       />
     </div>
   )

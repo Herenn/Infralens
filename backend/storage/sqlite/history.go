@@ -270,6 +270,29 @@ func (r *HistoryRepo) Bounds(ctx context.Context) (storage.HistoryBounds, bool, 
 	return storage.HistoryBounds{Earliest: earliest, Latest: latest}, true, nil
 }
 
+// StaleServices returns each service's newest interval, for services whose
+// newest interval ended before `before`.
+//
+// The correlated subquery keeps last_seen in the SELECT list as a plain
+// column scan rather than an aggregate expression - MAX(last_seen) is only
+// ever used inside the subquery, for comparison, never projected. That's the
+// same decltype trap Bounds() hit: aggregating a DATETIME column in the
+// outer SELECT returns an unparseable driver string instead of time.Time.
+func (r *HistoryRepo) StaleServices(ctx context.Context, before time.Time) ([]storage.ServiceInterval, error) {
+	rows, err := r.executor(ctx).QueryContext(ctx, `
+		SELECT `+serviceIntervalColumns+`
+		FROM service_intervals si
+		WHERE last_seen = (
+			SELECT MAX(last_seen) FROM service_intervals WHERE service_id = si.service_id
+		)
+		AND last_seen < ?
+		ORDER BY last_seen ASC`, before)
+	if err != nil {
+		return nil, fmt.Errorf("querying stale services: %w", err)
+	}
+	return r.scanServiceIntervals(rows)
+}
+
 // DeleteStale drops intervals that ended before the cutoff.
 func (r *HistoryRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
 	exec := r.executor(ctx)

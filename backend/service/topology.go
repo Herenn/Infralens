@@ -328,6 +328,107 @@ func (ts *TopologyService) GetTopology(ctx context.Context) (*storage.Topology, 
 	return ts.store.GetTopology(ctx)
 }
 
+// ImpactDirection controls which way GetImpact traverses the graph.
+type ImpactDirection string
+
+const (
+	// ImpactUpstream follows edges backwards - what calls this service, and
+	// what calls those callers. This is what "what breaks if I take this
+	// down" actually means: the transitive callers, not the dependencies.
+	ImpactUpstream ImpactDirection = "upstream"
+
+	// ImpactDownstream follows edges forwards - what this service depends on.
+	ImpactDownstream ImpactDirection = "downstream"
+)
+
+const (
+	defaultImpactDepth = 5
+	// maxImpactDepth bounds traversal so a densely connected graph can't
+	// make this walk arbitrarily long; it's a safety cap, not a tuned value.
+	maxImpactDepth = 20
+)
+
+// GetImpact returns the subgraph reachable from serviceID by BFS over the
+// current topology, in the given direction. Returns (nil, nil) if serviceID
+// does not exist in the current topology, matching GetService's
+// not-found convention.
+func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, direction ImpactDirection, maxDepth int) (*storage.Topology, error) {
+	topo, err := ts.store.GetTopology(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getting topology: %w", err)
+	}
+
+	svcByID := make(map[string]storage.Service, len(topo.Services))
+	for _, svc := range topo.Services {
+		svcByID[svc.ID] = svc
+	}
+	if _, ok := svcByID[serviceID]; !ok {
+		return nil, nil
+	}
+
+	if maxDepth <= 0 {
+		maxDepth = defaultImpactDepth
+	}
+	if maxDepth > maxImpactDepth {
+		maxDepth = maxImpactDepth
+	}
+
+	// Index edges by the endpoint we'll be expanding from: for upstream
+	// that's the target (find who calls this ID), for downstream the
+	// source (find what this ID calls).
+	byEndpoint := make(map[string][]storage.Connection, len(topo.Connections))
+	for _, conn := range topo.Connections {
+		if direction == ImpactDownstream {
+			byEndpoint[conn.SourceID] = append(byEndpoint[conn.SourceID], conn)
+		} else {
+			byEndpoint[conn.TargetID] = append(byEndpoint[conn.TargetID], conn)
+		}
+	}
+
+	visited := map[string]bool{serviceID: true}
+	reachedConns := make(map[string]storage.Connection)
+	frontier := []string{serviceID}
+
+	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, id := range frontier {
+			for _, conn := range byEndpoint[id] {
+				reachedConns[conn.ID] = conn
+				neighbor := conn.SourceID
+				if direction == ImpactDownstream {
+					neighbor = conn.TargetID
+				}
+				if !visited[neighbor] {
+					visited[neighbor] = true
+					next = append(next, neighbor)
+				}
+			}
+		}
+		frontier = next
+	}
+
+	services := make([]storage.Service, 0, len(visited))
+	for id := range visited {
+		// A connection can reference an endpoint that has aged out of the
+		// current services table (e.g. one side just went stale) while the
+		// edge itself hasn't been pruned yet - skip rather than emit a
+		// zero-value Service for it.
+		if svc, ok := svcByID[id]; ok {
+			services = append(services, svc)
+		}
+	}
+	connections := make([]storage.Connection, 0, len(reachedConns))
+	for _, conn := range reachedConns {
+		connections = append(connections, conn)
+	}
+
+	return &storage.Topology{
+		Services:    services,
+		Connections: connections,
+		UpdatedAt:   topo.UpdatedAt,
+	}, nil
+}
+
 // GetTopologyAt reconstructs the topology as it existed at a specific
 // instant, from recorded history intervals rather than current state.
 //
@@ -365,6 +466,19 @@ func (ts *TopologyService) GetHistoryBounds(ctx context.Context) (bounds storage
 		return storage.HistoryBounds{}, false, ErrHistoryDisabled
 	}
 	return ts.store.History().Bounds(ctx)
+}
+
+// GetStaleServices returns decommission candidates: services whose most
+// recent observation is older than olderThan. A non-positive olderThan
+// falls back to the storage default retention window.
+func (ts *TopologyService) GetStaleServices(ctx context.Context, olderThan time.Duration) ([]storage.ServiceInterval, error) {
+	if !ts.historyEnabled {
+		return nil, ErrHistoryDisabled
+	}
+	if olderThan <= 0 {
+		olderThan = storage.DefaultHistoryRetention
+	}
+	return ts.store.History().StaleServices(ctx, time.Now().Add(-olderThan))
 }
 
 func servicesFromIntervals(intervals []storage.ServiceInterval) []storage.Service {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/Herenn/Infralens/backend/service"
@@ -88,6 +89,93 @@ func (h *TopologyHandler) HandleGetHistoryRange(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// HandleGetStaleServices returns decommission candidates: services whose
+// most recent observation is older than ?olderThan=<Go duration> (default
+// and unit: the storage history retention window, e.g. "720h").
+func (h *TopologyHandler) HandleGetStaleServices(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var olderThan time.Duration
+	if raw := r.URL.Query().Get("olderThan"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			http.Error(w, "Invalid 'olderThan' parameter: expected a positive Go duration (e.g. '720h')", http.StatusBadRequest)
+			return
+		}
+		olderThan = parsed
+	}
+
+	stale, err := h.topology.GetStaleServices(ctx, olderThan)
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Failed to get stale services", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]StaleServiceResponse, 0, len(stale))
+	for _, svc := range stale {
+		response = append(response, StaleServiceResponse{
+			ID:        svc.ServiceID,
+			Name:      svc.Name,
+			Type:      svc.Type,
+			Tech:      svc.Tech,
+			Namespace: svc.Namespace,
+			Node:      svc.Node,
+			LastSeen:  svc.LastSeen.Format(time.RFC3339),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// HandleGetImpact returns the subgraph reachable from a service, answering
+// "what breaks if I take this down" (?direction=upstream, the default) or
+// "what does this depend on" (?direction=downstream). ?depth=<n> caps how
+// many hops out the traversal goes (default 5, capped at 20).
+func (h *TopologyHandler) HandleGetImpact(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+	ctx := r.Context()
+
+	direction := service.ImpactUpstream
+	if d := r.URL.Query().Get("direction"); d != "" {
+		switch service.ImpactDirection(d) {
+		case service.ImpactUpstream, service.ImpactDownstream:
+			direction = service.ImpactDirection(d)
+		default:
+			http.Error(w, "Invalid 'direction' parameter: expected 'upstream' or 'downstream'", http.StatusBadRequest)
+			return
+		}
+	}
+
+	depth := 0 // GetImpact applies its own default
+	if d := r.URL.Query().Get("depth"); d != "" {
+		parsed, err := strconv.Atoi(d)
+		if err != nil || parsed < 1 {
+			http.Error(w, "Invalid 'depth' parameter: expected a positive integer", http.StatusBadRequest)
+			return
+		}
+		depth = parsed
+	}
+
+	topology, err := h.topology.GetImpact(ctx, id, direction, depth)
+	if err != nil {
+		http.Error(w, "Failed to get impact", http.StatusInternalServerError)
+		return
+	}
+	if topology == nil {
+		http.Error(w, "Service not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(convertTopologyToResponse(topology))
 }
 
 // HandleGetServices returns all services.
@@ -193,6 +281,18 @@ type ConnectionResponse struct {
 type HistoryRangeResponse struct {
 	Earliest *string `json:"earliest"`
 	Latest   *string `json:"latest"`
+}
+
+// StaleServiceResponse is a decommission candidate: a service's most recent
+// observation, for services not seen since before the requested cutoff.
+type StaleServiceResponse struct {
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Tech      string `json:"tech,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Node      string `json:"node,omitempty"`
+	LastSeen  string `json:"last_seen"`
 }
 
 // MetricsResponse is the metrics format expected by the frontend.

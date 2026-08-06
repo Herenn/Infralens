@@ -248,6 +248,25 @@ func (r *HistoryRepo) Bounds(ctx context.Context) (storage.HistoryBounds, bool, 
 	return storage.HistoryBounds{Earliest: earliest.Time, Latest: latest.Time}, true, nil
 }
 
+// StaleServices returns each service's newest interval, for services whose
+// newest interval ended before `before`. Postgres doesn't share sqlite's
+// decltype quirk (see the sqlite implementation), but uses the same
+// correlated-subquery shape so both backends stay structurally identical.
+func (r *HistoryRepo) StaleServices(ctx context.Context, before time.Time) ([]storage.ServiceInterval, error) {
+	rows, err := r.executor(ctx).QueryContext(ctx, `
+		SELECT `+serviceIntervalColumns+`
+		FROM service_intervals si
+		WHERE last_seen = (
+			SELECT MAX(last_seen) FROM service_intervals WHERE service_id = si.service_id
+		)
+		AND last_seen < $1
+		ORDER BY last_seen ASC`, before)
+	if err != nil {
+		return nil, fmt.Errorf("querying stale services: %w", err)
+	}
+	return r.scanServiceIntervals(rows)
+}
+
 // DeleteStale drops intervals that ended before the cutoff.
 func (r *HistoryRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
 	exec := r.executor(ctx)

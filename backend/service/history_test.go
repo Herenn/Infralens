@@ -270,3 +270,55 @@ func TestGetHistoryBoundsReflectsRecordedRange(t *testing.T) {
 		t.Errorf("latest = %s, want %s", bounds.Latest, late)
 	}
 }
+
+// TestGetStaleServicesRequiresHistoryEnabled matches the read-side opt-in
+// contract every other history query follows.
+func TestGetStaleServicesRequiresHistoryEnabled(t *testing.T) {
+	ts, _ := newHistoryTestService(t, false)
+
+	if _, err := ts.GetStaleServices(context.Background(), time.Hour); !errors.Is(err, ErrHistoryDisabled) {
+		t.Errorf("expected ErrHistoryDisabled, got %v", err)
+	}
+}
+
+// TestGetStaleServicesOnlyReturnsWhatsOlderThanCutoff checks the boundary
+// through the service method the HTTP handler actually calls, not just the
+// storage layer directly.
+func TestGetStaleServicesOnlyReturnsWhatsOlderThanCutoff(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	old := time.Now().Add(-72 * time.Hour).Truncate(time.Second)
+	recent := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "10.0.0.7/decommission-me", Name: "old", LastSeen: old}); err != nil {
+		t.Fatalf("adding old service: %v", err)
+	}
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "10.0.0.7/keep-me", Name: "recent", LastSeen: recent}); err != nil {
+		t.Fatalf("adding recent service: %v", err)
+	}
+
+	stale, err := ts.GetStaleServices(ctx, 48*time.Hour)
+	if err != nil {
+		t.Fatalf("GetStaleServices: %v", err)
+	}
+
+	var ids []string
+	for _, si := range stale {
+		ids = append(ids, si.ServiceID)
+	}
+	foundOld, foundRecent := false, false
+	for _, id := range ids {
+		if id == "10.0.0.7/decommission-me" {
+			foundOld = true
+		}
+		if id == "10.0.0.7/keep-me" {
+			foundRecent = true
+		}
+	}
+	if !foundOld {
+		t.Errorf("expected the service last seen 72h ago to be stale at a 48h cutoff, got %v", ids)
+	}
+	if foundRecent {
+		t.Errorf("the service last seen 1h ago should not be stale at a 48h cutoff, got %v", ids)
+	}
+}

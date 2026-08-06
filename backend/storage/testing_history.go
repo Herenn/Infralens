@@ -271,6 +271,38 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 			t.Errorf("latest bound %s is before the latest recorded observation %s", bounds.Latest, late)
 		}
 	})
+
+	t.Run("StaleServicesFindsOnlyThingsNotSeenRecently", func(t *testing.T) {
+		stale := &Service{ID: "hist-stale-old", Name: "old"}
+		staleAt := base.Add(-96 * time.Hour)
+		if err := history.RecordService(ctx, stale, staleAt, maxGap); err != nil {
+			t.Fatalf("recording stale service: %v", err)
+		}
+
+		fresh := &Service{ID: "hist-stale-fresh", Name: "fresh"}
+		freshAt := base.Add(-time.Hour)
+		if err := history.RecordService(ctx, fresh, freshAt, maxGap); err != nil {
+			t.Fatalf("recording fresh service: %v", err)
+		}
+
+		cutoff := base.Add(-48 * time.Hour)
+		got, err := history.StaleServices(ctx, cutoff)
+		if err != nil {
+			t.Fatalf("StaleServices: %v", err)
+		}
+
+		if !containsService(got, "hist-stale-old") {
+			t.Errorf("expected hist-stale-old (last seen %s, before cutoff %s) in stale services, got %+v", staleAt, cutoff, got)
+		}
+		if containsService(got, "hist-stale-fresh") {
+			t.Errorf("hist-stale-fresh (last seen %s, after cutoff %s) should not be in stale services", freshAt, cutoff)
+		}
+
+		// One row per service - its newest interval, not every interval.
+		if rows := servicesWithID(got, "hist-stale-old"); len(rows) != 1 {
+			t.Errorf("expected exactly one row for hist-stale-old, got %d: %+v", len(rows), rows)
+		}
+	})
 }
 
 // --- helpers -------------------------------------------------------------

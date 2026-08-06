@@ -241,7 +241,7 @@ DEFAULT_LLM_PROVIDER=openai
 `POST /api/v1/events`, `/api/v1/stats`, `/api/v1/metrics`, `/api/v1/inspection`
 
 **Public endpoints (always accessible):**
-`GET /api/v1/topology`, `/api/v1/topology/history/range`, `/api/v1/services`, `/api/v1/ws` (WebSocket), `/health`, `/ready`
+`GET /api/v1/topology`, `/api/v1/topology/history/range`, `/api/v1/topology/history/stale`, `/api/v1/services` (including `/{id}` and `/{id}/impact`), `/api/v1/ws` (WebSocket), `/health`, `/ready`
 
 **CORS:**
 
@@ -331,8 +331,10 @@ infralens/
 | `/api/v1/topology` | GET | Current service topology with node metrics. With `?at=<RFC3339>`, the topology reconstructed from history at that instant instead (requires `HISTORY_ENABLED`) |
 | `/api/v1/topology/export` | GET | Export topology as Mermaid or DOT (`?format=mermaid\|dot`) |
 | `/api/v1/topology/history/range` | GET | Earliest/latest instants covered by recorded history, for sizing a timeline control (requires `HISTORY_ENABLED`) |
+| `/api/v1/topology/history/stale` | GET | Decommission candidates: services not seen since `?olderThan=<Go duration>` (default: history retention window, requires `HISTORY_ENABLED`) |
 | `/api/v1/services` | GET | List all discovered services |
 | `/api/v1/services/{id}` | GET | Service details |
+| `/api/v1/services/{id}/impact` | GET | Blast radius: the subgraph reachable from this service. `?direction=upstream` (default) is what calls it, transitively; `downstream` is what it calls. `?depth=` caps traversal hops (default 5, max 20) |
 | `/api/v1/ws` | WebSocket | Real-time topology updates (snapshot + deltas) |
 | `/api/v1/graph/stats` | GET | Graph statistics |
 | `/api/v1/k8s/status` | GET | K8s watcher status |

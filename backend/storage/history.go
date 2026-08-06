@@ -80,6 +80,12 @@ type HistoryRepository interface {
 	// recorded intervals. ok is false when no history has been recorded yet,
 	// distinguishing "empty" from a zero-value time range.
 	Bounds(ctx context.Context) (bounds HistoryBounds, ok bool, err error)
+
+	// StaleServices returns the most recent interval for every service whose
+	// last observation is older than `before` - decommission candidates:
+	// things that used to exist and haven't been seen since. One row per
+	// service, its newest interval, not every interval it ever had.
+	StaleServices(ctx context.Context, before time.Time) ([]ServiceInterval, error)
 }
 
 // mergeServiceIntervals collapses intervals belonging to the same service into
