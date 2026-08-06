@@ -207,6 +207,11 @@ DB_CONN_MAX_LIFETIME=5m        # Connection max lifetime
 PRUNE_INTERVAL=5m              # How often to prune stale data (0 to disable)
 PRUNE_MAX_AGE=30m              # Delete data older than this
 
+# ── Topology history ─────────────────────────────────────
+HISTORY_ENABLED=true           # Record topology history alongside current state
+HISTORY_RETENTION=720h         # How long history is kept (30 days)
+HISTORY_MAX_GAP=5m             # Gap before a re-appearance opens a new interval
+
 # ── Security ────────────────────────────────────────────
 API_KEY=                       # API key for agent auth (empty = disabled)
 API_KEY_HEADER=X-API-Key       # Header name for API key
@@ -236,7 +241,7 @@ DEFAULT_LLM_PROVIDER=openai
 `POST /api/v1/events`, `/api/v1/stats`, `/api/v1/metrics`, `/api/v1/inspection`
 
 **Public endpoints (always accessible):**
-`GET /api/v1/topology`, `/api/v1/services`, `/api/v1/ws` (WebSocket), `/health`, `/ready`
+`GET /api/v1/topology`, `/api/v1/topology/history/range`, `/api/v1/services`, `/api/v1/ws` (WebSocket), `/health`, `/ready`
 
 **CORS:**
 
@@ -323,8 +328,9 @@ infralens/
 | `/api/v1/stats` | POST | Receive throughput stats from agents |
 | `/api/v1/metrics` | POST | Receive host metrics (CPU/RAM) from agents |
 | `/api/v1/inspection` | POST | Receive deep inspection data from agents |
-| `/api/v1/topology` | GET | Current service topology with node metrics |
+| `/api/v1/topology` | GET | Current service topology with node metrics. With `?at=<RFC3339>`, the topology reconstructed from history at that instant instead (requires `HISTORY_ENABLED`) |
 | `/api/v1/topology/export` | GET | Export topology as Mermaid or DOT (`?format=mermaid\|dot`) |
+| `/api/v1/topology/history/range` | GET | Earliest/latest instants covered by recorded history, for sizing a timeline control (requires `HISTORY_ENABLED`) |
 | `/api/v1/services` | GET | List all discovered services |
 | `/api/v1/services/{id}` | GET | Service details |
 | `/api/v1/ws` | WebSocket | Real-time topology updates (snapshot + deltas) |

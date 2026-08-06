@@ -59,6 +59,7 @@ func DefaultAuthConfig() AuthConfig {
 			"/api/v1/ws",       // WebSocket has its own auth if needed
 			"/api/v1/topology", // Read endpoints can be public
 			"/api/v1/topology/export",
+			"/api/v1/topology/history/range",
 			"/api/v1/services",
 			"/api/v1/graph/stats",
 			"/api/v1/k8s/status",

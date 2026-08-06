@@ -229,6 +229,25 @@ func (r *HistoryRepo) ConnectionsBetween(ctx context.Context, from, to time.Time
 	return storage.MergeConnectionIntervals(intervals), nil
 }
 
+// Bounds returns the earliest and latest instants covered by recorded
+// history, across both services and connections.
+func (r *HistoryRepo) Bounds(ctx context.Context) (storage.HistoryBounds, bool, error) {
+	var earliest, latest sql.NullTime
+	err := r.executor(ctx).QueryRowContext(ctx, `
+		SELECT MIN(first_seen), MAX(last_seen) FROM (
+			SELECT first_seen, last_seen FROM service_intervals
+			UNION ALL
+			SELECT first_seen, last_seen FROM connection_intervals
+		) AS combined`).Scan(&earliest, &latest)
+	if err != nil {
+		return storage.HistoryBounds{}, false, fmt.Errorf("querying history bounds: %w", err)
+	}
+	if !earliest.Valid || !latest.Valid {
+		return storage.HistoryBounds{}, false, nil
+	}
+	return storage.HistoryBounds{Earliest: earliest.Time, Latest: latest.Time}, true, nil
+}
+
 // DeleteStale drops intervals that ended before the cutoff.
 func (r *HistoryRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
 	exec := r.executor(ctx)

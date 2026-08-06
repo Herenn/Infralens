@@ -22,6 +22,16 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 	base := time.Now().Add(-72 * time.Hour).Truncate(time.Second)
 	const maxGap = 5 * time.Minute
 
+	t.Run("BoundsIsEmptyWithNoHistory", func(t *testing.T) {
+		_, ok, err := history.Bounds(ctx)
+		if err != nil {
+			t.Fatalf("Bounds: %v", err)
+		}
+		if ok {
+			t.Error("expected ok=false before any history has been recorded")
+		}
+	})
+
 	t.Run("ContinuousObservationStaysOneInterval", func(t *testing.T) {
 		svc := &Service{ID: "hist-continuous", Name: "api", Type: "web_server"}
 
@@ -230,6 +240,35 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 		}
 		if !containsService(mustServicesAt(t, history, ctx, recentAt), "hist-keep") {
 			t.Error("interval ending after the cutoff must be retained")
+		}
+	})
+
+	t.Run("BoundsSpansEarliestAndLatestObservation", func(t *testing.T) {
+		// Loose (>=/<=) rather than exact: earlier subtests in this suite have
+		// already written rows sharing the same store, so Bounds legitimately
+		// extends beyond what this subtest writes itself.
+		early := base.Add(-48 * time.Hour)
+		late := base.Add(48 * time.Hour)
+
+		if err := history.RecordService(ctx, &Service{ID: "hist-bounds-early", Name: "early"}, early, maxGap); err != nil {
+			t.Fatalf("recording early service: %v", err)
+		}
+		if err := history.RecordService(ctx, &Service{ID: "hist-bounds-late", Name: "late"}, late, maxGap); err != nil {
+			t.Fatalf("recording late service: %v", err)
+		}
+
+		bounds, ok, err := history.Bounds(ctx)
+		if err != nil {
+			t.Fatalf("Bounds: %v", err)
+		}
+		if !ok {
+			t.Fatal("expected ok=true once history has been recorded")
+		}
+		if bounds.Earliest.After(early) {
+			t.Errorf("earliest bound %s is after the earliest recorded observation %s", bounds.Earliest, early)
+		}
+		if bounds.Latest.Before(late) {
+			t.Errorf("latest bound %s is before the latest recorded observation %s", bounds.Latest, late)
 		}
 	})
 }

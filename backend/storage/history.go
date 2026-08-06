@@ -37,6 +37,14 @@ type ConnectionInterval struct {
 	LastSeen     time.Time `json:"last_seen"`
 }
 
+// HistoryBounds is the earliest and latest instants covered by recorded
+// history. It sizes a UI timeline control without the caller having to guess
+// a retention window or scan every interval itself.
+type HistoryBounds struct {
+	Earliest time.Time `json:"earliest"`
+	Latest   time.Time `json:"latest"`
+}
+
 // HistoryRepository records and reconstructs topology over time.
 //
 // Recording is "extend or open": an observation whose entity already has an
@@ -67,6 +75,11 @@ type HistoryRepository interface {
 	// DeleteStale removes intervals that ended before the cutoff. Unlike
 	// pruning current state, this is the retention boundary for history.
 	DeleteStale(ctx context.Context, before time.Time) (int64, error)
+
+	// Bounds returns the earliest first_seen and latest last_seen across all
+	// recorded intervals. ok is false when no history has been recorded yet,
+	// distinguishing "empty" from a zero-value time range.
+	Bounds(ctx context.Context) (bounds HistoryBounds, ok bool, err error)
 }
 
 // mergeServiceIntervals collapses intervals belonging to the same service into

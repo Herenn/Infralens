@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,7 @@ func newTestServer(t *testing.T) *testServer {
 	api.HandleFunc("/metrics", eventHandler.HandleMetrics).Methods("POST")
 	api.HandleFunc("/inspection", eventHandler.HandleInspection).Methods("POST")
 	api.HandleFunc("/topology", topologyHandler.HandleGetTopology).Methods("GET")
+	api.HandleFunc("/topology/history/range", topologyHandler.HandleGetHistoryRange).Methods("GET")
 	api.HandleFunc("/services", topologyHandler.HandleGetServices).Methods("GET")
 	api.HandleFunc("/services/{id}", topologyHandler.HandleGetService).Methods("GET")
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
@@ -75,6 +77,16 @@ func newTestServer(t *testing.T) *testServer {
 		eventBus:  eventBus,
 		router:    router,
 	}
+}
+
+// newTestServerWithHistory is newTestServer with topology history recording
+// turned on, for exercising the ?at= and /topology/history/range endpoints
+// that 400 without it.
+func newTestServerWithHistory(t *testing.T) *testServer {
+	t.Helper()
+	ts := newTestServer(t)
+	ts.topology.EnableHistory(5 * time.Minute)
+	return ts
 }
 
 // =============================================================================
@@ -582,6 +594,132 @@ func TestHandleInspection_Valid(t *testing.T) {
 	}
 	if insp.ProcessName != "nginx" {
 		t.Errorf("ProcessName = %q, want %q", insp.ProcessName, "nginx")
+	}
+}
+
+// =============================================================================
+// History API Tests
+// =============================================================================
+
+func TestHandleGetTopology_AtParam_InvalidTimestamp(t *testing.T) {
+	ts := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology?at=not-a-timestamp", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetTopology_AtParam_HistoryDisabled(t *testing.T) {
+	ts := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology?at="+url.QueryEscape(time.Now().Format(time.RFC3339)), nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetTopology_AtParam_HistoryEnabled(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology?at="+url.QueryEscape(time.Now().Format(time.RFC3339)), nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if _, ok := resp["services"]; !ok {
+		t.Error("Response missing 'services' field")
+	}
+}
+
+func TestHandleGetHistoryRange_HistoryDisabled(t *testing.T) {
+	ts := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/range", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetHistoryRange_Empty(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/range", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp handlers.HistoryRangeResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if resp.Earliest != nil || resp.Latest != nil {
+		t.Errorf("expected null bounds before anything is recorded, got %+v", resp)
+	}
+}
+
+func TestHandleGetHistoryRange_WithData(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	batch := map[string]interface{}{
+		"node_name": "test-node",
+		"timestamp": time.Now().Format(time.RFC3339),
+		"events": []map[string]interface{}{
+			{
+				"pid": 1234, "comm": "nginx",
+				"src_addr": "10.0.0.1", "dst_addr": "10.0.0.2",
+				"dst_port": 80, "direction": 0,
+			},
+		},
+	}
+	body, _ := json.Marshal(batch)
+	req := httptest.NewRequest("POST", "/api/v1/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("Expected status %d ingesting events, got %d: %s", http.StatusAccepted, rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest("GET", "/api/v1/topology/history/range", nil)
+	rr = httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp handlers.HistoryRangeResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if resp.Earliest == nil || resp.Latest == nil {
+		t.Fatalf("expected non-null bounds after recording an event, got %+v", resp)
+	}
+	if _, err := time.Parse(time.RFC3339, *resp.Earliest); err != nil {
+		t.Errorf("earliest %q is not RFC3339: %v", *resp.Earliest, err)
+	}
+	if _, err := time.Parse(time.RFC3339, *resp.Latest); err != nil {
+		t.Errorf("latest %q is not RFC3339: %v", *resp.Latest, err)
 	}
 }
 

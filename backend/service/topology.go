@@ -3,12 +3,18 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/Herenn/Infralens/backend/storage"
 	log "github.com/sirupsen/logrus"
 )
+
+// ErrHistoryDisabled is returned by history-dependent queries when
+// EnableHistory has not been called, so callers can tell "nothing recorded
+// yet" apart from "recording was never turned on" and respond accordingly.
+var ErrHistoryDisabled = errors.New("topology history is not enabled")
 
 // TopologyService manages the service topology graph.
 // It coordinates between the storage layer and event bus for real-time updates.
@@ -320,6 +326,81 @@ func (ts *TopologyService) ListConnections(ctx context.Context, filter storage.C
 // GetTopology returns a snapshot of the current topology.
 func (ts *TopologyService) GetTopology(ctx context.Context) (*storage.Topology, error) {
 	return ts.store.GetTopology(ctx)
+}
+
+// GetTopologyAt reconstructs the topology as it existed at a specific
+// instant, from recorded history intervals rather than current state.
+//
+// Node metrics have no historical record - only services and connections are
+// tracked as intervals - so the returned Topology always has an empty
+// NodeMetrics. Per-service decorative fields not stored on the interval
+// (DisplayName, Labels, PodIP, ...) are likewise absent; the interval only
+// carries what's needed to redraw the graph shape.
+func (ts *TopologyService) GetTopologyAt(ctx context.Context, at time.Time) (*storage.Topology, error) {
+	if !ts.historyEnabled {
+		return nil, ErrHistoryDisabled
+	}
+
+	svcIntervals, err := ts.store.History().ServicesAt(ctx, at)
+	if err != nil {
+		return nil, fmt.Errorf("querying services at %s: %w", at, err)
+	}
+	connIntervals, err := ts.store.History().ConnectionsAt(ctx, at)
+	if err != nil {
+		return nil, fmt.Errorf("querying connections at %s: %w", at, err)
+	}
+
+	return &storage.Topology{
+		Services:    servicesFromIntervals(svcIntervals),
+		Connections: connectionsFromIntervals(connIntervals),
+		UpdatedAt:   at,
+	}, nil
+}
+
+// GetHistoryBounds returns the earliest and latest instants covered by
+// recorded history, for sizing a UI timeline control. ok is false when
+// history is enabled but nothing has been recorded yet.
+func (ts *TopologyService) GetHistoryBounds(ctx context.Context) (bounds storage.HistoryBounds, ok bool, err error) {
+	if !ts.historyEnabled {
+		return storage.HistoryBounds{}, false, ErrHistoryDisabled
+	}
+	return ts.store.History().Bounds(ctx)
+}
+
+func servicesFromIntervals(intervals []storage.ServiceInterval) []storage.Service {
+	out := make([]storage.Service, 0, len(intervals))
+	for _, si := range intervals {
+		out = append(out, storage.Service{
+			ID:        si.ServiceID,
+			Name:      si.Name,
+			Type:      si.Type,
+			Tech:      si.Tech,
+			Namespace: si.Namespace,
+			Node:      si.Node,
+			LastSeen:  si.LastSeen,
+			Healthy:   true,
+			CreatedAt: si.FirstSeen,
+			UpdatedAt: si.LastSeen,
+		})
+	}
+	return out
+}
+
+func connectionsFromIntervals(intervals []storage.ConnectionInterval) []storage.Connection {
+	out := make([]storage.Connection, 0, len(intervals))
+	for _, ci := range intervals {
+		out = append(out, storage.Connection{
+			ID:        ci.ConnectionID,
+			SourceID:  ci.SourceID,
+			TargetID:  ci.TargetID,
+			Port:      ci.Port,
+			Protocol:  ci.Protocol,
+			LastSeen:  ci.LastSeen,
+			CreatedAt: ci.FirstSeen,
+			UpdatedAt: ci.LastSeen,
+		})
+	}
+	return out
 }
 
 // GetStats returns statistics about the topology.

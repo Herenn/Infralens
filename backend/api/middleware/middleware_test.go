@@ -107,6 +107,7 @@ func TestAuthSkipsOnlyDeclaredPaths(t *testing.T) {
 		{"/health", http.StatusOK, "declared public"},
 		{"/api/v1/topology", http.StatusOK, "declared public"},
 		{"/api/v1/topology/export", http.StatusOK, "declared public"},
+		{"/api/v1/topology/history/range", http.StatusOK, "declared public"},
 		{"/api/v1/services", http.StatusOK, "declared public"},
 		{"/api/v1/services/10.0.0.1%2Fnginx", http.StatusOK, "covered by the services/ prefix"},
 

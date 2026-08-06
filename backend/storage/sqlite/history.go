@@ -231,6 +231,45 @@ func (r *HistoryRepo) ConnectionsBetween(ctx context.Context, from, to time.Time
 	return storage.MergeConnectionIntervals(intervals), nil
 }
 
+// Bounds returns the earliest and latest instants covered by recorded
+// history, across both services and connections.
+//
+// Implemented with ORDER BY/LIMIT rather than MIN()/MAX(): the sqlite driver
+// only recognises a column's declared DATETIME type on a plain column scan,
+// so wrapping first_seen/last_seen in an aggregate loses that and returns a
+// driver-internal string (including a monotonic clock reading) instead of a
+// time.Time, which fails to scan.
+func (r *HistoryRepo) Bounds(ctx context.Context) (storage.HistoryBounds, bool, error) {
+	var earliest time.Time
+	err := r.executor(ctx).QueryRowContext(ctx, `
+		SELECT first_seen FROM (
+			SELECT first_seen FROM service_intervals
+			UNION ALL
+			SELECT first_seen FROM connection_intervals
+		)
+		ORDER BY first_seen ASC LIMIT 1`).Scan(&earliest)
+	if err == sql.ErrNoRows {
+		return storage.HistoryBounds{}, false, nil
+	}
+	if err != nil {
+		return storage.HistoryBounds{}, false, fmt.Errorf("querying earliest history bound: %w", err)
+	}
+
+	var latest time.Time
+	err = r.executor(ctx).QueryRowContext(ctx, `
+		SELECT last_seen FROM (
+			SELECT last_seen FROM service_intervals
+			UNION ALL
+			SELECT last_seen FROM connection_intervals
+		)
+		ORDER BY last_seen DESC LIMIT 1`).Scan(&latest)
+	if err != nil {
+		return storage.HistoryBounds{}, false, fmt.Errorf("querying latest history bound: %w", err)
+	}
+
+	return storage.HistoryBounds{Earliest: earliest, Latest: latest}, true, nil
+}
+
 // DeleteStale drops intervals that ended before the cutoff.
 func (r *HistoryRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
 	exec := r.executor(ctx)

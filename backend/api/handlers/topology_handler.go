@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"time"
 
 	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
@@ -21,17 +23,68 @@ func NewTopologyHandler(topology *service.TopologyService) *TopologyHandler {
 	}
 }
 
-// HandleGetTopology returns the complete topology.
+// HandleGetTopology returns the complete topology. With an `at` query
+// parameter (RFC 3339), it instead returns the topology reconstructed from
+// history at that instant - the endpoint a timeline scrubber drives.
 func (h *TopologyHandler) HandleGetTopology(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	topology, err := h.topology.GetTopology(ctx)
+
+	atParam := r.URL.Query().Get("at")
+	if atParam == "" {
+		topology, err := h.topology.GetTopology(ctx)
+		if err != nil {
+			http.Error(w, "Failed to get topology", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(convertTopologyToResponse(topology))
+		return
+	}
+
+	at, err := time.Parse(time.RFC3339, atParam)
+	if err != nil {
+		http.Error(w, "Invalid 'at' parameter: expected RFC 3339 timestamp", http.StatusBadRequest)
+		return
+	}
+
+	topology, err := h.topology.GetTopologyAt(ctx, at)
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		http.Error(w, "Failed to get topology", http.StatusInternalServerError)
 		return
 	}
 
-	// Convert to the format expected by the frontend
-	response := convertTopologyToResponse(topology)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(convertTopologyToResponse(topology))
+}
+
+// HandleGetHistoryRange returns the earliest and latest instants covered by
+// recorded topology history, so a UI timeline control knows what range it
+// can scrub across. Fields are null when history is enabled but nothing has
+// been recorded yet.
+func (h *TopologyHandler) HandleGetHistoryRange(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	bounds, ok, err := h.topology.GetHistoryBounds(ctx)
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Failed to get history range", http.StatusInternalServerError)
+		return
+	}
+
+	response := HistoryRangeResponse{}
+	if ok {
+		earliest := bounds.Earliest.Format(time.RFC3339)
+		latest := bounds.Latest.Format(time.RFC3339)
+		response.Earliest = &earliest
+		response.Latest = &latest
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
@@ -133,6 +186,13 @@ type ConnectionResponse struct {
 	PacketsRecv   uint64  `json:"packets_recv,omitempty"`
 	LastSeen      string  `json:"last_seen"`
 	LatencyMs     float64 `json:"latency_ms,omitempty"`
+}
+
+// HistoryRangeResponse is the earliest/latest recorded history instants,
+// RFC 3339-formatted. Both fields are null when nothing has been recorded.
+type HistoryRangeResponse struct {
+	Earliest *string `json:"earliest"`
+	Latest   *string `json:"latest"`
 }
 
 // MetricsResponse is the metrics format expected by the frontend.

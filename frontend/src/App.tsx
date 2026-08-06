@@ -23,6 +23,7 @@ import ServerNode from './components/ServerNode'
 import ConnectionEdge from './components/ConnectionEdge'
 import ServiceDrawer from './components/ServiceDrawer'
 import Header from './components/Header'
+import TimelineScrubber, { HistoryRange } from './components/TimelineScrubber'
 import { Service, Topology } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { apiUrl } from './lib/api'
@@ -236,10 +237,59 @@ function App() {
 
   const { topology, isConnected } = useWebSocket()
 
+  // Topology history: viewing a past instant (timelineAt set) replaces the
+  // live WebSocket-driven topology with a one-off fetch. historyRange is
+  // null (hiding the scrubber entirely) unless the backend has both history
+  // enabled and at least one recorded interval.
+  const [timelineAt, setTimelineAt] = useState<string | null>(null)
+  const [historicalTopology, setHistoricalTopology] = useState<Topology | null>(null)
+  const [historyRange, setHistoryRange] = useState<HistoryRange | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+
+  const activeTopology = timelineAt ? historicalTopology : topology
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(apiUrl('/api/v1/topology/history/range'))
+      .then(res => (res.ok ? res.json() : null))
+      .then((data: { earliest: string | null; latest: string | null } | null) => {
+        if (cancelled || !data?.earliest || !data?.latest) return
+        setHistoryRange({ earliest: data.earliest, latest: data.latest })
+      })
+      .catch(() => {
+        // History disabled or unreachable - the scrubber just stays hidden.
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    if (!timelineAt) {
+      setHistoricalTopology(null)
+      return
+    }
+    let cancelled = false
+    setHistoryLoading(true)
+    fetch(apiUrl(`/api/v1/topology?at=${encodeURIComponent(timelineAt)}`))
+      .then(res => {
+        if (!res.ok) throw new Error(`Failed to load historical topology: ${res.status}`)
+        return res.json()
+      })
+      .then((data: Topology) => {
+        if (!cancelled) setHistoricalTopology(data)
+      })
+      .catch(err => {
+        console.error('Failed to load historical topology:', err)
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [timelineAt])
+
   // Apply filters to topology
-  const filteredTopology = useMemo(() => 
-    filterTopology(topology, filters), 
-    [topology, filters]
+  const filteredTopology = useMemo(() =>
+    filterTopology(activeTopology, filters),
+    [activeTopology, filters]
   )
 
   // Calculate filtered stats
@@ -388,13 +438,13 @@ function App() {
     }
 
     // Update raw stats (unfiltered)
-    if (topology) {
+    if (activeTopology) {
       setStats({
-        services: topology.services.length,
-        connections: topology.connections.length,
+        services: activeTopology.services.length,
+        connections: activeTopology.connections.length,
       })
     }
-  }, [filteredTopology, filters, topology, setNodes, setEdges])
+  }, [filteredTopology, filters, activeTopology, setNodes, setEdges])
 
   // Custom nodes change handler that saves positions when dragged
   const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
@@ -436,13 +486,13 @@ function App() {
       setDrawerOpen(true)
     } else if (node.type === 'service') {
       // Service node clicked - find from original topology first, then filtered (for aggregated services)
-      let service = topology?.services.find((s) => s.id === node.id)
-      
+      let service = activeTopology?.services.find((s) => s.id === node.id)
+
       // If not found in original, check filtered topology (for collapsed/aggregated services)
       if (!service && filteredTopology) {
         service = filteredTopology.services.find((s) => s.id === node.id)
       }
-      
+
       const ports = (node.data as { ports?: number[] })?.ports || []
       setSelectedNode({
         type: 'service',
@@ -453,12 +503,12 @@ function App() {
       setSelectedServiceId(node.id) // Highlight connected edges
       setDrawerOpen(true)
     }
-  }, [topology, filteredTopology])
+  }, [activeTopology, filteredTopology])
 
   // Handle edge click - highlight source and target services
   const onEdgeClick = useCallback((_: React.MouseEvent, edge: Edge) => {
     // Find the source service for the edge
-    const sourceService = topology?.services.find((s) => s.id === edge.source) || 
+    const sourceService = activeTopology?.services.find((s) => s.id === edge.source) ||
                           filteredTopology?.services.find((s) => s.id === edge.source)
     
     if (sourceService) {
@@ -472,7 +522,7 @@ function App() {
       setSelectedServiceId(edge.source) // Highlight edges connected to source
       setDrawerOpen(true)
     }
-  }, [topology, filteredTopology])
+  }, [activeTopology, filteredTopology])
 
   // Handle pane click - close drawer and clear selection
   const onPaneClick = useCallback(() => {
@@ -567,9 +617,9 @@ function App() {
 
   // Export topology as JSON
   const handleExportJson = useCallback(() => {
-    if (!filteredTopology && !topology) return
+    if (!filteredTopology && !activeTopology) return
 
-    const data = filteredTopology || topology
+    const data = filteredTopology || activeTopology
     const exportData = {
       exportedAt: new Date().toISOString(),
       filters: filters,
@@ -589,7 +639,7 @@ function App() {
     link.href = url
     link.click()
     URL.revokeObjectURL(url)
-  }, [filteredTopology, topology, filters])
+  }, [filteredTopology, activeTopology, filters])
 
   // Export topology as Mermaid or DOT graph (generated by the backend)
   const handleExportGraph = useCallback(async (format: 'mermaid' | 'dot') => {
@@ -699,6 +749,13 @@ function App() {
               </div>
             </div>
           )}
+
+          <TimelineScrubber
+            range={historyRange}
+            value={timelineAt}
+            onChange={setTimelineAt}
+            loading={historyLoading}
+          />
         </div>
       </div>
 
@@ -707,7 +764,7 @@ function App() {
         isOpen={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         service={selectedNode.service}
-        connections={filteredTopology?.connections || topology?.connections || []}
+        connections={filteredTopology?.connections || activeTopology?.connections || []}
         ports={selectedNode.ports}
         serverData={selectedNode.serverData}
         nodeType={selectedNode.type}

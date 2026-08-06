@@ -89,6 +89,7 @@ func (s *Server) setupRoutes() {
 	// Topology query endpoints
 	api.HandleFunc("/topology", topologyHandler.HandleGetTopology).Methods("GET")
 	api.HandleFunc("/topology/export", exportHandler.HandleExport).Methods("GET")
+	api.HandleFunc("/topology/history/range", topologyHandler.HandleGetHistoryRange).Methods("GET")
 	api.HandleFunc("/services", topologyHandler.HandleGetServices).Methods("GET")
 	api.HandleFunc("/services/{id}", topologyHandler.HandleGetService).Methods("GET")
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
