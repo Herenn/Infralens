@@ -204,8 +204,18 @@ DB_MAX_IDLE_CONNS=5            # Max idle connections
 DB_CONN_MAX_LIFETIME=5m        # Connection max lifetime
 
 # ── Data pruning ────────────────────────────────────────
-PRUNE_INTERVAL=5m              # How often to prune stale data (0 to disable)
-PRUNE_MAX_AGE=30m              # Delete data older than this
+PRUNE_INTERVAL=5m              # How often the prune loop runs (0 disables it entirely,
+                               # including HISTORY_RETENTION below)
+PRUNE_MAX_AGE=30m              # Delete current state older than this (0 = never expire
+                               # current state; history retention still applies)
+
+# ── Topology history ─────────────────────────────────────
+HISTORY_ENABLED=true           # Record topology history (on by default; ~30% more work per ingested event serially, ~40% under concurrent agent load)
+                               # NOTE: history needs a persistent volume. Unlike current
+                               # state, it cannot be re-derived by the agents once lost.
+                               # Helm: --set backend.persistence.enabled=true
+HISTORY_RETENTION=720h         # How long history is kept (30 days)
+HISTORY_MAX_GAP=5m             # Gap before a re-appearance opens a new interval
 
 # ── Security ────────────────────────────────────────────
 API_KEY=                       # API key for agent auth (empty = disabled)
@@ -236,7 +246,7 @@ DEFAULT_LLM_PROVIDER=openai
 `POST /api/v1/events`, `/api/v1/stats`, `/api/v1/metrics`, `/api/v1/inspection`
 
 **Public endpoints (always accessible):**
-`GET /api/v1/topology`, `/api/v1/services`, `/api/v1/ws` (WebSocket), `/health`, `/ready`
+`GET /api/v1/topology`, `/api/v1/topology/history/range`, `/api/v1/topology/history/stale`, `/api/v1/topology/history/diff`, `/api/v1/services` (including `/{id}` and `/{id}/impact`), `/api/v1/graph/stats`, `/api/v1/graph/criticality`, `/api/v1/graph/orphans`, `/api/v1/ws` (WebSocket), `/health`, `/ready`
 
 **CORS:**
 
@@ -323,12 +333,18 @@ infralens/
 | `/api/v1/stats` | POST | Receive throughput stats from agents |
 | `/api/v1/metrics` | POST | Receive host metrics (CPU/RAM) from agents |
 | `/api/v1/inspection` | POST | Receive deep inspection data from agents |
-| `/api/v1/topology` | GET | Current service topology with node metrics |
+| `/api/v1/topology` | GET | Current service topology with node metrics. With `?at=<RFC3339>`, the topology reconstructed from history at that instant instead (requires `HISTORY_ENABLED`) |
 | `/api/v1/topology/export` | GET | Export topology as Mermaid or DOT (`?format=mermaid\|dot`) |
+| `/api/v1/topology/history/range` | GET | Earliest/latest instants covered by recorded history, for sizing a timeline control (requires `HISTORY_ENABLED`) |
+| `/api/v1/topology/history/stale` | GET | Decommission candidates: services not seen since `?olderThan=<Go duration>` (default: 7 days, or half `HISTORY_RETENTION` when that is shorter — a cutoff beyond the retention window would only ever match already-pruned data). `?limit=` caps results (default 100). Requires `HISTORY_ENABLED` |
+| `/api/v1/topology/history/diff` | GET | What appeared/disappeared between `?from=` and `?to=` (both required RFC 3339 timestamps; `to` must not precede `from`, and the span must not exceed 2x `HISTORY_RETENTION`. Requires `HISTORY_ENABLED`) |
 | `/api/v1/services` | GET | List all discovered services |
 | `/api/v1/services/{id}` | GET | Service details |
+| `/api/v1/services/{id}/impact` | GET | Blast radius: the subgraph reachable from this service. `?direction=upstream` (default) is what calls it, transitively; `downstream` is what it calls. `?depth=` caps traversal hops (default 5, max 20) |
 | `/api/v1/ws` | WebSocket | Real-time topology updates (snapshot + deltas) |
 | `/api/v1/graph/stats` | GET | Graph statistics |
+| `/api/v1/graph/criticality` | GET | Services ranked by upstream blast radius - the riskiest single points of failure. `?limit=` caps results (default 20) |
+| `/api/v1/graph/orphans` | GET | Services with no connections at all (neither caller nor callee). `?limit=` caps results (default 100) |
 | `/api/v1/k8s/status` | GET | K8s watcher status |
 | `/api/v1/ai/*` | GET/POST | AI status, config, docs generation, Q&A |
 | `/api/v1/version` | GET | Backend version info |

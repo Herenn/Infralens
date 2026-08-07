@@ -23,6 +23,11 @@ import ServerNode from './components/ServerNode'
 import ConnectionEdge from './components/ConnectionEdge'
 import ServiceDrawer from './components/ServiceDrawer'
 import Header from './components/Header'
+import TimelineScrubber, { HistoryRange } from './components/TimelineScrubber'
+import DecommissionPanel from './components/DecommissionPanel'
+import OrphansPanel from './components/OrphansPanel'
+import CriticalityPanel from './components/CriticalityPanel'
+import DiffPanel from './components/DiffPanel'
 import { Service, Topology } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { apiUrl } from './lib/api'
@@ -32,6 +37,18 @@ import { layoutGraph, updateNodeData, updateEdgeData } from './utils/layout'
 type AppNode = Node<any>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AppEdge = Edge<any>
+
+// Traversal depth for the blast-radius view. Must match the backend's
+// maxImpactDepth, which is what /graph/criticality always ranks by: the
+// endpoint's own default is 5 (tuned for a shallow, readable lookup), so
+// leaving it off made the "Most critical" panel say "breaks 9 services" while
+// clicking through highlighted 5 - the same question answered twice, at two
+// depths, in one session.
+const IMPACT_DEPTH = 20
+
+// How often the recorded-history window is refreshed. Slow: it only bounds a
+// timeline control, and the data behind it moves on the scale of minutes.
+const HISTORY_RANGE_POLL_INTERVAL = 30000
 
 const nodeTypes = {
   service: ServiceNode,
@@ -220,6 +237,11 @@ function App() {
   })
   const [stats, setStats] = useState({ services: 0, connections: 0 })
   const [searchQuery, setSearchQuery] = useState('')
+
+  // Blast radius: which service is the current root, and the resulting set
+  // of service IDs to highlight (null = no impact view active).
+  const [impactRoot, setImpactRoot] = useState<{ id: string; direction: 'upstream' | 'downstream' } | null>(null)
+  const [impactIds, setImpactIds] = useState<Set<string> | null>(null)
   const [filters, setFilters] = useState<FilterState>({
     hideLocalhost: false,
     minConnections: 1,
@@ -233,13 +255,83 @@ function App() {
   const lastLayoutTimeRef = useRef<number>(0)
   const storedPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map())
   const MIN_LAYOUT_INTERVAL = 5000 // Minimum 5 seconds between layouts
+  // Which instant the last layout was built from, so a switch between live
+  // and historical topology can bypass the debounce above.
+  const prevTimelineAtRef = useRef<string | null>(null)
 
   const { topology, isConnected } = useWebSocket()
 
+  // Topology history: viewing a past instant (timelineAt set) replaces the
+  // live WebSocket-driven topology with a one-off fetch. historyRange is
+  // null (hiding the scrubber entirely) unless the backend has both history
+  // enabled and at least one recorded interval.
+  const [timelineAt, setTimelineAt] = useState<string | null>(null)
+  const [historicalTopology, setHistoricalTopology] = useState<Topology | null>(null)
+  const [historyRange, setHistoryRange] = useState<HistoryRange | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+
+  const activeTopology = timelineAt ? historicalTopology : topology
+
+  // Polled, not fetched once. On a fresh deployment history is empty at page
+  // load, so a single fetch leaves `historyRange` null forever - and every
+  // history control is gated on it, so the whole feature would stay invisible
+  // until someone happened to reload. Polling also keeps `latest` from going
+  // stale as new history accumulates during a long-lived session.
+  useEffect(() => {
+    let cancelled = false
+
+    const loadRange = () => {
+      fetch(apiUrl('/api/v1/topology/history/range'))
+        .then(res => (res.ok ? res.json() : null))
+        .then((data: { earliest: string | null; latest: string | null } | null) => {
+          if (cancelled || !data?.earliest || !data?.latest) return
+          // Only replace the object when a bound actually moved. A fresh
+          // object every poll would re-render the timeline controls on a 30s
+          // pulse for no reason, since the value is usually unchanged.
+          setHistoryRange(prev =>
+            prev && prev.earliest === data.earliest && prev.latest === data.latest
+              ? prev
+              : { earliest: data.earliest!, latest: data.latest! }
+          )
+        })
+        .catch(() => {
+          // History disabled or unreachable - the scrubber just stays hidden.
+        })
+    }
+
+    loadRange()
+    const timer = window.setInterval(loadRange, HISTORY_RANGE_POLL_INTERVAL)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [])
+
+  useEffect(() => {
+    if (!timelineAt) {
+      setHistoricalTopology(null)
+      return
+    }
+    let cancelled = false
+    setHistoryLoading(true)
+    fetch(apiUrl(`/api/v1/topology?at=${encodeURIComponent(timelineAt)}`))
+      .then(res => {
+        if (!res.ok) throw new Error(`Failed to load historical topology: ${res.status}`)
+        return res.json()
+      })
+      .then((data: Topology) => {
+        if (!cancelled) setHistoricalTopology(data)
+      })
+      .catch(err => {
+        console.error('Failed to load historical topology:', err)
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [timelineAt])
+
   // Apply filters to topology
-  const filteredTopology = useMemo(() => 
-    filterTopology(topology, filters), 
-    [topology, filters]
+  const filteredTopology = useMemo(() =>
+    filterTopology(activeTopology, filters),
+    [activeTopology, filters]
   )
 
   // Calculate filtered stats
@@ -266,46 +358,85 @@ function App() {
     return matches
   }, [searchQuery, filteredTopology])
 
-  // Apply search highlighting: dim non-matching services and their edges
+  // Fetch the blast radius whenever the root/direction changes. An active
+  // impact view takes priority over search highlighting - it's a more
+  // specific, explicitly-requested intent.
+  useEffect(() => {
+    if (!impactRoot) {
+      setImpactIds(null)
+      return
+    }
+    let cancelled = false
+    // Carry the viewed instant through: a blast radius asked for while scrubbed
+    // to a past moment must be traversed over that graph, not today's.
+    const at = timelineAt ? `&at=${encodeURIComponent(timelineAt)}` : ''
+    fetch(apiUrl(`/api/v1/services/${encodeURIComponent(impactRoot.id)}/impact?direction=${impactRoot.direction}&depth=${IMPACT_DEPTH}${at}`))
+      .then(res => {
+        if (!res.ok) throw new Error(`Failed to load impact: ${res.status}`)
+        return res.json()
+      })
+      .then((data: Topology) => {
+        if (cancelled) return
+        setImpactIds(new Set(data.services.map(s => s.id)))
+      })
+      .catch(err => {
+        console.error('Failed to load impact:', err)
+        if (!cancelled) setImpactIds(null)
+      })
+    return () => { cancelled = true }
+  }, [impactRoot, timelineAt])
+
+  const handleShowImpact = useCallback((serviceId: string, direction: 'upstream' | 'downstream') => {
+    setImpactRoot({ id: serviceId, direction })
+  }, [])
+
+  const handleClearImpact = useCallback(() => {
+    setImpactRoot(null)
+  }, [])
+
+  const highlightIds = impactIds || searchMatchIds
+
+  // Apply highlighting: dim everything outside the active impact view or
+  // search match, whichever is active.
   const displayNodes = useMemo(() => {
-    if (!searchMatchIds) return nodes
+    if (!highlightIds) return nodes
     return nodes.map(node => {
       if (node.type !== 'service') return node
-      const matched = searchMatchIds.has(node.id)
+      const matched = highlightIds.has(node.id)
       return {
         ...node,
         style: { ...node.style, opacity: matched ? 1 : 0.2 },
       }
     })
-  }, [nodes, searchMatchIds])
+  }, [nodes, highlightIds])
 
   const displayEdges = useMemo(() => {
-    if (!searchMatchIds) return edges
+    if (!highlightIds) return edges
     return edges.map(edge => {
-      const matched = searchMatchIds.has(edge.source) || searchMatchIds.has(edge.target)
+      const matched = highlightIds.has(edge.source) || highlightIds.has(edge.target)
       return {
         ...edge,
         style: { ...edge.style, opacity: matched ? 1 : 0.1 },
       }
     })
-  }, [edges, searchMatchIds])
+  }, [edges, highlightIds])
 
-  // Zoom to search matches
+  // Zoom to the active highlight set (impact view or search match)
   useEffect(() => {
-    if (!searchMatchIds || searchMatchIds.size === 0) return
+    if (!highlightIds || highlightIds.size === 0) return
     const instance = reactFlowInstanceRef.current
     if (!instance) return
 
     const timeout = window.setTimeout(() => {
       instance.fitView({
-        nodes: [...searchMatchIds].map(id => ({ id })),
+        nodes: [...highlightIds].map(id => ({ id })),
         duration: 400,
         padding: 0.4,
         maxZoom: 1.2,
       })
     }, 250) // debounce while typing
     return () => window.clearTimeout(timeout)
-  }, [searchMatchIds])
+  }, [highlightIds])
 
   // Update graph when topology changes - ONLY re-layout on structural changes
   useEffect(() => {
@@ -331,7 +462,17 @@ function App() {
     
     // Also check minimum time since last layout (debounce)
     const now = Date.now()
-    const canLayout = now - lastLayoutTimeRef.current > MIN_LAYOUT_INTERVAL
+    // The debounce exists to stop live WebSocket churn re-laying out the graph
+    // constantly. It must not apply when the topology *source* changes (live
+    // <-> historical, or a different instant): those produce a wholly
+    // different node set exactly once, and the fallback path below only
+    // updates data on existing nodes - it can neither add nor remove any. In
+    // live mode a dropped layout self-heals on the next flush a second later;
+    // in historical mode nothing further arrives, so it would stay wrong until
+    // the user changed something else.
+    const sourceChanged = timelineAt !== prevTimelineAtRef.current
+    const canLayout = sourceChanged || now - lastLayoutTimeRef.current > MIN_LAYOUT_INTERVAL
+    prevTimelineAtRef.current = timelineAt
 
     if (structureChanged && canLayout) {
       // Structure changed - run full layout
@@ -388,13 +529,13 @@ function App() {
     }
 
     // Update raw stats (unfiltered)
-    if (topology) {
+    if (activeTopology) {
       setStats({
-        services: topology.services.length,
-        connections: topology.connections.length,
+        services: activeTopology.services.length,
+        connections: activeTopology.connections.length,
       })
     }
-  }, [filteredTopology, filters, topology, setNodes, setEdges])
+  }, [filteredTopology, filters, activeTopology, timelineAt, setNodes, setEdges])
 
   // Custom nodes change handler that saves positions when dragged
   const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
@@ -436,13 +577,13 @@ function App() {
       setDrawerOpen(true)
     } else if (node.type === 'service') {
       // Service node clicked - find from original topology first, then filtered (for aggregated services)
-      let service = topology?.services.find((s) => s.id === node.id)
-      
+      let service = activeTopology?.services.find((s) => s.id === node.id)
+
       // If not found in original, check filtered topology (for collapsed/aggregated services)
       if (!service && filteredTopology) {
         service = filteredTopology.services.find((s) => s.id === node.id)
       }
-      
+
       const ports = (node.data as { ports?: number[] })?.ports || []
       setSelectedNode({
         type: 'service',
@@ -453,12 +594,12 @@ function App() {
       setSelectedServiceId(node.id) // Highlight connected edges
       setDrawerOpen(true)
     }
-  }, [topology, filteredTopology])
+  }, [activeTopology, filteredTopology])
 
   // Handle edge click - highlight source and target services
   const onEdgeClick = useCallback((_: React.MouseEvent, edge: Edge) => {
     // Find the source service for the edge
-    const sourceService = topology?.services.find((s) => s.id === edge.source) || 
+    const sourceService = activeTopology?.services.find((s) => s.id === edge.source) ||
                           filteredTopology?.services.find((s) => s.id === edge.source)
     
     if (sourceService) {
@@ -472,12 +613,18 @@ function App() {
       setSelectedServiceId(edge.source) // Highlight edges connected to source
       setDrawerOpen(true)
     }
-  }, [topology, filteredTopology])
+  }, [activeTopology, filteredTopology])
 
   // Handle pane click - close drawer and clear selection
   const onPaneClick = useCallback(() => {
     setDrawerOpen(false)
     setSelectedServiceId(null)
+    // Clearing the impact view here matters: its only other affordance is
+    // re-clicking the same direction button on the same service, inside the
+    // drawer. Dismiss the drawer without that and the graph stays dimmed with
+    // no visible way back - and because impact takes priority over search
+    // highlighting (see highlightIds), search would appear broken too.
+    setImpactRoot(null)
   }, [])
 
   // Update edge highlighting when selection changes
@@ -567,9 +714,9 @@ function App() {
 
   // Export topology as JSON
   const handleExportJson = useCallback(() => {
-    if (!filteredTopology && !topology) return
+    if (!filteredTopology && !activeTopology) return
 
-    const data = filteredTopology || topology
+    const data = filteredTopology || activeTopology
     const exportData = {
       exportedAt: new Date().toISOString(),
       filters: filters,
@@ -589,12 +736,15 @@ function App() {
     link.href = url
     link.click()
     URL.revokeObjectURL(url)
-  }, [filteredTopology, topology, filters])
+  }, [filteredTopology, activeTopology, filters])
 
   // Export topology as Mermaid or DOT graph (generated by the backend)
   const handleExportGraph = useCallback(async (format: 'mermaid' | 'dot') => {
     try {
-      const resp = await fetch(apiUrl(`/api/v1/topology/export?format=${format}`))
+      // Carry the viewed instant through, so exporting while scrubbed to a past
+      // moment renders that topology rather than silently rendering today's.
+      const at = timelineAt ? `&at=${encodeURIComponent(timelineAt)}` : ''
+      const resp = await fetch(apiUrl(`/api/v1/topology/export?format=${format}${at}`))
       if (!resp.ok) {
         throw new Error(`Export failed: ${resp.status}`)
       }
@@ -603,14 +753,15 @@ function App() {
       const blob = new Blob([text], { type: 'text/plain' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
-      link.download = `infralens-topology-${new Date().toISOString().slice(0, 10)}.${ext}`
+      const stamp = (timelineAt ? new Date(timelineAt) : new Date()).toISOString().slice(0, 10)
+      link.download = `infralens-topology-${stamp}.${ext}`
       link.href = url
       link.click()
       URL.revokeObjectURL(url)
     } catch (err) {
       console.error('Graph export failed:', err)
     }
-  }, [])
+  }, [timelineAt])
 
   return (
     <div className="h-screen w-screen flex flex-col bg-dark-950">
@@ -699,18 +850,35 @@ function App() {
               </div>
             </div>
           )}
+
+          <TimelineScrubber
+            range={historyRange}
+            value={timelineAt}
+            onChange={setTimelineAt}
+            loading={historyLoading}
+          />
+
+          <div className="absolute top-4 right-4 z-10 flex flex-col items-end gap-2">
+            <CriticalityPanel />
+            <OrphansPanel />
+            {historyRange && <DecommissionPanel />}
+            {historyRange && <DiffPanel range={historyRange} />}
+          </div>
         </div>
       </div>
 
       {/* Service Details Drawer */}
       <ServiceDrawer
         isOpen={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        onClose={() => { setDrawerOpen(false); setImpactRoot(null) }}
         service={selectedNode.service}
-        connections={filteredTopology?.connections || topology?.connections || []}
+        connections={filteredTopology?.connections || activeTopology?.connections || []}
         ports={selectedNode.ports}
         serverData={selectedNode.serverData}
         nodeType={selectedNode.type}
+        onShowImpact={handleShowImpact}
+        onClearImpact={handleClearImpact}
+        activeImpactDirection={impactRoot && selectedNode.service?.id === impactRoot.id ? impactRoot.direction : null}
       />
     </div>
   )

@@ -2,10 +2,12 @@ package handlers_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -59,9 +61,19 @@ func newTestServer(t *testing.T) *testServer {
 	api.HandleFunc("/metrics", eventHandler.HandleMetrics).Methods("POST")
 	api.HandleFunc("/inspection", eventHandler.HandleInspection).Methods("POST")
 	api.HandleFunc("/topology", topologyHandler.HandleGetTopology).Methods("GET")
+	api.HandleFunc("/topology/export", handlers.NewExportHandler(topology).HandleExport).Methods("GET")
+	api.HandleFunc("/topology/history/range", topologyHandler.HandleGetHistoryRange).Methods("GET")
+	api.HandleFunc("/topology/history/stale", topologyHandler.HandleGetStaleServices).Methods("GET")
+	api.HandleFunc("/topology/history/diff", topologyHandler.HandleGetTopologyDiff).Methods("GET")
 	api.HandleFunc("/services", topologyHandler.HandleGetServices).Methods("GET")
-	api.HandleFunc("/services/{id}", topologyHandler.HandleGetService).Methods("GET")
+	// Route order/pattern mirrors router.go: /impact must be registered
+	// before the bare route, and {id} must be greedy to match IDs
+	// containing a literal "/" - see the comment there for why.
+	api.HandleFunc("/services/{id:.+}/impact", topologyHandler.HandleGetImpact).Methods("GET")
+	api.HandleFunc("/services/{id:.+}", topologyHandler.HandleGetService).Methods("GET")
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
+	api.HandleFunc("/graph/criticality", topologyHandler.HandleGetCriticality).Methods("GET")
+	api.HandleFunc("/graph/orphans", topologyHandler.HandleGetOrphans).Methods("GET")
 
 	t.Cleanup(func() {
 		eventBus.Close()
@@ -75,6 +87,16 @@ func newTestServer(t *testing.T) *testServer {
 		eventBus:  eventBus,
 		router:    router,
 	}
+}
+
+// newTestServerWithHistory is newTestServer with topology history recording
+// turned on, for exercising the ?at= and /topology/history/range endpoints
+// that 400 without it.
+func newTestServerWithHistory(t *testing.T) *testServer {
+	t.Helper()
+	ts := newTestServer(t)
+	ts.topology.EnableHistory(5*time.Minute, storage.DefaultHistoryRetention)
+	return ts
 }
 
 // =============================================================================
@@ -336,6 +358,32 @@ func TestHandleGetService_NotFound(t *testing.T) {
 	}
 }
 
+// TestHandleGetService_IDContainsSlash guards against a routing regression:
+// service IDs routinely contain a literal "/" (e.g. "10.0.1.10/nginx", the
+// IP+process-name format processor.go generates for non-K8s services), and
+// gorilla/mux's default {id} pattern only matches a single path segment.
+// Without the greedy {id:.+} pattern in router.go, this 404s even though the
+// service exists.
+func TestHandleGetService_IDContainsSlash(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "10.0.1.10/nginx")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/10.0.1.10%2Fnginx", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if resp["id"] != "10.0.1.10/nginx" {
+		t.Errorf("id = %v, want 10.0.1.10/nginx", resp["id"])
+	}
+}
+
 // =============================================================================
 // Graph Stats Tests
 // =============================================================================
@@ -362,6 +410,62 @@ func TestHandleGetStats(t *testing.T) {
 	}
 	if _, ok := resp["connections"]; !ok {
 		t.Error("Response missing 'connections' count")
+	}
+}
+
+func TestHandleGetCriticality_RanksDescending(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B", "C", "D")
+
+	req := httptest.NewRequest("GET", "/api/v1/graph/criticality", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var resp []handlers.CriticalityResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 4 || resp[0].ID != "D" || resp[0].BlastRadius != 3 {
+		t.Errorf("expected D first with blast_radius=3, got %+v", resp)
+	}
+}
+
+func TestHandleGetCriticality_InvalidLimit(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B")
+
+	req := httptest.NewRequest("GET", "/api/v1/graph/criticality?limit=0", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetOrphans_ReturnsOnlyUnconnected(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B")
+	if err := ts.topology.AddOrUpdateService(context.Background(), &storage.Service{ID: "Z", Name: "isolated", LastSeen: time.Now()}); err != nil {
+		t.Fatalf("adding isolated service: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/graph/orphans", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var resp []handlers.ServiceResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 1 || resp[0].ID != "Z" {
+		t.Errorf("expected exactly [Z], got %+v", resp)
 	}
 }
 
@@ -586,6 +690,518 @@ func TestHandleInspection_Valid(t *testing.T) {
 }
 
 // =============================================================================
+// Impact (Blast Radius) API Tests
+// =============================================================================
+
+// seedChain wires services and connections directly through the topology
+// service rather than HTTP event ingestion - ingestion derives service IDs
+// from IP/process-name heuristics, which makes an intentional graph shape
+// like a chain awkward to construct; a direct call gives a deterministic,
+// readable graph to assert against.
+func seedChain(t *testing.T, ts *testServer, names ...string) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, name := range names {
+		if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: name, Name: name, LastSeen: now}); err != nil {
+			t.Fatalf("adding service %s: %v", name, err)
+		}
+	}
+	for i := 0; i < len(names)-1; i++ {
+		src, dst := names[i], names[i+1]
+		if err := ts.topology.AddConnection(ctx, &storage.Connection{
+			ID: src + "->" + dst, SourceID: src, TargetID: dst,
+			Port: 80, Protocol: "tcp", LastSeen: now,
+		}); err != nil {
+			t.Fatalf("adding connection %s->%s: %v", src, dst, err)
+		}
+	}
+}
+
+func TestHandleGetImpact_Upstream(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B", "C", "D")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/C/impact?direction=upstream", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	services := resp["services"].([]interface{})
+	if len(services) != 3 {
+		t.Errorf("expected 3 services (A, B, C) upstream of C, got %d: %+v", len(services), services)
+	}
+}
+
+// TestHandleGetImpact_IDContainsSlash is TestHandleGetService_IDContainsSlash
+// for the impact route - the same routing regression risk, doubled: {id}
+// must be greedy AND the /impact route must be registered before the bare
+// one, or a greedy bare route swallows ".../impact" as part of the id.
+func TestHandleGetImpact_IDContainsSlash(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "10.0.1.10/nginx", "10.0.2.10/api-gateway")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/10.0.1.10%2Fnginx/impact?direction=downstream", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	services := resp["services"].([]interface{})
+	if len(services) != 2 {
+		t.Errorf("expected 2 services, got %d: %+v", len(services), services)
+	}
+}
+
+func TestHandleGetImpact_InvalidDirection(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/A/impact?direction=sideways", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetImpact_InvalidDepth(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/A/impact?depth=0", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetImpact_NotFound(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B")
+
+	req := httptest.NewRequest("GET", "/api/v1/services/does-not-exist/impact", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusNotFound, rr.Code, rr.Body.String())
+	}
+}
+
+// =============================================================================
+// History API Tests
+// =============================================================================
+
+func TestHandleGetTopologyDiff_MissingParams(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+url.QueryEscape(time.Now().Format(time.RFC3339)), nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d with only 'from' set, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetTopologyDiff_HistoryDisabled(t *testing.T) {
+	ts := newTestServer(t)
+
+	from := url.QueryEscape(time.Now().Add(-time.Hour).Format(time.RFC3339))
+	to := url.QueryEscape(time.Now().Format(time.RFC3339))
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+from+"&to="+to, nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetTopologyDiff_FindsChanges(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+
+	t0 := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	t1 := t0.Add(time.Hour)
+
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: "svc-old", Name: "old", LastSeen: t0}); err != nil {
+		t.Fatalf("adding old service: %v", err)
+	}
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: "svc-new", Name: "new", LastSeen: t1}); err != nil {
+		t.Fatalf("adding new service: %v", err)
+	}
+
+	from := url.QueryEscape(t0.Format(time.RFC3339))
+	to := url.QueryEscape(t1.Format(time.RFC3339))
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+from+"&to="+to, nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var resp handlers.TopologyDiffResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp.AddedServices) != 1 || resp.AddedServices[0].ID != "svc-new" {
+		t.Errorf("AddedServices = %+v, want exactly [svc-new]", resp.AddedServices)
+	}
+	if len(resp.RemovedServices) != 1 || resp.RemovedServices[0].ID != "svc-old" {
+		t.Errorf("RemovedServices = %+v, want exactly [svc-old]", resp.RemovedServices)
+	}
+}
+
+func TestHandleGetTopology_AtParam_InvalidTimestamp(t *testing.T) {
+	ts := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology?at=not-a-timestamp", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetTopology_AtParam_HistoryDisabled(t *testing.T) {
+	ts := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology?at="+url.QueryEscape(time.Now().Format(time.RFC3339)), nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetTopology_AtParam_HistoryEnabled(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology?at="+url.QueryEscape(time.Now().Format(time.RFC3339)), nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if _, ok := resp["services"]; !ok {
+		t.Error("Response missing 'services' field")
+	}
+}
+
+func TestHandleGetHistoryRange_HistoryDisabled(t *testing.T) {
+	ts := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/range", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetHistoryRange_Empty(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/range", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp handlers.HistoryRangeResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if resp.Earliest != nil || resp.Latest != nil {
+		t.Errorf("expected null bounds before anything is recorded, got %+v", resp)
+	}
+}
+
+func TestHandleGetHistoryRange_WithData(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	batch := map[string]interface{}{
+		"node_name": "test-node",
+		"timestamp": time.Now().Format(time.RFC3339),
+		"events": []map[string]interface{}{
+			{
+				"pid": 1234, "comm": "nginx",
+				"src_addr": "10.0.0.1", "dst_addr": "10.0.0.2",
+				"dst_port": 80, "direction": 0,
+			},
+		},
+	}
+	body, _ := json.Marshal(batch)
+	req := httptest.NewRequest("POST", "/api/v1/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("Expected status %d ingesting events, got %d: %s", http.StatusAccepted, rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest("GET", "/api/v1/topology/history/range", nil)
+	rr = httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp handlers.HistoryRangeResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if resp.Earliest == nil || resp.Latest == nil {
+		t.Fatalf("expected non-null bounds after recording an event, got %+v", resp)
+	}
+	if _, err := time.Parse(time.RFC3339, *resp.Earliest); err != nil {
+		t.Errorf("earliest %q is not RFC3339: %v", *resp.Earliest, err)
+	}
+	if _, err := time.Parse(time.RFC3339, *resp.Latest); err != nil {
+		t.Errorf("latest %q is not RFC3339: %v", *resp.Latest, err)
+	}
+}
+
+func TestHandleGetStaleServices_HistoryDisabled(t *testing.T) {
+	ts := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/stale", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetStaleServices_InvalidOlderThan(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/stale?olderThan=not-a-duration", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleGetStaleServices_ReturnsOnlyOldServices(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+
+	old := time.Now().Add(-72 * time.Hour)
+	recent := time.Now().Add(-time.Hour)
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: "old-svc", Name: "old", LastSeen: old}); err != nil {
+		t.Fatalf("adding old service: %v", err)
+	}
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: "recent-svc", Name: "recent", LastSeen: recent}); err != nil {
+		t.Fatalf("adding recent service: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/stale?olderThan=48h", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp []handlers.StaleServiceResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 1 || resp[0].ID != "old-svc" {
+		t.Errorf("expected exactly [old-svc], got %+v", resp)
+	}
+}
+
+// The UI requests this endpoint with no olderThan, so the default has to
+// return something. It previously defaulted to the history retention window,
+// which asks for exactly the intervals the retention prune has already
+// deleted - always an empty list.
+func TestHandleGetStaleServices_DefaultThresholdFindsCandidates(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+
+	// Idle long enough to be a candidate, but still well inside the history
+	// retention window, so it is genuinely present to be returned.
+	idle := time.Now().Add(-14 * 24 * time.Hour)
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: "idle-svc", Name: "idle", LastSeen: idle}); err != nil {
+		t.Fatalf("adding idle service: %v", err)
+	}
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: "busy-svc", Name: "busy", LastSeen: time.Now()}); err != nil {
+		t.Fatalf("adding busy service: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/stale", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp []handlers.StaleServiceResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 1 || resp[0].ID != "idle-svc" {
+		t.Errorf("expected the default threshold to return exactly [idle-svc], got %+v", resp)
+	}
+}
+
+func TestHandleGetStaleServices_LimitCapsResults(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+
+	idle := time.Now().Add(-14 * 24 * time.Hour)
+	for _, id := range []string{"idle-a", "idle-b", "idle-c"} {
+		if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: id, Name: id, LastSeen: idle}); err != nil {
+			t.Fatalf("adding %s: %v", id, err)
+		}
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/stale?limit=2", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp []handlers.StaleServiceResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Errorf("expected limit=2 to cap the response at 2, got %d", len(resp))
+	}
+
+	bad := httptest.NewRequest("GET", "/api/v1/topology/history/stale?limit=0", nil)
+	badRR := httptest.NewRecorder()
+	ts.router.ServeHTTP(badRR, bad)
+	if badRR.Code != http.StatusBadRequest {
+		t.Errorf("expected limit=0 to be rejected, got %d", badRR.Code)
+	}
+}
+
+func TestHandleGetTopologyDiff_RejectsReversedRange(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	// Escaped, not interpolated raw: an RFC 3339 timestamp in a non-UTC zone
+	// ends in a "+HH:MM" offset, and a literal "+" in a query string decodes
+	// to a space. Unescaped, these would fail to parse and the handler would
+	// return 400 for the wrong reason - making this test pass whether or not
+	// the ordering check it is meant to cover exists at all.
+	from := url.QueryEscape(time.Now().Format(time.RFC3339))
+	to := url.QueryEscape(time.Now().Add(-time.Hour).Format(time.RFC3339))
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+from+"&to="+to, nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected a reversed range to be rejected, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// The same two instants the right way round must be accepted, so the
+	// assertion above can only be satisfied by the ordering check.
+	ok := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+to+"&to="+from, nil)
+	okRR := httptest.NewRecorder()
+	ts.router.ServeHTTP(okRR, ok)
+	if okRR.Code != http.StatusOK {
+		t.Errorf("expected a correctly ordered range to be accepted, got %d: %s", okRR.Code, okRR.Body.String())
+	}
+}
+
+// TestHandleGetTopologyDiff_RejectsRangeBeyondRetention guards O5: an
+// unauthenticated caller must not be able to force /history/diff to run its
+// four interval queries over an arbitrarily wide span.
+func TestHandleGetTopologyDiff_RejectsRangeBeyondRetention(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	now := time.Now()
+
+	from := url.QueryEscape(now.Add(-2*storage.DefaultHistoryRetention - time.Hour).Format(time.RFC3339))
+	to := url.QueryEscape(now.Format(time.RFC3339))
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+from+"&to="+to, nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected a span beyond 2x retention to be rejected, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// A span within the cap must still be accepted, so the assertion above can
+	// only be satisfied by the range check.
+	okFrom := url.QueryEscape(now.Add(-time.Hour).Format(time.RFC3339))
+	ok := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+okFrom+"&to="+to, nil)
+	okRR := httptest.NewRecorder()
+	ts.router.ServeHTTP(okRR, ok)
+	if okRR.Code != http.StatusOK {
+		t.Errorf("expected a 1-hour span to be accepted, got %d: %s", okRR.Code, okRR.Body.String())
+	}
+}
+
+func TestHandleGetOrphans_LimitCapsResults(t *testing.T) {
+	ts := newTestServer(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"orphan-a", "orphan-b", "orphan-c"} {
+		if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: id, Name: id, LastSeen: time.Now()}); err != nil {
+			t.Fatalf("adding %s: %v", id, err)
+		}
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/graph/orphans?limit=2", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp []handlers.ServiceResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Errorf("expected limit=2 to cap the response at 2, got %d", len(resp))
+	}
+}
+
+// =============================================================================
 // Helper to read response body
 // =============================================================================
 
@@ -596,4 +1212,107 @@ func readBody(t *testing.T, body io.Reader) string {
 		t.Fatalf("Failed to read body: %v", err)
 	}
 	return string(data)
+}
+
+// TestHandleGetTopology_LivePresentAtNow is the regression guard for the
+// point-in-time queries excluding everything that is currently alive.
+//
+// last_seen is the last time an entity was *observed*, always slightly in the
+// past, so a strict `last_seen >= at` matched nothing at or near the present:
+// ?at=now returned an empty topology, and the "compare to now" diff reported
+// every long-lived service as disappeared.
+func TestHandleGetTopology_LivePresentAtNow(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+	h := ts.store.History()
+
+	// Observed every minute for the last hour, up to a second ago.
+	svc := &storage.Service{ID: "long-lived", Name: "api"}
+	for i := 60; i >= 0; i-- {
+		at := time.Now().Add(-time.Duration(i)*time.Minute - time.Second)
+		if err := h.RecordService(ctx, svc, at, storage.DefaultHistoryMaxGap); err != nil {
+			t.Fatalf("recording observation: %v", err)
+		}
+	}
+
+	now := url.QueryEscape(time.Now().Format(time.RFC3339))
+
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/topology?at="+now, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	var topo handlers.TopologyResponse
+	if err := json.NewDecoder(rr.Body).Decode(&topo); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(topo.Services) != 1 {
+		t.Errorf("?at=now returned %d services, want the 1 live service", len(topo.Services))
+	}
+
+	// And the diff that DiffPanel drives must not call it disappeared.
+	from := url.QueryEscape(time.Now().Add(-30 * time.Minute).Format(time.RFC3339))
+	rr2 := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr2, httptest.NewRequest("GET",
+		"/api/v1/topology/history/diff?from="+from+"&to="+now, nil))
+	var diff handlers.TopologyDiffResponse
+	if err := json.NewDecoder(rr2.Body).Decode(&diff); err != nil {
+		t.Fatalf("decode diff: %v", err)
+	}
+	if len(diff.RemovedServices) != 0 {
+		t.Errorf("a service observed a second ago was reported as disappeared: %+v", diff.RemovedServices)
+	}
+}
+
+// TestHandleExport_HonoursAt guards against the graph export silently
+// rendering current state while the UI is showing a past instant. The JSON
+// export already followed the timeline, so the two disagreed - and an exported
+// diagram carries nothing to reveal it came from the wrong moment.
+func TestHandleExport_HonoursAt(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+	h := ts.store.History()
+
+	// Existed only in the past.
+	past := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	if err := h.RecordService(ctx, &storage.Service{ID: "retired-svc", Name: "retired"},
+		past, storage.DefaultHistoryMaxGap); err != nil {
+		t.Fatalf("recording past service: %v", err)
+	}
+	// Exists now.
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{
+		ID: "current-svc", Name: "current", LastSeen: time.Now(),
+	}); err != nil {
+		t.Fatalf("adding current service: %v", err)
+	}
+
+	get := func(url string) string {
+		rr := httptest.NewRecorder()
+		ts.router.ServeHTTP(rr, httptest.NewRequest("GET", url, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status %d for %s: %s", rr.Code, url, rr.Body.String())
+		}
+		return rr.Body.String()
+	}
+
+	live := get("/api/v1/topology/export?format=mermaid")
+	if !strings.Contains(live, "current") {
+		t.Errorf("live export should contain the current service, got:\n%s", live)
+	}
+
+	atPast := get("/api/v1/topology/export?format=mermaid&at=" +
+		url.QueryEscape(past.Format(time.RFC3339)))
+	if !strings.Contains(atPast, "retired") {
+		t.Errorf("export at a past instant should contain the service present then, got:\n%s", atPast)
+	}
+	if strings.Contains(atPast, "current") {
+		t.Errorf("export at a past instant must not contain a service that only exists now, got:\n%s", atPast)
+	}
+
+	// A malformed instant must be rejected, not silently fall back to now.
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/topology/export?format=mermaid&at=nonsense", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for an unparseable 'at', got %d", rr.Code)
+	}
 }

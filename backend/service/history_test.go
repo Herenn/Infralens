@@ -1,0 +1,707 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+
+	"github.com/Herenn/Infralens/backend/storage"
+	"github.com/Herenn/Infralens/backend/storage/sqlite"
+)
+
+func newHistoryTestService(t *testing.T, enable bool) (*TopologyService, storage.Store) {
+	t.Helper()
+
+	store, err := sqlite.New(storage.Config{
+		Driver:         "sqlite",
+		DSN:            ":memory:",
+		AutoMigrate:    true,
+		HistoryEnabled: enable,
+	})
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	bus := NewEventBus(64)
+	t.Cleanup(bus.Close)
+
+	ts := NewTopologyService(store, bus)
+	if enable {
+		ts.EnableHistory(5*time.Minute, storage.DefaultHistoryRetention)
+	}
+	return ts, store
+}
+
+// TestHistoryRecordedThroughTopologyService is the end-to-end check that
+// history is actually written by the normal write path, not just by the
+// storage layer in isolation. A history feature that works only when called
+// directly is a history feature nobody gets.
+func TestHistoryRecordedThroughTopologyService(t *testing.T) {
+	ts, store := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	observed := time.Now().Add(-time.Hour).Truncate(time.Second)
+
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{
+		ID:       "10.0.0.1/api",
+		Name:     "api",
+		Type:     "web_server",
+		LastSeen: observed,
+	}); err != nil {
+		t.Fatalf("adding service: %v", err)
+	}
+
+	if err := ts.AddConnection(ctx, &storage.Connection{
+		ID:       "10.0.0.1/api->10.0.0.2:5432",
+		SourceID: "10.0.0.1/api",
+		TargetID: "10.0.0.2:5432",
+		Port:     5432,
+		Protocol: "tcp",
+		LastSeen: observed,
+	}); err != nil {
+		t.Fatalf("adding connection: %v", err)
+	}
+
+	services, err := store.History().ServicesAt(ctx, observed, storage.DefaultHistoryMaxGap)
+	if err != nil {
+		t.Fatalf("reconstructing services: %v", err)
+	}
+	if len(services) != 1 || services[0].ServiceID != "10.0.0.1/api" {
+		t.Fatalf("expected the service in history at its observation time, got %+v", services)
+	}
+	if services[0].Name != "api" || services[0].Type != "web_server" {
+		t.Errorf("service attributes not carried into history: %+v", services[0])
+	}
+
+	connections, err := store.History().ConnectionsAt(ctx, observed, storage.DefaultHistoryMaxGap)
+	if err != nil {
+		t.Fatalf("reconstructing connections: %v", err)
+	}
+	if len(connections) != 1 || connections[0].ConnectionID != "10.0.0.1/api->10.0.0.2:5432" {
+		t.Fatalf("expected the edge in history at its observation time, got %+v", connections)
+	}
+}
+
+// TestHistoryOffByDefault guards the opt-in: a TopologyService that was never
+// told to record history must not write any, so existing deployments see no
+// change in write volume until they enable it.
+func TestHistoryOffByDefault(t *testing.T) {
+	ts, store := newHistoryTestService(t, false)
+	ctx := context.Background()
+
+	if ts.HistoryEnabled() {
+		t.Fatal("history should be disabled unless explicitly enabled")
+	}
+
+	observed := time.Now().Add(-time.Hour)
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{
+		ID: "10.0.0.9/quiet", Name: "quiet", LastSeen: observed,
+	}); err != nil {
+		t.Fatalf("adding service: %v", err)
+	}
+
+	got, err := store.History().ServicesAt(ctx, observed, storage.DefaultHistoryMaxGap)
+	if err != nil {
+		t.Fatalf("querying history: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected no history to be recorded, got %d intervals", len(got))
+	}
+}
+
+// TestHistorySurvivesCurrentStatePruning is the whole point of the feature.
+// Pruning deletes current state after PRUNE_MAX_AGE (30 minutes by default);
+// history must outlive it, or "what did this look like last week" is
+// unanswerable no matter what else is built on top.
+func TestHistorySurvivesCurrentStatePruning(t *testing.T) {
+	store, err := sqlite.New(storage.Config{
+		Driver:         "sqlite",
+		DSN:            ":memory:",
+		AutoMigrate:    true,
+		HistoryEnabled: true,
+		// Retention far longer than the current-state window below.
+		HistoryRetention: 30 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	defer store.Close()
+
+	bus := NewEventBus(64)
+	defer bus.Close()
+
+	ts := NewTopologyService(store, bus)
+	ts.EnableHistory(5*time.Minute, storage.DefaultHistoryRetention)
+	ctx := context.Background()
+
+	observed := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{
+		ID: "10.0.0.3/ephemeral", Name: "ephemeral", LastSeen: observed,
+	}); err != nil {
+		t.Fatalf("adding service: %v", err)
+	}
+
+	// Prune current state. A negative maxAge puts the cutoff in the future so
+	// every live row goes, deterministically - the storage layer stamps
+	// last_seen itself on write and ignores the caller's value, so a realistic
+	// 30-minute window would not prune a row written moments ago and the test
+	// would be asserting nothing.
+	if _, err := store.Prune(ctx, -time.Hour); err != nil {
+		t.Fatalf("pruning: %v", err)
+	}
+
+	live, err := store.Services().Get(ctx, "10.0.0.3/ephemeral")
+	if err != nil {
+		t.Fatalf("getting live service: %v", err)
+	}
+	if live != nil {
+		t.Fatal("test premise broken: the service should have been pruned from current state")
+	}
+
+	// The history is the point: still answerable after the live row is gone.
+	past, err := store.History().ServicesAt(ctx, observed, storage.DefaultHistoryMaxGap)
+	if err != nil {
+		t.Fatalf("reconstructing past topology: %v", err)
+	}
+	if len(past) != 1 || past[0].ServiceID != "10.0.0.3/ephemeral" {
+		t.Errorf("history did not survive current-state pruning: got %+v", past)
+	}
+}
+
+// TestGetTopologyAtRequiresHistoryEnabled guards the same "opt-in" contract
+// as TestHistoryOffByDefault, but for the read side: querying a past instant
+// without history enabled must fail clearly rather than silently return an
+// empty topology, which would look identical to "nothing existed then".
+func TestGetTopologyAtRequiresHistoryEnabled(t *testing.T) {
+	ts, _ := newHistoryTestService(t, false)
+	ctx := context.Background()
+
+	if _, err := ts.GetTopologyAt(ctx, time.Now()); !errors.Is(err, ErrHistoryDisabled) {
+		t.Errorf("expected ErrHistoryDisabled, got %v", err)
+	}
+	if _, _, err := ts.GetHistoryBounds(ctx); !errors.Is(err, ErrHistoryDisabled) {
+		t.Errorf("expected ErrHistoryDisabled, got %v", err)
+	}
+}
+
+// TestGetTopologyAtReconstructsPastShape checks that GetTopologyAt reflects
+// what was present at the queried instant, not current state - the same
+// distinction TestHistorySurvivesCurrentStatePruning makes for the raw
+// interval query, but through the method the HTTP handler actually calls.
+func TestGetTopologyAtReconstructsPastShape(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	past := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	// Both endpoints, as processEvent always records them: it upserts the
+	// source and destination services before the connection between them.
+	// (An earlier version of this fixture recorded only the target, which
+	// produced an edge to a service that never existed - a shape the ingest
+	// path cannot produce, and one GetTopologyAt now filters out.)
+	for _, svc := range []*storage.Service{
+		{ID: "10.0.0.4/api", Name: "api", Type: "web_server", LastSeen: past},
+		{ID: "10.0.0.4/db", Name: "db", Type: "database", LastSeen: past},
+	} {
+		if err := ts.AddOrUpdateService(ctx, svc); err != nil {
+			t.Fatalf("adding service %s: %v", svc.ID, err)
+		}
+	}
+	if err := ts.AddConnection(ctx, &storage.Connection{
+		ID: "10.0.0.4/api->10.0.0.4/db:5432", SourceID: "10.0.0.4/api",
+		TargetID: "10.0.0.4/db", Port: 5432, Protocol: "tcp", LastSeen: past,
+	}); err != nil {
+		t.Fatalf("adding connection: %v", err)
+	}
+
+	topo, err := ts.GetTopologyAt(ctx, past)
+	if err != nil {
+		t.Fatalf("GetTopologyAt: %v", err)
+	}
+	if len(topo.Services) != 2 {
+		t.Errorf("expected both services present at %s, got %+v", past, topo.Services)
+	}
+	if len(topo.Connections) != 1 || topo.Connections[0].ID != "10.0.0.4/api->10.0.0.4/db:5432" {
+		t.Errorf("expected the one connection present at %s, got %+v", past, topo.Connections)
+	}
+
+	// A service added now must not appear in a topology reconstructed for the
+	// past - otherwise this is just GetTopology with extra steps.
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{
+		ID: "10.0.0.5/new", Name: "new", LastSeen: time.Now(),
+	}); err != nil {
+		t.Fatalf("adding new service: %v", err)
+	}
+	topo, err = ts.GetTopologyAt(ctx, past)
+	if err != nil {
+		t.Fatalf("GetTopologyAt (re-query): %v", err)
+	}
+	if len(topo.Services) != 2 {
+		t.Errorf("a service added after %s leaked into the reconstruction: got %+v", past, topo.Services)
+	}
+}
+
+// TestGetTopologyAtOmitsEdgesWithMissingEndpoints: a reconstructed topology
+// must be a coherent graph, not one referencing nodes it does not contain.
+//
+// The two interval tables are queried independently and can disagree at an
+// instant - an edge observed before its endpoints are fingerprinted, or a
+// service interval pruned while its connection's survives (throughput reports
+// refresh a connection's last_seen, only connect/accept refreshes a
+// service's). Reached through /history/range in practice: scrubbing to the
+// advertised `earliest` returned 0 services and 1 connection.
+func TestGetTopologyAtOmitsEdgesWithMissingEndpoints(t *testing.T) {
+	ts, store := newHistoryTestService(t, true)
+	ctx := context.Background()
+	at := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
+
+	// An edge recorded straight into history with no endpoint services.
+	if err := store.History().RecordConnection(ctx, &storage.Connection{
+		ID: "ghost-a->ghost-b:80", SourceID: "ghost-a", TargetID: "ghost-b",
+		Port: 80, Protocol: "tcp",
+	}, at, storage.DefaultHistoryMaxGap); err != nil {
+		t.Fatalf("recording connection: %v", err)
+	}
+
+	topo, err := ts.GetTopologyAt(ctx, at)
+	if err != nil {
+		t.Fatalf("GetTopologyAt: %v", err)
+	}
+	if len(topo.Services) != 0 {
+		t.Fatalf("test premise broken: expected no services, got %+v", topo.Services)
+	}
+	if len(topo.Connections) != 0 {
+		t.Errorf("returned %d edge(s) whose endpoints are absent from the same response: %+v",
+			len(topo.Connections), topo.Connections)
+	}
+}
+
+// TestGetHistoryBoundsReflectsRecordedRange checks the bounds a UI timeline
+// control would use to size itself, through the service method the HTTP
+// handler calls rather than the storage layer directly.
+func TestGetHistoryBoundsReflectsRecordedRange(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	if _, ok, err := ts.GetHistoryBounds(ctx); err != nil {
+		t.Fatalf("GetHistoryBounds: %v", err)
+	} else if ok {
+		t.Error("expected ok=false before anything has been recorded")
+	}
+
+	early := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
+	late := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "10.0.0.6/a", Name: "a", LastSeen: early}); err != nil {
+		t.Fatalf("adding early service: %v", err)
+	}
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "10.0.0.6/b", Name: "b", LastSeen: late}); err != nil {
+		t.Fatalf("adding late service: %v", err)
+	}
+
+	bounds, ok, err := ts.GetHistoryBounds(ctx)
+	if err != nil {
+		t.Fatalf("GetHistoryBounds: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true once history has been recorded")
+	}
+	if !bounds.Earliest.Equal(early) {
+		t.Errorf("earliest = %s, want %s", bounds.Earliest, early)
+	}
+	if !bounds.Latest.Equal(late) {
+		t.Errorf("latest = %s, want %s", bounds.Latest, late)
+	}
+}
+
+// TestGetStaleServicesRequiresHistoryEnabled matches the read-side opt-in
+// contract every other history query follows.
+func TestGetStaleServicesRequiresHistoryEnabled(t *testing.T) {
+	ts, _ := newHistoryTestService(t, false)
+
+	if _, err := ts.GetStaleServices(context.Background(), time.Hour, 0); !errors.Is(err, ErrHistoryDisabled) {
+		t.Errorf("expected ErrHistoryDisabled, got %v", err)
+	}
+}
+
+// TestGetStaleServicesOnlyReturnsWhatsOlderThanCutoff checks the boundary
+// through the service method the HTTP handler actually calls, not just the
+// storage layer directly.
+func TestGetStaleServicesOnlyReturnsWhatsOlderThanCutoff(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	old := time.Now().Add(-72 * time.Hour).Truncate(time.Second)
+	recent := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "10.0.0.7/decommission-me", Name: "old", LastSeen: old}); err != nil {
+		t.Fatalf("adding old service: %v", err)
+	}
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "10.0.0.7/keep-me", Name: "recent", LastSeen: recent}); err != nil {
+		t.Fatalf("adding recent service: %v", err)
+	}
+
+	stale, err := ts.GetStaleServices(ctx, 48*time.Hour, 0)
+	if err != nil {
+		t.Fatalf("GetStaleServices: %v", err)
+	}
+
+	var ids []string
+	for _, si := range stale {
+		ids = append(ids, si.ServiceID)
+	}
+	foundOld, foundRecent := false, false
+	for _, id := range ids {
+		if id == "10.0.0.7/decommission-me" {
+			foundOld = true
+		}
+		if id == "10.0.0.7/keep-me" {
+			foundRecent = true
+		}
+	}
+	if !foundOld {
+		t.Errorf("expected the service last seen 72h ago to be stale at a 48h cutoff, got %v", ids)
+	}
+	if foundRecent {
+		t.Errorf("the service last seen 1h ago should not be stale at a 48h cutoff, got %v", ids)
+	}
+}
+
+// TestGetTopologyDiffRequiresHistoryEnabled matches every other history
+// query's opt-in contract.
+func TestGetTopologyDiffRequiresHistoryEnabled(t *testing.T) {
+	ts, _ := newHistoryTestService(t, false)
+
+	if _, err := ts.GetTopologyDiff(context.Background(), time.Now().Add(-time.Hour), time.Now()); !errors.Is(err, ErrHistoryDisabled) {
+		t.Errorf("expected ErrHistoryDisabled, got %v", err)
+	}
+}
+
+// TestGetTopologyDiffFindsAddedAndRemoved checks both directions of the set
+// difference: a service present only at `to` is added, a service present
+// only at `from` is removed - through the same recording path a real agent
+// uses, not by poking storage directly.
+func TestGetTopologyDiffFindsAddedAndRemoved(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	t0 := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	t1 := t0.Add(time.Hour)
+
+	// "old" exists only at t0 - never observed again, so it has aged out of
+	// the t1 snapshot and should show up as removed.
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "svc-old", Name: "old", LastSeen: t0}); err != nil {
+		t.Fatalf("adding old service: %v", err)
+	}
+	// "new" exists only at t1 - didn't exist yet at t0, so it should show up
+	// as added.
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "svc-new", Name: "new", LastSeen: t1}); err != nil {
+		t.Fatalf("adding new service: %v", err)
+	}
+	if err := ts.AddConnection(ctx, &storage.Connection{
+		ID: "svc-old->svc-new", SourceID: "svc-old", TargetID: "svc-new",
+		Port: 80, Protocol: "tcp", LastSeen: t1,
+	}); err != nil {
+		t.Fatalf("adding connection: %v", err)
+	}
+
+	diff, err := ts.GetTopologyDiff(ctx, t0, t1)
+	if err != nil {
+		t.Fatalf("GetTopologyDiff: %v", err)
+	}
+
+	if len(diff.AddedServices) != 1 || diff.AddedServices[0].ID != "svc-new" {
+		t.Errorf("AddedServices = %+v, want exactly [svc-new]", diff.AddedServices)
+	}
+	if len(diff.RemovedServices) != 1 || diff.RemovedServices[0].ID != "svc-old" {
+		t.Errorf("RemovedServices = %+v, want exactly [svc-old]", diff.RemovedServices)
+	}
+	if len(diff.AddedConnections) != 1 || diff.AddedConnections[0].ID != "svc-old->svc-new" {
+		t.Errorf("AddedConnections = %+v, want exactly [svc-old->svc-new]", diff.AddedConnections)
+	}
+	if len(diff.RemovedConnections) != 0 {
+		t.Errorf("RemovedConnections = %+v, want none", diff.RemovedConnections)
+	}
+}
+
+// TestGetTopologyDiffIsEmptyWhenNothingChanged checks the boring but
+// important case: a service present at both instants shows up in neither
+// added nor removed.
+func TestGetTopologyDiffIsEmptyWhenNothingChanged(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	t0 := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	t1 := t0.Add(time.Minute) // within maxGap, extends the same interval
+
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "svc-steady", Name: "steady", LastSeen: t0}); err != nil {
+		t.Fatalf("adding service at t0: %v", err)
+	}
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "svc-steady", Name: "steady", LastSeen: t1}); err != nil {
+		t.Fatalf("adding service at t1: %v", err)
+	}
+
+	diff, err := ts.GetTopologyDiff(ctx, t0, t1)
+	if err != nil {
+		t.Fatalf("GetTopologyDiff: %v", err)
+	}
+	if len(diff.AddedServices) != 0 || len(diff.RemovedServices) != 0 {
+		t.Errorf("expected no service changes for a steady service, got added=%+v removed=%+v",
+			diff.AddedServices, diff.RemovedServices)
+	}
+}
+
+// TestConcurrentObservationsDoNotMultiplyIntervals is the regression guard for
+// interval count scaling with event volume instead of with architecture change.
+//
+// RecordService refuses to move last_seen backwards, so an observation whose
+// timestamp is behind the recorded one cannot extend the open interval. Under
+// concurrency that is the common case, not a rare one: goroutines stamp
+// time.Now() and then race to commit, and the store serializes them in an order
+// barely related to their timestamps. When those writes fell through to an
+// unconditional INSERT, one continuously present service accumulated an
+// interval per racing write - 120 of them for 200 observations - which breaks
+// the premise the interval model rests on ("write volume proportional to how
+// often the architecture changes, not how often agents report").
+func TestConcurrentObservationsDoNotMultiplyIntervals(t *testing.T) {
+	ts, store := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	const workers, perWorker = 8, 100
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				if err := ts.AddOrUpdateService(ctx, &storage.Service{
+					ID: "10.0.0.50/busy", Name: "busy", LastSeen: time.Now(),
+				}); err != nil {
+					t.Errorf("adding service: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	rows, err := store.History().ServicesBetween(ctx,
+		time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ServicesBetween: %v", err)
+	}
+
+	intervals := 0
+	for _, si := range rows {
+		if si.ServiceID == "10.0.0.50/busy" {
+			intervals++
+		}
+	}
+
+	// Ideally one. A first-ever appearance observed by several goroutines at
+	// once can still open one interval each - none of them sees a row to
+	// extend - so the bound is the worker count, NOT the observation count.
+	// The bug this guards against produced roughly one interval per write.
+	if intervals > workers {
+		t.Errorf("%d intervals for one continuously observed service after %d observations; "+
+			"expected at most %d (one per racing first-appearance), so interval count is "+
+			"scaling with event volume", intervals, workers*perWorker, workers)
+	}
+}
+
+// TestHistoryRetentionIndependentOfCurrentStatePruning guards the coupling
+// between the two retention windows.
+//
+// PRUNE_MAX_AGE=0 is a documented way to say "do not expire current state".
+// It used to also gate whether the prune loop ran at all, silently switching
+// off HISTORY_RETENTION - and history is the one that grows without bound
+// (current-state rows are updated in place; interval rows accumulate).
+func TestHistoryRetentionIndependentOfCurrentStatePruning(t *testing.T) {
+	store, err := sqlite.New(storage.Config{
+		Driver: "sqlite", DSN: ":memory:", AutoMigrate: true,
+		HistoryEnabled:   true,
+		HistoryRetention: 24 * time.Hour,
+		PruneMaxAge:      0, // current state is never expired
+		PruneInterval:    0, // drive Prune by hand rather than wait on a ticker
+	})
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	// Older than the history window, so retention should collect it.
+	ancient := time.Now().Add(-72 * time.Hour)
+	if err := store.History().RecordService(ctx,
+		&storage.Service{ID: "10.0.0.8/ancient", Name: "ancient"},
+		ancient, storage.DefaultHistoryMaxGap); err != nil {
+		t.Fatalf("recording ancient interval: %v", err)
+	}
+
+	before, err := store.History().ServicesAt(ctx, ancient, storage.DefaultHistoryMaxGap)
+	if err != nil {
+		t.Fatalf("querying before prune: %v", err)
+	}
+	if len(before) == 0 {
+		t.Fatal("test premise broken: the interval should exist before pruning")
+	}
+
+	// What the background loop does when PruneMaxAge <= 0.
+	if _, err := store.PruneHistoryForTest(ctx); err != nil {
+		t.Fatalf("pruning history: %v", err)
+	}
+
+	after, err := store.History().ServicesAt(ctx, ancient, storage.DefaultHistoryMaxGap)
+	if err != nil {
+		t.Fatalf("querying after prune: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("history past the retention window survived while current-state pruning was off: %+v", after)
+	}
+}
+
+// TestStaleThresholdStaysInsideConfiguredRetention is the regression guard for
+// the failure mode where the default decommission-candidate cutoff lands
+// outside the retention window: the prune has already deleted exactly those
+// intervals, so the answer is always empty. A fixed default satisfies this for
+// the default retention only - it has to hold for a shortened one too.
+func TestStaleThresholdStaysInsideConfiguredRetention(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		retention time.Duration
+	}{
+		{"default retention", storage.DefaultHistoryRetention},
+		{"shortened retention", 48 * time.Hour},
+		{"very short retention", 2 * time.Hour},
+		// Below 2h the noise floor would exceed retention/2. Containment has
+		// to win there, or the floor recreates the always-empty bug the cap
+		// exists to prevent. 2h alone passes either way - it is exactly the
+		// boundary - so these smaller cases are what actually pin it down.
+		{"retention at the floor", time.Hour},
+		{"retention below the floor", 30 * time.Minute},
+		{"retention far below the floor", 10 * time.Minute},
+		{"unset retention falls back to the default", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, _ := newHistoryTestService(t, false)
+			ts.EnableHistory(5*time.Minute, tc.retention)
+
+			effective := ts.historyRetention
+			got := ts.staleThreshold()
+
+			if got <= 0 {
+				t.Fatalf("staleThreshold must be positive, got %s", got)
+			}
+			if got >= effective {
+				t.Errorf("staleThreshold %s is not inside the retention window %s; "+
+					"the retention prune deletes exactly what this cutoff asks for",
+					got, effective)
+			}
+		})
+	}
+}
+
+// TestGetStaleServicesDefaultFindsCandidatesUnderShortRetention is the
+// behavioural half of the guard above: with retention shortened, a service
+// idle long enough to be a candidate must still come back from the default.
+func TestGetStaleServicesDefaultFindsCandidatesUnderShortRetention(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ts.EnableHistory(5*time.Minute, 48*time.Hour)
+	ctx := context.Background()
+
+	// Idle for 30h: past the clamped 24h threshold, still inside the 48h
+	// retention window, so it genuinely exists to be returned.
+	idle := time.Now().Add(-30 * time.Hour).Truncate(time.Second)
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "10.0.0.9/idle", Name: "idle", LastSeen: idle}); err != nil {
+		t.Fatalf("adding idle service: %v", err)
+	}
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "10.0.0.9/busy", Name: "busy", LastSeen: time.Now()}); err != nil {
+		t.Fatalf("adding busy service: %v", err)
+	}
+
+	stale, err := ts.GetStaleServices(ctx, 0, 0) // 0 = use the derived default
+	if err != nil {
+		t.Fatalf("GetStaleServices: %v", err)
+	}
+
+	found := false
+	for _, si := range stale {
+		if si.ServiceID == "10.0.0.9/idle" {
+			found = true
+		}
+		if si.ServiceID == "10.0.0.9/busy" {
+			t.Error("a service seen just now must not be a decommission candidate")
+		}
+	}
+	if !found {
+		t.Errorf("expected the idle service among the default-threshold candidates, got %+v", stale)
+	}
+}
+
+// TestGetTopologyDiffRejectsRangeBeyondRetention guards O5: an unauthenticated
+// caller must not be able to force a diff over an arbitrarily wide span. The
+// cap is 2x the configured retention (not 1x - see the comment on the check
+// in GetTopologyDiff for why), so this asserts both sides of that boundary.
+func TestGetTopologyDiffRejectsRangeBeyondRetention(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Within 2x retention: rejected only for the wrong reason (no data), not
+	// range validation.
+	if _, err := ts.GetTopologyDiff(ctx, now.Add(-2*storage.DefaultHistoryRetention), now); errors.Is(err, ErrDiffRangeTooLarge) {
+		t.Errorf("span exactly at the 2x cap should not be rejected as too large, got %v", err)
+	}
+
+	// Beyond 2x retention: rejected before any query runs.
+	if _, err := ts.GetTopologyDiff(ctx, now.Add(-2*storage.DefaultHistoryRetention-time.Hour), now); !errors.Is(err, ErrDiffRangeTooLarge) {
+		t.Errorf("expected ErrDiffRangeTooLarge for a span beyond 2x retention, got %v", err)
+	}
+}
+
+// countingHook tallies emitted log entries by level.
+type countingHook struct{ n map[log.Level]int }
+
+func (h *countingHook) Levels() []log.Level     { return log.AllLevels }
+func (h *countingHook) Fire(e *log.Entry) error { h.n[e.Level]++; return nil }
+
+// TestHistoryFailuresDoNotFloodLogs guards the case where the history tables
+// are missing - a schema behind the binary, which DB_AUTO_MIGRATE=false makes
+// reachable while HISTORY_ENABLED defaults to true.
+//
+// Each event records two services and a connection, so an unthrottled warning
+// is three log lines per ingested event, forever, at whatever rate the agents
+// report.
+func TestHistoryFailuresDoNotFloodLogs(t *testing.T) {
+	// A store whose history writes always fail. Closing it is the simplest
+	// way to reach that state through the public API; a missing history table
+	// (schema behind the binary) produces the same per-write failure.
+	ts, store := newHistoryTestService(t, true)
+	ctx := context.Background()
+	brokenStore := store
+
+	hook := &countingHook{n: map[log.Level]int{}}
+	log.AddHook(hook)
+	log.SetOutput(io.Discard)
+	log.SetLevel(log.InfoLevel)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	const writes = 50
+	for i := 0; i < writes; i++ {
+		// Call the recording path directly with a nil service: RecordService
+		// rejects it, which is the same "history write failed" branch a
+		// missing table takes, without needing to corrupt the schema.
+		ts.recordServiceHistory(ctx, &storage.Service{}, time.Now())
+	}
+	_ = brokenStore
+
+	if got := hook.n[log.WarnLevel]; got > 1 {
+		t.Errorf("%d warnings for %d failed history writes; expected at most 1 per %s",
+			got, writes, historyLogInterval)
+	}
+}

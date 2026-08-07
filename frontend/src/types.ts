@@ -63,6 +63,28 @@ export interface Service {
   aggregated_count?: number // Number of services aggregated (for display)
 }
 
+// A decommission candidate: a service's most recent observation, for
+// services not seen since before a requested cutoff.
+export interface StaleService {
+  id: string
+  name?: string
+  type?: string
+  tech?: string
+  namespace?: string
+  node?: string
+  last_seen: string
+}
+
+// A service's rank in the blast-radius-size ranking: how many other
+// services (transitively) depend on it.
+export interface CriticalityEntry {
+  id: string
+  name?: string
+  type?: string
+  node?: string
+  blast_radius: number
+}
+
 // Service type constants
 export const ServiceTypes = {
   DATABASE: 'database',

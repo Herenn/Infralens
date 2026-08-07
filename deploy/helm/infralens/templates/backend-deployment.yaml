@@ -8,6 +8,15 @@ metadata:
     app.kubernetes.io/component: backend
 spec:
   replicas: {{ .Values.backend.replicaCount }}
+  {{- if .Values.backend.persistence.enabled }}
+  # Recreate, not the default RollingUpdate, because the backend owns a
+  # ReadWriteOnce volume. RollingUpdate starts the replacement pod before
+  # terminating the old one, and both outcomes are bad: on a different node the
+  # new pod blocks forever on Multi-Attach and the rollout deadlocks; on the
+  # same node RWO lets both attach, so two processes write one SQLite file.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "infralens.backend.selectorLabels" . | nindent 6 }}
@@ -17,6 +26,13 @@ spec:
         {{- include "infralens.backend.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "infralens.serviceAccountName" . }}
+      # fsGroup is what makes the mounted volume writable. The image runs as
+      # nonroot (uid 65532) and the volume mounted at /data replaces the
+      # image's nonroot-owned directory; without fsGroup a PVC typically
+      # arrives root-owned and SQLite cannot create its database - the same
+      # startup failure the WORKDIR change fixes, one layer up.
+      securityContext:
+        {{- toYaml .Values.backend.podSecurityContext | nindent 8 }}
       containers:
         - name: backend
           image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
@@ -77,6 +93,18 @@ spec:
               value: {{ .Values.backend.ai.ollama.model | quote }}
             - name: DEFAULT_LLM_PROVIDER
               value: {{ .Values.backend.ai.defaultProvider | quote }}
+            # Topology history. Retention is in days and decides how far back
+            # the timeline scrubs; unrelated to PRUNE_MAX_AGE (current state,
+            # minutes).
+            - name: HISTORY_ENABLED
+              value: {{ .Values.backend.history.enabled | quote }}
+            - name: HISTORY_RETENTION
+              value: {{ .Values.backend.history.retention | quote }}
+            - name: HISTORY_MAX_GAP
+              value: {{ .Values.backend.history.maxGap | quote }}
+            {{- with .Values.backend.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health
@@ -91,6 +119,50 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
+          volumeMounts:
+            # The backend's SQLite database lives in the image WORKDIR (/data).
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          {{- if .Values.backend.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "infralens.fullname" . }}-data
+          {{- else }}
+          # Ephemeral. Current state is repopulated by the agents within
+          # seconds, but topology history cannot be re-derived - enable
+          # persistence before relying on the timeline, diff, or decommission
+          # views.
+          emptyDir: {}
+          {{- end }}
+{{- if .Values.backend.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "infralens.fullname" . }}-data
+  labels:
+    {{- include "infralens.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+  {{- if .Values.backend.persistence.retainOnDelete }}
+  annotations:
+    # Survives `helm uninstall` and a failed-upgrade rollback. Deliberate: the
+    # topology history on this volume cannot be re-derived - unlike current
+    # state, which the agents repopulate within seconds - so the default is to
+    # orphan the PVC rather than destroy the data. Delete it by hand when you
+    # actually mean to, or set persistence.retainOnDelete=false.
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.backend.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backend.persistence.size | quote }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service

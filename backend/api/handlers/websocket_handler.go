@@ -211,7 +211,7 @@ func (h *WebSocketHandler) sendSnapshot(ctx context.Context, conn *websocket.Con
 		log.WithError(err).Error("Failed to get topology for WebSocket snapshot")
 		return true // storage error, not a connection error
 	}
-	if err := writeJSON(conn, WSMessage{Type: "snapshot", Data: convertTopologyToResponse(topology)}); err != nil {
+	if err := writeJSON(conn, WSMessage{Type: "snapshot", Data: convertTopologyToResponse(topology, true)}); err != nil {
 		log.WithError(err).Debug("Failed to send topology snapshot")
 		return false
 	}
@@ -233,7 +233,7 @@ func (h *WebSocketHandler) eventToMessage(ctx context.Context, event service.Eve
 		if err != nil || svc == nil {
 			return WSMessage{}, false
 		}
-		return WSMessage{Type: "service", Data: convertServiceToResponse(*svc)}, true
+		return WSMessage{Type: "service", Data: convertServiceToResponse(*svc, true)}, true
 
 	case service.EventServiceDeleted:
 		return WSMessage{Type: "service.deleted", Data: event.Data}, true
@@ -265,7 +265,7 @@ func (h *WebSocketHandler) eventToMessage(ctx context.Context, event service.Eve
 
 	case service.EventTopologySnapshot:
 		if t, ok := event.Data.(*storage.Topology); ok {
-			return WSMessage{Type: "snapshot", Data: convertTopologyToResponse(t)}, true
+			return WSMessage{Type: "snapshot", Data: convertTopologyToResponse(t, true)}, true
 		}
 		return WSMessage{Type: "snapshot", Data: event.Data}, true
 

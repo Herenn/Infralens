@@ -39,6 +39,17 @@ services:
       - OLLAMA_URL=${OLLAMA_URL:-}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama2}
       - DEFAULT_LLM_PROVIDER=${DEFAULT_LLM_PROVIDER:-openai}
+      # Topology history. Retention is measured in days and is what decides how
+      # far back the timeline can scrub; it is unrelated to PRUNE_MAX_AGE, which
+      # governs current state in minutes.
+      - HISTORY_ENABLED=${HISTORY_ENABLED:-true}
+      - HISTORY_RETENTION=${HISTORY_RETENTION:-720h}
+      - HISTORY_MAX_GAP=${HISTORY_MAX_GAP:-5m}
+    volumes:
+      # The backend's SQLite database lives in the image's WORKDIR (/data).
+      # Without this volume every restart discards it - and topology history,
+      # unlike current state, cannot be re-derived by the agents.
+      - infralens-data:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
       interval: 10s
@@ -93,6 +104,9 @@ services:
       - /sys/kernel/debug:/sys/kernel/debug:rw
     depends_on:
       - backend
+
+volumes:
+  infralens-data:
 
 networks:
   infralens:

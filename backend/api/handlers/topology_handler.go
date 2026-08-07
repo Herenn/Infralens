@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
@@ -21,20 +24,232 @@ func NewTopologyHandler(topology *service.TopologyService) *TopologyHandler {
 	}
 }
 
-// HandleGetTopology returns the complete topology.
+// HandleGetTopology returns the complete topology. With an `at` query
+// parameter (RFC 3339), it instead returns the topology reconstructed from
+// history at that instant - the endpoint a timeline scrubber drives.
 func (h *TopologyHandler) HandleGetTopology(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	topology, err := h.topology.GetTopology(ctx)
+
+	atParam := r.URL.Query().Get("at")
+	if atParam == "" {
+		topology, err := h.topology.GetTopology(ctx)
+		if err != nil {
+			http.Error(w, "Failed to get topology", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(convertTopologyToResponse(topology, true))
+		return
+	}
+
+	at, err := time.Parse(time.RFC3339, atParam)
+	if err != nil {
+		http.Error(w, "Invalid 'at' parameter: expected RFC 3339 timestamp", http.StatusBadRequest)
+		return
+	}
+
+	topology, err := h.topology.GetTopologyAt(ctx, at)
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		http.Error(w, "Failed to get topology", http.StatusInternalServerError)
 		return
 	}
 
-	// Convert to the format expected by the frontend
-	response := convertTopologyToResponse(topology)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(convertTopologyToResponse(topology, false))
+}
+
+// HandleGetHistoryRange returns the earliest and latest instants covered by
+// recorded topology history, so a UI timeline control knows what range it
+// can scrub across. Fields are null when history is enabled but nothing has
+// been recorded yet.
+func (h *TopologyHandler) HandleGetHistoryRange(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	bounds, ok, err := h.topology.GetHistoryBounds(ctx)
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Failed to get history range", http.StatusInternalServerError)
+		return
+	}
+
+	response := HistoryRangeResponse{}
+	if ok {
+		earliest := bounds.Earliest.Format(time.RFC3339)
+		latest := bounds.Latest.Format(time.RFC3339)
+		response.Earliest = &earliest
+		response.Latest = &latest
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// HandleGetTopologyDiff returns what appeared and disappeared between two
+// instants (?from=&to=, both required RFC 3339 timestamps) - the on-demand
+// sibling of continuous change detection.
+func (h *TopologyHandler) HandleGetTopologyDiff(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	fromParam := r.URL.Query().Get("from")
+	toParam := r.URL.Query().Get("to")
+	if fromParam == "" || toParam == "" {
+		http.Error(w, "Both 'from' and 'to' query parameters are required (RFC 3339 timestamps)", http.StatusBadRequest)
+		return
+	}
+
+	from, err := time.Parse(time.RFC3339, fromParam)
+	if err != nil {
+		http.Error(w, "Invalid 'from' parameter: expected RFC 3339 timestamp", http.StatusBadRequest)
+		return
+	}
+	to, err := time.Parse(time.RFC3339, toParam)
+	if err != nil {
+		http.Error(w, "Invalid 'to' parameter: expected RFC 3339 timestamp", http.StatusBadRequest)
+		return
+	}
+	// A reversed range is rejected rather than computed. The diff is not
+	// symmetric - swapping the endpoints swaps "appeared" and "disappeared" -
+	// so silently accepting it returns a confidently backwards answer with
+	// nothing to signal that the caller meant the other order.
+	if to.Before(from) {
+		http.Error(w, "Invalid range: 'to' must not be before 'from'", http.StatusBadRequest)
+		return
+	}
+
+	diff, err := h.topology.GetTopologyDiff(ctx, from, to)
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, service.ErrDiffRangeTooLarge) {
+		http.Error(w, "Invalid range: span exceeds configured HISTORY_RETENTION", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Failed to get topology diff", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(convertTopologyDiffToResponse(diff))
+}
+
+// HandleGetStaleServices returns decommission candidates: services whose
+// most recent observation is older than ?olderThan=<Go duration> (default
+// storage.DefaultStaleThreshold, e.g. "168h"). ?limit=<n> caps the results
+// (default 100).
+func (h *TopologyHandler) HandleGetStaleServices(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var olderThan time.Duration
+	if raw := r.URL.Query().Get("olderThan"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			http.Error(w, "Invalid 'olderThan' parameter: expected a positive Go duration (e.g. '168h')", http.StatusBadRequest)
+			return
+		}
+		olderThan = parsed
+	}
+
+	limit, ok := parseLimit(r, defaultListLimit)
+	if !ok {
+		http.Error(w, "Invalid 'limit' parameter: expected a positive integer", http.StatusBadRequest)
+		return
+	}
+
+	stale, err := h.topology.GetStaleServices(ctx, olderThan, limit)
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Failed to get stale services", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]StaleServiceResponse, 0, len(stale))
+	for _, svc := range stale {
+		response = append(response, StaleServiceResponse{
+			ID:        svc.ServiceID,
+			Name:      svc.Name,
+			Type:      svc.Type,
+			Tech:      svc.Tech,
+			Namespace: svc.Namespace,
+			Node:      svc.Node,
+			LastSeen:  svc.LastSeen.Format(time.RFC3339),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// HandleGetImpact returns the subgraph reachable from a service, answering
+// "what breaks if I take this down" (?direction=upstream, the default) or
+// "what does this depend on" (?direction=downstream). ?depth=<n> caps how
+// many hops out the traversal goes (default 5, capped at 20).
+func (h *TopologyHandler) HandleGetImpact(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+	ctx := r.Context()
+
+	direction := service.ImpactUpstream
+	if d := r.URL.Query().Get("direction"); d != "" {
+		switch service.ImpactDirection(d) {
+		case service.ImpactUpstream, service.ImpactDownstream:
+			direction = service.ImpactDirection(d)
+		default:
+			http.Error(w, "Invalid 'direction' parameter: expected 'upstream' or 'downstream'", http.StatusBadRequest)
+			return
+		}
+	}
+
+	depth := 0 // GetImpact applies its own default
+	if d := r.URL.Query().Get("depth"); d != "" {
+		parsed, err := strconv.Atoi(d)
+		if err != nil || parsed < 1 {
+			http.Error(w, "Invalid 'depth' parameter: expected a positive integer", http.StatusBadRequest)
+			return
+		}
+		depth = parsed
+	}
+
+	// Same `at` contract as GET /topology: traverse the graph as it was at that
+	// instant, so a blast radius requested while viewing history is not
+	// silently computed from current state.
+	var at time.Time
+	if raw := r.URL.Query().Get("at"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			http.Error(w, "Invalid 'at' parameter: expected RFC 3339 timestamp", http.StatusBadRequest)
+			return
+		}
+		at = parsed
+	}
+
+	topology, err := h.topology.GetImpact(ctx, id, direction, depth, at)
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Failed to get impact", http.StatusInternalServerError)
+		return
+	}
+	if topology == nil {
+		http.Error(w, "Service not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(convertTopologyToResponse(topology, true))
 }
 
 // HandleGetServices returns all services.
@@ -49,7 +264,7 @@ func (h *TopologyHandler) HandleGetServices(w http.ResponseWriter, r *http.Reque
 	// Convert to response format
 	response := make([]ServiceResponse, 0, len(services))
 	for _, svc := range services {
-		response = append(response, convertServiceToResponse(svc))
+		response = append(response, convertServiceToResponse(svc, true))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -72,7 +287,7 @@ func (h *TopologyHandler) HandleGetService(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	response := convertServiceToResponse(*svc)
+	response := convertServiceToResponse(*svc, true)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -88,6 +303,92 @@ func (h *TopologyHandler) HandleGetStats(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+// defaultListLimit caps the list endpoints that would otherwise serialize
+// every matching row. These are public, unauthenticated reads, and on a large
+// cluster "every orphan" or "every decommission candidate" is a big response
+// to hand out unbounded. A caller who genuinely wants more asks with ?limit=.
+const defaultListLimit = 100
+
+// parseLimit reads an optional positive ?limit=, falling back to fallback
+// when absent. ok is false when the parameter is present but not a positive
+// integer, which callers surface as a 400.
+func parseLimit(r *http.Request, fallback int) (limit int, ok bool) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return fallback, true
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < 1 {
+		return 0, false
+	}
+	return parsed, true
+}
+
+// HandleGetCriticality ranks services by upstream blast radius - the
+// riskiest single points of failure in one list, instead of clicking
+// through the impact view service by service. ?limit=<n> caps the results
+// (default 20).
+func (h *TopologyHandler) HandleGetCriticality(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Fallback 0: GetCriticality applies its own (smaller) default.
+	limit, ok := parseLimit(r, 0)
+	if !ok {
+		http.Error(w, "Invalid 'limit' parameter: expected a positive integer", http.StatusBadRequest)
+		return
+	}
+
+	ranked, err := h.topology.GetCriticality(ctx, limit)
+	if err != nil {
+		http.Error(w, "Failed to get criticality ranking", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]CriticalityResponse, 0, len(ranked))
+	for _, sc := range ranked {
+		response = append(response, CriticalityResponse{
+			ID:          sc.Service.ID,
+			Name:        sc.Service.Name,
+			Type:        sc.Service.Type,
+			Node:        sc.Service.Node,
+			BlastRadius: sc.BlastRadius,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// HandleGetOrphans returns services with no connections at all - neither
+// caller nor callee - a fact about the live graph, not a history query.
+// ?limit=<n> caps the results (default 100).
+func (h *TopologyHandler) HandleGetOrphans(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	limit, ok := parseLimit(r, defaultListLimit)
+	if !ok {
+		http.Error(w, "Invalid 'limit' parameter: expected a positive integer", http.StatusBadRequest)
+		return
+	}
+
+	orphans, err := h.topology.GetOrphanServices(ctx)
+	if err != nil {
+		http.Error(w, "Failed to get orphan services", http.StatusInternalServerError)
+		return
+	}
+	if len(orphans) > limit {
+		orphans = orphans[:limit]
+	}
+
+	response := make([]ServiceResponse, 0, len(orphans))
+	for _, svc := range orphans {
+		response = append(response, convertServiceToResponse(svc, true))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // Response types to maintain frontend compatibility
@@ -114,7 +415,7 @@ type ServiceResponse struct {
 	PodIP        string            `json:"pod_ip,omitempty"`
 	Labels       map[string]string `json:"labels,omitempty"`
 	LastSeen     string            `json:"last_seen"`
-	Healthy      bool              `json:"healthy"`
+	Healthy      *bool             `json:"healthy,omitempty"`
 }
 
 // ConnectionResponse is the connection format expected by the frontend.
@@ -135,6 +436,34 @@ type ConnectionResponse struct {
 	LatencyMs     float64 `json:"latency_ms,omitempty"`
 }
 
+// HistoryRangeResponse is the earliest/latest recorded history instants,
+// RFC 3339-formatted. Both fields are null when nothing has been recorded.
+type HistoryRangeResponse struct {
+	Earliest *string `json:"earliest"`
+	Latest   *string `json:"latest"`
+}
+
+// StaleServiceResponse is a decommission candidate: a service's most recent
+// observation, for services not seen since before the requested cutoff.
+type StaleServiceResponse struct {
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Tech      string `json:"tech,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Node      string `json:"node,omitempty"`
+	LastSeen  string `json:"last_seen"`
+}
+
+// CriticalityResponse is a service's rank in the blast-radius-size ranking.
+type CriticalityResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Node        string `json:"node,omitempty"`
+	BlastRadius int    `json:"blast_radius"`
+}
+
 // MetricsResponse is the metrics format expected by the frontend.
 type MetricsResponse struct {
 	NodeName   string  `json:"node_name"`
@@ -147,10 +476,13 @@ type MetricsResponse struct {
 
 // Conversion functions
 
-func convertTopologyToResponse(t *storage.Topology) TopologyResponse {
+// convertTopologyToResponse renders a topology. healthKnown is false for
+// topologies rebuilt from history: intervals do not record health, so the
+// field is omitted rather than invented. See convertServiceToResponse.
+func convertTopologyToResponse(t *storage.Topology, healthKnown bool) TopologyResponse {
 	services := make([]ServiceResponse, 0, len(t.Services))
 	for _, svc := range t.Services {
-		services = append(services, convertServiceToResponse(svc))
+		services = append(services, convertServiceToResponse(svc, healthKnown))
 	}
 
 	connections := make([]ConnectionResponse, 0, len(t.Connections))
@@ -171,7 +503,18 @@ func convertTopologyToResponse(t *storage.Topology) TopologyResponse {
 	}
 }
 
-func convertServiceToResponse(svc storage.Service) ServiceResponse {
+// convertServiceToResponse renders a service. When healthKnown is false the
+// `healthy` field is omitted entirely: a service reconstructed from a history
+// interval carries no health information, and reporting it as healthy would be
+// inventing data - every service in every past topology would look fine
+// regardless of what was actually happening at the time. Consumers already
+// treat a missing value as healthy, so omitting it changes no rendering.
+func convertServiceToResponse(svc storage.Service, healthKnown bool) ServiceResponse {
+	var healthy *bool
+	if healthKnown {
+		h := svc.Healthy
+		healthy = &h
+	}
 	return ServiceResponse{
 		ID:           svc.ID,
 		Name:         svc.Name,
@@ -185,7 +528,7 @@ func convertServiceToResponse(svc storage.Service) ServiceResponse {
 		PodIP:        svc.PodIP,
 		Labels:       svc.Labels,
 		LastSeen:     svc.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
-		Healthy:      svc.Healthy,
+		Healthy:      healthy,
 	}
 }
 
@@ -216,5 +559,42 @@ func convertMetricsToResponse(m storage.NodeMetrics) MetricsResponse {
 		MemUsed:    m.MemUsed,
 		MemTotal:   m.MemTotal,
 		LastSeen:   m.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
+	}
+}
+
+// TopologyDiffResponse is what appeared and disappeared between two instants.
+type TopologyDiffResponse struct {
+	From                string                `json:"from"`
+	To                  string                `json:"to"`
+	AddedServices       []ServiceResponse     `json:"added_services"`
+	RemovedServices     []ServiceResponse     `json:"removed_services"`
+	AddedConnections    []ConnectionResponse  `json:"added_connections"`
+	RemovedConnections  []ConnectionResponse  `json:"removed_connections"`
+}
+
+func convertTopologyDiffToResponse(d *service.TopologyDiff) TopologyDiffResponse {
+	addedSvc := make([]ServiceResponse, 0, len(d.AddedServices))
+	for _, svc := range d.AddedServices {
+		addedSvc = append(addedSvc, convertServiceToResponse(svc, false))
+	}
+	removedSvc := make([]ServiceResponse, 0, len(d.RemovedServices))
+	for _, svc := range d.RemovedServices {
+		removedSvc = append(removedSvc, convertServiceToResponse(svc, false))
+	}
+	addedConn := make([]ConnectionResponse, 0, len(d.AddedConnections))
+	for _, conn := range d.AddedConnections {
+		addedConn = append(addedConn, convertConnectionToResponse(conn))
+	}
+	removedConn := make([]ConnectionResponse, 0, len(d.RemovedConnections))
+	for _, conn := range d.RemovedConnections {
+		removedConn = append(removedConn, convertConnectionToResponse(conn))
+	}
+	return TopologyDiffResponse{
+		From:               d.From.Format(time.RFC3339),
+		To:                 d.To.Format(time.RFC3339),
+		AddedServices:      addedSvc,
+		RemovedServices:    removedSvc,
+		AddedConnections:   addedConn,
+		RemovedConnections: removedConn,
 	}
 }
