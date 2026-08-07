@@ -13,6 +13,47 @@ namespace: infralens
 # Backend Configuration
 # ===========================
 backend:
+  # Keep at 1: the backend's default store is SQLite, a single-writer database
+  # in a single file. More than one replica means concurrent writers to one
+  # volume (same node) or pods that cannot schedule at all (ReadWriteOnce,
+  # different nodes). Scaling out needs DB_DRIVER=postgres first - which the
+  # chart does not yet expose; use extraEnv.
+  #
+  # Topology history (v3). Retention is measured in days and is what decides
+  # how far back the timeline can scrub.
+  history:
+    enabled: true
+    retention: 720h
+    maxGap: 5m
+
+  # Persistence for the backend's SQLite database. Disabled by default keeps
+  # the quick-start single-command, but history does NOT survive a restart
+  # without it - unlike current state, it cannot be re-derived by the agents.
+  # Turn this on before relying on the timeline, diff, or decommission views.
+  #
+  # Enabling this also switches the Deployment to the Recreate strategy, since
+  # a ReadWriteOnce volume cannot be handed between two pods during a rolling
+  # update. Expect a brief gap on redeploy instead of an overlap.
+  persistence:
+    enabled: false
+    size: 5Gi
+    storageClass: ""
+    # Keep the volume when the release is uninstalled or a failed upgrade rolls
+    # back. History cannot be re-derived, so the default protects it; the cost
+    # is an orphaned PVC you delete by hand.
+    retainOnDelete: true
+
+  # Arbitrary extra environment variables, so a new backend setting does not
+  # require a chart release to become reachable.
+  extraEnv: []
+
+  # Must match the nonroot uid/gid baked into the distroless backend image.
+  # fsGroup is what makes the volume mounted at /data writable by it.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+
   enabled: true
   replicaCount: 1
   

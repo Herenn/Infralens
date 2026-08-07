@@ -22,10 +22,30 @@ ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-w -s" -o /infralens-backend ./backend
 
+# Staged here only so the runtime stage can COPY it with the right ownership -
+# distroless has no shell, so a directory cannot be created or chowned there.
+# The placeholder file is load-bearing: COPY copies a directory's *contents*,
+# not the directory, so copying an empty one may materialise nothing and leave
+# the following WORKDIR to create /data as root instead.
+RUN mkdir -p /data && touch /data/.keep
+
 # Runtime stage
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /infralens-backend /infralens-backend
+
+# The image runs as nonroot (uid 65532) and the default DB_DSN is the relative
+# path "infralens.db". Without a WORKDIR that resolves to /infralens.db - the
+# container root, which is root-owned and mode 0755, so SQLite cannot create
+# the file and the backend exits at startup ("Failed to initialize storage").
+#
+# /data is owned by nonroot and is the intended mount point for a volume, so
+# history survives a restart. Mount a real volume here in any deployment that
+# wants to keep it: without one this directory is still ephemeral, and topology
+# history - unlike current state, which agents repopulate within seconds -
+# cannot be re-derived once lost.
+COPY --from=builder --chown=65532:65532 /data /data
+WORKDIR /data
 
 EXPOSE 8080
 
