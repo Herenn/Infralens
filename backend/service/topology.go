@@ -29,8 +29,20 @@ type TopologyService struct {
 	eventBus *EventBus
 
 	// historyEnabled records when services and edges existed, in addition to
-	// their current state. Off by default so existing behaviour is unchanged
-	// until a caller opts in.
+	// their current state. A TopologyService does not record history until
+	// EnableHistory is called - but note the shipped default is ON
+	// (HISTORY_ENABLED=true in config), so real deployments do record it
+	// unless they opt out. Recording costs roughly 30% more time per ingested
+	// event when writes are serial, and ~40% under concurrent agent load -
+	// every service and connection write does an extra UPDATE, and under
+	// concurrency usually a second (no-op) guarded INSERT as well, because
+	// racing writes routinely fail the monotonicity guard. Measure before
+	// quoting either number again; both have moved as this write path changed.
+	//
+	// These fields, like historyMaxGap and historyRetention below, are written
+	// once by EnableHistory during startup wiring and only read afterwards, so
+	// they carry no lock. Anything that starts calling EnableHistory after the
+	// server is serving needs to revisit that.
 	historyEnabled bool
 
 	// historyMaxGap is how long an entity may go unobserved before its
@@ -453,17 +465,35 @@ const (
 	defaultImpactDepth = 5
 	// maxImpactDepth bounds traversal so a densely connected graph can't
 	// make this walk arbitrarily long; it's a safety cap, not a tuned value.
+	//
+	// GetCriticality always ranks at this depth, and the UI's blast-radius view
+	// requests it explicitly (IMPACT_DEPTH in App.tsx) so the number the
+	// "Most critical" panel reports matches the set the impact view
+	// highlights. Changing it here without changing that is a visible
+	// contradiction between two views of the same question.
 	maxImpactDepth = 20
 )
 
+// resolveTopology returns current state, or the reconstruction at `at` when a
+// non-zero instant is supplied.
+func (ts *TopologyService) resolveTopology(ctx context.Context, at time.Time) (*storage.Topology, error) {
+	if at.IsZero() {
+		return ts.store.GetTopology(ctx)
+	}
+	return ts.GetTopologyAt(ctx, at)
+}
+
 // GetImpact returns the subgraph reachable from serviceID by BFS over the
-// current topology, in the given direction. Returns (nil, nil) if serviceID
+// topology, in the given direction. A non-zero `at` traverses the topology as
+// it existed at that instant instead of current state - without it, asking
+// "what breaks if this goes down" while viewing a past moment answered from
+// today's graph and highlighted the result onto the historical one. Returns (nil, nil) if serviceID
 // does not exist in the current topology, matching GetService's
 // not-found convention.
-func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, direction ImpactDirection, maxDepth int) (*storage.Topology, error) {
-	topo, err := ts.store.GetTopology(ctx)
+func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, direction ImpactDirection, maxDepth int, at time.Time) (*storage.Topology, error) {
+	topo, err := ts.resolveTopology(ctx, at)
 	if err != nil {
-		return nil, fmt.Errorf("getting topology: %w", err)
+		return nil, err
 	}
 
 	svcByID := make(map[string]storage.Service, len(topo.Services))

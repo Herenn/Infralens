@@ -61,6 +61,7 @@ func newTestServer(t *testing.T) *testServer {
 	api.HandleFunc("/metrics", eventHandler.HandleMetrics).Methods("POST")
 	api.HandleFunc("/inspection", eventHandler.HandleInspection).Methods("POST")
 	api.HandleFunc("/topology", topologyHandler.HandleGetTopology).Methods("GET")
+	api.HandleFunc("/topology/export", handlers.NewExportHandler(topology).HandleExport).Methods("GET")
 	api.HandleFunc("/topology/history/range", topologyHandler.HandleGetHistoryRange).Methods("GET")
 	api.HandleFunc("/topology/history/stale", topologyHandler.HandleGetStaleServices).Methods("GET")
 	api.HandleFunc("/topology/history/diff", topologyHandler.HandleGetTopologyDiff).Methods("GET")
@@ -1260,5 +1261,58 @@ func TestHandleGetTopology_LivePresentAtNow(t *testing.T) {
 	}
 	if len(diff.RemovedServices) != 0 {
 		t.Errorf("a service observed a second ago was reported as disappeared: %+v", diff.RemovedServices)
+	}
+}
+
+// TestHandleExport_HonoursAt guards against the graph export silently
+// rendering current state while the UI is showing a past instant. The JSON
+// export already followed the timeline, so the two disagreed - and an exported
+// diagram carries nothing to reveal it came from the wrong moment.
+func TestHandleExport_HonoursAt(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+	h := ts.store.History()
+
+	// Existed only in the past.
+	past := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	if err := h.RecordService(ctx, &storage.Service{ID: "retired-svc", Name: "retired"},
+		past, storage.DefaultHistoryMaxGap); err != nil {
+		t.Fatalf("recording past service: %v", err)
+	}
+	// Exists now.
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{
+		ID: "current-svc", Name: "current", LastSeen: time.Now(),
+	}); err != nil {
+		t.Fatalf("adding current service: %v", err)
+	}
+
+	get := func(url string) string {
+		rr := httptest.NewRecorder()
+		ts.router.ServeHTTP(rr, httptest.NewRequest("GET", url, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status %d for %s: %s", rr.Code, url, rr.Body.String())
+		}
+		return rr.Body.String()
+	}
+
+	live := get("/api/v1/topology/export?format=mermaid")
+	if !strings.Contains(live, "current") {
+		t.Errorf("live export should contain the current service, got:\n%s", live)
+	}
+
+	atPast := get("/api/v1/topology/export?format=mermaid&at=" +
+		url.QueryEscape(past.Format(time.RFC3339)))
+	if !strings.Contains(atPast, "retired") {
+		t.Errorf("export at a past instant should contain the service present then, got:\n%s", atPast)
+	}
+	if strings.Contains(atPast, "current") {
+		t.Errorf("export at a past instant must not contain a service that only exists now, got:\n%s", atPast)
+	}
+
+	// A malformed instant must be rejected, not silently fall back to now.
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/topology/export?format=mermaid&at=nonsense", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for an unparseable 'at', got %d", rr.Code)
 	}
 }

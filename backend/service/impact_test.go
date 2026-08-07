@@ -71,7 +71,7 @@ func TestGetImpact_Upstream_TransitiveCallers(t *testing.T) {
 	ts := newImpactTestService(t)
 	addChain(t, ts, "A", "B", "C", "D")
 
-	topo, err := ts.GetImpact(context.Background(), "C", ImpactUpstream, 0)
+	topo, err := ts.GetImpact(context.Background(), "C", ImpactUpstream, 0, time.Time{})
 	if err != nil {
 		t.Fatalf("GetImpact: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestGetImpact_Downstream_TransitiveDependencies(t *testing.T) {
 	ts := newImpactTestService(t)
 	addChain(t, ts, "A", "B", "C", "D")
 
-	topo, err := ts.GetImpact(context.Background(), "B", ImpactDownstream, 0)
+	topo, err := ts.GetImpact(context.Background(), "B", ImpactDownstream, 0, time.Time{})
 	if err != nil {
 		t.Fatalf("GetImpact: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestGetImpact_DepthCap(t *testing.T) {
 	ts := newImpactTestService(t)
 	addChain(t, ts, "A", "B", "C", "D", "E")
 
-	topo, err := ts.GetImpact(context.Background(), "A", ImpactDownstream, 2)
+	topo, err := ts.GetImpact(context.Background(), "A", ImpactDownstream, 2, time.Time{})
 	if err != nil {
 		t.Fatalf("GetImpact: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestGetImpact_Cycle(t *testing.T) {
 		t.Fatalf("adding B->A: %v", err)
 	}
 
-	topo, err := ts.GetImpact(ctx, "A", ImpactDownstream, maxImpactDepth)
+	topo, err := ts.GetImpact(ctx, "A", ImpactDownstream, maxImpactDepth, time.Time{})
 	if err != nil {
 		t.Fatalf("GetImpact: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestGetImpact_UnknownService(t *testing.T) {
 	ts := newImpactTestService(t)
 	addChain(t, ts, "A", "B")
 
-	topo, err := ts.GetImpact(context.Background(), "does-not-exist", ImpactUpstream, 0)
+	topo, err := ts.GetImpact(context.Background(), "does-not-exist", ImpactUpstream, 0, time.Time{})
 	if err != nil {
 		t.Fatalf("expected no error for an unknown service, got %v", err)
 	}
@@ -267,7 +267,7 @@ func TestGetImpact_OmitsEdgesToMissingEndpoints(t *testing.T) {
 		t.Fatalf("adding connection: %v", err)
 	}
 
-	topo, err := ts.GetImpact(ctx, "target", ImpactUpstream, 5)
+	topo, err := ts.GetImpact(ctx, "target", ImpactUpstream, 5, time.Time{})
 	if err != nil {
 		t.Fatalf("GetImpact: %v", err)
 	}
@@ -358,5 +358,112 @@ func TestGetCriticality_IgnoresPhantomEndpoints(t *testing.T) {
 	if ranked[0].BlastRadius != 0 {
 		t.Errorf("blast radius = %d, want 0: none of the three callers exist as services",
 			ranked[0].BlastRadius)
+	}
+}
+
+// TestGetImpact_AtPastInstant guards the same class of bug as the graph
+// export: a blast radius requested while viewing a past moment must be
+// traversed over that graph, not over current state. Without it the drawer
+// answered "what breaks if this goes down" from today's edges and highlighted
+// the result onto the historical topology being displayed.
+func TestGetImpact_AtPastInstant(t *testing.T) {
+	store, err := sqlite.New(storage.Config{
+		Driver: "sqlite", DSN: ":memory:", AutoMigrate: true, HistoryEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	bus := NewEventBus(64)
+	t.Cleanup(bus.Close)
+	ts := NewTopologyService(store, bus)
+	ts.EnableHistory(storage.DefaultHistoryMaxGap, storage.DefaultHistoryRetention)
+	ctx := context.Background()
+
+	// Past: old-caller -> shared. Recorded straight into history so the edge
+	// exists then and not now.
+	past := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	for _, id := range []string{"old-caller", "shared"} {
+		if err := store.History().RecordService(ctx, &storage.Service{ID: id, Name: id},
+			past, storage.DefaultHistoryMaxGap); err != nil {
+			t.Fatalf("recording %s: %v", id, err)
+		}
+	}
+	if err := store.History().RecordConnection(ctx, &storage.Connection{
+		ID: "old-caller->shared", SourceID: "old-caller", TargetID: "shared",
+		Port: 80, Protocol: "tcp",
+	}, past, storage.DefaultHistoryMaxGap); err != nil {
+		t.Fatalf("recording past edge: %v", err)
+	}
+
+	// Now: a different caller entirely.
+	addChain(t, ts, "new-caller", "shared")
+
+	// Current state: only new-caller calls shared.
+	now, err := ts.GetImpact(ctx, "shared", ImpactUpstream, 5, time.Time{})
+	if err != nil {
+		t.Fatalf("GetImpact (current): %v", err)
+	}
+	if got := serviceIDs(now); !equalStrings(got, []string{"new-caller", "shared"}) {
+		t.Errorf("current impact = %v, want [new-caller shared]", got)
+	}
+
+	// At the past instant: only old-caller did.
+	then, err := ts.GetImpact(ctx, "shared", ImpactUpstream, 5, past)
+	if err != nil {
+		t.Fatalf("GetImpact (past): %v", err)
+	}
+	if got := serviceIDs(then); !equalStrings(got, []string{"old-caller", "shared"}) {
+		t.Errorf("impact at %s = %v, want [old-caller shared] - it was answered from current state", past, got)
+	}
+}
+
+// TestCriticalityAndImpactAgree pins the invariant a user can check by eye:
+// the "Most critical" panel reports a blast radius, and clicking through
+// highlights a set. Those must be the same number.
+//
+// They are computed by different calls with different depth defaults -
+// GetCriticality always uses maxImpactDepth, GetImpact defaults to 5 - so on a
+// chain deeper than 5 the panel said "breaks 9 services" while the impact view
+// highlighted 5. The UI now requests maxImpactDepth explicitly; this guards the
+// agreement in both the deep case and with a phantom endpoint present.
+func TestCriticalityAndImpactAgree(t *testing.T) {
+	ts := newImpactTestService(t)
+	ctx := context.Background()
+
+	addChain(t, ts, "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9")
+	// A caller with no service row must count for neither.
+	if err := ts.AddConnection(ctx, &storage.Connection{
+		ID: "ghost->S9", SourceID: "ghost", TargetID: "S9",
+		Port: 80, Protocol: "tcp", LastSeen: time.Now(),
+	}); err != nil {
+		t.Fatalf("adding phantom edge: %v", err)
+	}
+
+	ranked, err := ts.GetCriticality(ctx, 50)
+	if err != nil {
+		t.Fatalf("GetCriticality: %v", err)
+	}
+	if len(ranked) == 0 {
+		t.Fatal("expected a ranking")
+	}
+
+	for _, sc := range ranked {
+		imp, err := ts.GetImpact(ctx, sc.Service.ID, ImpactUpstream, maxImpactDepth, time.Time{})
+		if err != nil {
+			t.Fatalf("GetImpact(%s): %v", sc.Service.ID, err)
+		}
+		highlighted := len(imp.Services) - 1 // the impact response includes the seed
+		if highlighted != sc.BlastRadius {
+			t.Errorf("%s: criticality reports blast radius %d but the impact view highlights %d",
+				sc.Service.ID, sc.BlastRadius, highlighted)
+		}
+	}
+
+	// And the deep end is genuinely deep, so this is not passing on a short graph.
+	for _, sc := range ranked {
+		if sc.Service.ID == "S9" && sc.BlastRadius != 9 {
+			t.Errorf("S9 blast radius = %d, want 9 (the whole chain, phantom excluded)", sc.BlastRadius)
+		}
 	}
 }

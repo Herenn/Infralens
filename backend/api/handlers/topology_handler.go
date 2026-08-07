@@ -221,7 +221,24 @@ func (h *TopologyHandler) HandleGetImpact(w http.ResponseWriter, r *http.Request
 		depth = parsed
 	}
 
-	topology, err := h.topology.GetImpact(ctx, id, direction, depth)
+	// Same `at` contract as GET /topology: traverse the graph as it was at that
+	// instant, so a blast radius requested while viewing history is not
+	// silently computed from current state.
+	var at time.Time
+	if raw := r.URL.Query().Get("at"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			http.Error(w, "Invalid 'at' parameter: expected RFC 3339 timestamp", http.StatusBadRequest)
+			return
+		}
+		at = parsed
+	}
+
+	topology, err := h.topology.GetImpact(ctx, id, direction, depth, at)
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		http.Error(w, "Failed to get impact", http.StatusInternalServerError)
 		return
