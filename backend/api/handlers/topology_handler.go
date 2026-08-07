@@ -114,10 +114,22 @@ func (h *TopologyHandler) HandleGetTopologyDiff(w http.ResponseWriter, r *http.R
 		http.Error(w, "Invalid 'to' parameter: expected RFC 3339 timestamp", http.StatusBadRequest)
 		return
 	}
+	// A reversed range is rejected rather than computed. The diff is not
+	// symmetric - swapping the endpoints swaps "appeared" and "disappeared" -
+	// so silently accepting it returns a confidently backwards answer with
+	// nothing to signal that the caller meant the other order.
+	if to.Before(from) {
+		http.Error(w, "Invalid range: 'to' must not be before 'from'", http.StatusBadRequest)
+		return
+	}
 
 	diff, err := h.topology.GetTopologyDiff(ctx, from, to)
 	if errors.Is(err, service.ErrHistoryDisabled) {
 		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, service.ErrDiffRangeTooLarge) {
+		http.Error(w, "Invalid range: span exceeds configured HISTORY_RETENTION", http.StatusBadRequest)
 		return
 	}
 	if err != nil {
@@ -131,7 +143,8 @@ func (h *TopologyHandler) HandleGetTopologyDiff(w http.ResponseWriter, r *http.R
 
 // HandleGetStaleServices returns decommission candidates: services whose
 // most recent observation is older than ?olderThan=<Go duration> (default
-// and unit: the storage history retention window, e.g. "720h").
+// storage.DefaultStaleThreshold, e.g. "168h"). ?limit=<n> caps the results
+// (default 100).
 func (h *TopologyHandler) HandleGetStaleServices(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -139,13 +152,19 @@ func (h *TopologyHandler) HandleGetStaleServices(w http.ResponseWriter, r *http.
 	if raw := r.URL.Query().Get("olderThan"); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil || parsed <= 0 {
-			http.Error(w, "Invalid 'olderThan' parameter: expected a positive Go duration (e.g. '720h')", http.StatusBadRequest)
+			http.Error(w, "Invalid 'olderThan' parameter: expected a positive Go duration (e.g. '168h')", http.StatusBadRequest)
 			return
 		}
 		olderThan = parsed
 	}
 
-	stale, err := h.topology.GetStaleServices(ctx, olderThan)
+	limit, ok := parseLimit(r, defaultListLimit)
+	if !ok {
+		http.Error(w, "Invalid 'limit' parameter: expected a positive integer", http.StatusBadRequest)
+		return
+	}
+
+	stale, err := h.topology.GetStaleServices(ctx, olderThan, limit)
 	if errors.Is(err, service.ErrHistoryDisabled) {
 		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
 		return
@@ -269,6 +288,27 @@ func (h *TopologyHandler) HandleGetStats(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(stats)
 }
 
+// defaultListLimit caps the list endpoints that would otherwise serialize
+// every matching row. These are public, unauthenticated reads, and on a large
+// cluster "every orphan" or "every decommission candidate" is a big response
+// to hand out unbounded. A caller who genuinely wants more asks with ?limit=.
+const defaultListLimit = 100
+
+// parseLimit reads an optional positive ?limit=, falling back to fallback
+// when absent. ok is false when the parameter is present but not a positive
+// integer, which callers surface as a 400.
+func parseLimit(r *http.Request, fallback int) (limit int, ok bool) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return fallback, true
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < 1 {
+		return 0, false
+	}
+	return parsed, true
+}
+
 // HandleGetCriticality ranks services by upstream blast radius - the
 // riskiest single points of failure in one list, instead of clicking
 // through the impact view service by service. ?limit=<n> caps the results
@@ -276,14 +316,11 @@ func (h *TopologyHandler) HandleGetStats(w http.ResponseWriter, r *http.Request)
 func (h *TopologyHandler) HandleGetCriticality(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	limit := 0
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 {
-			http.Error(w, "Invalid 'limit' parameter: expected a positive integer", http.StatusBadRequest)
-			return
-		}
-		limit = parsed
+	// Fallback 0: GetCriticality applies its own (smaller) default.
+	limit, ok := parseLimit(r, 0)
+	if !ok {
+		http.Error(w, "Invalid 'limit' parameter: expected a positive integer", http.StatusBadRequest)
+		return
 	}
 
 	ranked, err := h.topology.GetCriticality(ctx, limit)
@@ -309,13 +346,23 @@ func (h *TopologyHandler) HandleGetCriticality(w http.ResponseWriter, r *http.Re
 
 // HandleGetOrphans returns services with no connections at all - neither
 // caller nor callee - a fact about the live graph, not a history query.
+// ?limit=<n> caps the results (default 100).
 func (h *TopologyHandler) HandleGetOrphans(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	limit, ok := parseLimit(r, defaultListLimit)
+	if !ok {
+		http.Error(w, "Invalid 'limit' parameter: expected a positive integer", http.StatusBadRequest)
+		return
+	}
 
 	orphans, err := h.topology.GetOrphanServices(ctx)
 	if err != nil {
 		http.Error(w, "Failed to get orphan services", http.StatusInternalServerError)
 		return
+	}
+	if len(orphans) > limit {
+		orphans = orphans[:limit]
 	}
 
 	response := make([]ServiceResponse, 0, len(orphans))

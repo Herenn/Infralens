@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/Herenn/Infralens/backend/storage"
@@ -16,6 +17,10 @@ import (
 // EnableHistory has not been called, so callers can tell "nothing recorded
 // yet" apart from "recording was never turned on" and respond accordingly.
 var ErrHistoryDisabled = errors.New("topology history is not enabled")
+
+// ErrDiffRangeTooLarge is returned by GetTopologyDiff when the requested
+// span exceeds the configured retention window. See GetTopologyDiff.
+var ErrDiffRangeTooLarge = errors.New("requested range exceeds configured history retention")
 
 // TopologyService manages the service topology graph.
 // It coordinates between the storage layer and event bus for real-time updates.
@@ -35,13 +40,29 @@ type TopologyService struct {
 	// historyRetention mirrors the window the store prunes history on, so
 	// query defaults derived from it stay inside what actually still exists.
 	historyRetention time.Duration
+
+	// criticality memoizes the blast-radius ranking. See GetCriticality.
+	//
+	// The guard is a 1-buffered channel rather than a sync.Mutex so waiters
+	// can honour their request context: Mutex.Lock is uninterruptible, which
+	// would let one slow store query pin every queued request well past its
+	// deadline with no way to give up.
+	criticalityLock   chan struct{}
+	criticalityRanked []ServiceCriticality
+	criticalityAt     time.Time
+
+	// Throttles the "failed to record history" warning. See logHistoryFailure.
+	historyLogMu         sync.Mutex
+	historyLogLast       time.Time
+	historyLogSuppressed int
 }
 
 // NewTopologyService creates a new topology service.
 func NewTopologyService(store storage.Store, eventBus *EventBus) *TopologyService {
 	return &TopologyService{
-		store:    store,
-		eventBus: eventBus,
+		store:           store,
+		eventBus:        eventBus,
+		criticalityLock: make(chan struct{}, 1),
 	}
 }
 
@@ -63,6 +84,80 @@ func (ts *TopologyService) EnableHistory(maxGap, retention time.Duration) {
 	ts.historyRetention = retention
 }
 
+// staleThreshold is how long a service must go unobserved before it is
+// reported as a decommission candidate.
+//
+// Derived from the configured retention rather than used as a bare constant,
+// and bounded at both ends. Asking for services unseen for longer than
+// retention returns nothing by construction - the retention prune has already
+// deleted exactly those intervals - so a fixed default silently produces an
+// empty list for any deployment that shortens HISTORY_RETENTION below it.
+// Deriving it keeps the two in the right relationship however retention is
+// configured, instead of relying on a documented invariant nothing enforces.
+func (ts *TopologyService) staleThreshold() time.Duration {
+	retention := ts.historyRetention
+	if retention <= 0 {
+		retention = storage.DefaultHistoryRetention
+	}
+	// Cap: never ask for anything the retention prune has already deleted.
+	half := retention / 2
+	threshold := storage.DefaultStaleThreshold
+	if half < threshold {
+		threshold = half
+	}
+	// Floor: without one this swings the other way - at a 10m retention the cap
+	// alone yields 5m, and every service quiet for five minutes is offered as a
+	// decommission candidate.
+	//
+	// The floor is applied ONLY when it still fits inside the window. Raising
+	// the threshold past retention would recreate the very bug the cap exists
+	// to prevent (the prune deletes exactly what the query then asks for, so the
+	// list is permanently empty), and an empty list is a worse failure than a
+	// noisy one: noise is visible and arguable, emptiness looks like "nothing to
+	// decommission". Containment wins; below a ~2h retention the threshold stays
+	// at retention/2 and the results are correspondingly twitchy.
+	if threshold < storage.MinStaleThreshold && storage.MinStaleThreshold <= half {
+		threshold = storage.MinStaleThreshold
+	}
+	return threshold
+}
+
+// historyLogInterval is how often a history-recording failure may be logged.
+//
+// These failures are per-entity and therefore per-event: processing one TCP
+// event records two services and a connection, so a persistent fault emits
+// three lines per event. The realistic cause is a schema behind the binary -
+// DB_AUTO_MIGRATE=false against a database that never got the history
+// migration, with HISTORY_ENABLED defaulting to true - which floods logs
+// indefinitely at whatever rate agents report.
+//
+// Throttled rather than latched off after the first failure: a transient
+// fault (lock timeout, disk full) must not silently disable history for the
+// life of the process. The suppressed count keeps the log honest about how
+// often it is really happening.
+const historyLogInterval = time.Minute
+
+// logHistoryFailure reports a history write failure at most once per
+// historyLogInterval, carrying how many were suppressed since the last report.
+func (ts *TopologyService) logHistoryFailure(err error, field, id string) {
+	ts.historyLogMu.Lock()
+	if time.Since(ts.historyLogLast) < historyLogInterval {
+		ts.historyLogSuppressed++
+		ts.historyLogMu.Unlock()
+		return
+	}
+	suppressed := ts.historyLogSuppressed
+	ts.historyLogSuppressed = 0
+	ts.historyLogLast = time.Now()
+	ts.historyLogMu.Unlock()
+
+	entry := log.WithError(err).WithField(field, id)
+	if suppressed > 0 {
+		entry = entry.WithField("suppressed_since_last", suppressed)
+	}
+	entry.Warn("Failed to record topology history (is the history migration applied?)")
+}
+
 // recordServiceHistory records a service sighting.
 //
 // History is strictly additive to the live topology: a failure to record it
@@ -74,7 +169,7 @@ func (ts *TopologyService) recordServiceHistory(ctx context.Context, svc *storag
 		return
 	}
 	if err := ts.store.History().RecordService(ctx, svc, observationTime(at), ts.historyMaxGap); err != nil {
-		log.WithError(err).WithField("service_id", svc.ID).Warn("Failed to record service history")
+		ts.logHistoryFailure(err, "service_id", svc.ID)
 	}
 }
 
@@ -104,7 +199,7 @@ func (ts *TopologyService) recordConnectionHistory(ctx context.Context, conn *st
 		return
 	}
 	if err := ts.store.History().RecordConnection(ctx, conn, observationTime(at), ts.historyMaxGap); err != nil {
-		log.WithError(err).WithField("conn_id", conn.ID).Warn("Failed to record connection history")
+		ts.logHistoryFailure(err, "conn_id", conn.ID)
 	}
 }
 
@@ -418,6 +513,28 @@ func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, dire
 	}, nil
 }
 
+// realReachedCount is how many *existing* services the traversal reached,
+// excluding the seed. It is the blast radius: "how many services break if this
+// one goes down."
+//
+// Counting the raw visited set instead would count endpoints that no longer
+// exist. That is not a rare edge case: ConnectionRepo.UpdateStats refreshes a
+// connection's last_seen from throughput reports, while only a connect/accept
+// event refreshes a *service's*. So a long-lived connection carrying steady
+// traffic keeps itself alive while its endpoints age out at PruneMaxAge and are
+// deleted - exactly the persistent connections (DB pools, gRPC channels) whose
+// blast radius matters most. Counting those phantoms inflates the ranking, and
+// can report a blast radius larger than the total number of services.
+func realReachedCount(visited map[string]bool, known map[string]bool, seed string) int {
+	n := 0
+	for id := range visited {
+		if id != seed && known[id] {
+			n++
+		}
+	}
+	return n
+}
+
 // buildImpactIndex indexes connections by the endpoint impactBFS expands
 // from: for upstream that's the target (find who calls this ID), for
 // downstream the source (find what this ID calls). Built once and reused
@@ -475,6 +592,16 @@ type ServiceCriticality struct {
 // "your riskiest handful," not a full sort of every service in the graph.
 const defaultCriticalityLimit = 20
 
+// criticalityTTL is how long a computed ranking is reused.
+//
+// The ranking costs one BFS per service - O(N*(N+E)) - and is served from a
+// public, unauthenticated endpoint, so without this the cost per request is
+// unbounded and attacker-controlled. Blast radius is a property of the graph's
+// shape, which changes on the timescale of deploys rather than of requests, so
+// a few seconds of staleness buys a hard ceiling of one recomputation per TTL
+// no matter how often the endpoint is hit.
+const criticalityTTL = 30 * time.Second
+
 // GetCriticality ranks every service in the current topology by upstream
 // blast radius (excluding itself), descending, capped to limit results. A
 // non-positive limit falls back to defaultCriticalityLimit.
@@ -483,23 +610,89 @@ const defaultCriticalityLimit = 20
 // this always traverses to maxImpactDepth - a criticality score computed
 // from a truncated blast radius would understate exactly the services it's
 // meant to flag.
+//
+// The full ranking is memoized for criticalityTTL and the limit applied to
+// the cached result, so varying ?limit= doesn't defeat the cache.
 func (ts *TopologyService) GetCriticality(ctx context.Context, limit int) ([]ServiceCriticality, error) {
-	topo, err := ts.store.GetTopology(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("getting topology: %w", err)
-	}
 	if limit <= 0 {
 		limit = defaultCriticalityLimit
 	}
 
+	ranked, err := ts.rankedCriticality(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	// Copied rather than returned as a sub-slice of the cached array, which
+	// the cache outlives: a returned window would otherwise both alias entries
+	// the next caller will read and keep the whole backing array alive.
+	//
+	// Service.Labels is a map, so the element copy alone would still hand out
+	// a reference into the cache; it is cloned so a caller mutating the
+	// returned labels cannot corrupt what the next TTL's worth of requests
+	// see. The remaining fields are values and need no deep copy.
+	out := make([]ServiceCriticality, len(ranked))
+	copy(out, ranked)
+	for i := range out {
+		if out[i].Service.Labels == nil {
+			continue
+		}
+		labels := make(map[string]string, len(out[i].Service.Labels))
+		for k, v := range out[i].Service.Labels {
+			labels[k] = v
+		}
+		out[i].Service.Labels = labels
+	}
+	return out, nil
+}
+
+// rankedCriticality returns the full blast-radius ranking, recomputing it
+// only when the memoized copy has aged past criticalityTTL.
+//
+// The lock is held across the computation so a burst of concurrent requests
+// produces one recomputation rather than one per request - the stampede this
+// cache exists to prevent.
+//
+// The tradeoff is that the topology read happens under the lock too, so a slow
+// or hung store serializes every criticality request behind it for as long as
+// that query takes. Accepted deliberately: the alternative (compute outside
+// the lock) lets exactly the concurrent load this guards against each start
+// its own O(N*(N+E)) traversal. Waiting is bounded by the caller's context
+// rather than by that query, so a cancelled or timed-out request gives up
+// instead of queueing behind it.
+func (ts *TopologyService) rankedCriticality(ctx context.Context) ([]ServiceCriticality, error) {
+	select {
+	case ts.criticalityLock <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-ts.criticalityLock }()
+
+	if ts.criticalityRanked != nil && time.Since(ts.criticalityAt) < criticalityTTL {
+		return ts.criticalityRanked, nil
+	}
+
+	topo, err := ts.store.GetTopology(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getting topology: %w", err)
+	}
+
 	byEndpoint := buildImpactIndex(topo.Connections, ImpactUpstream)
+
+	known := make(map[string]bool, len(topo.Services))
+	for _, svc := range topo.Services {
+		known[svc.ID] = true
+	}
 
 	ranked := make([]ServiceCriticality, 0, len(topo.Services))
 	for _, svc := range topo.Services {
 		visited, _ := impactBFS(svc.ID, byEndpoint, ImpactUpstream, maxImpactDepth)
 		ranked = append(ranked, ServiceCriticality{
 			Service:     svc,
-			BlastRadius: len(visited) - 1, // exclude the seed itself
+			BlastRadius: realReachedCount(visited, known, svc.ID),
 		})
 	}
 
@@ -510,8 +703,14 @@ func (ts *TopologyService) GetCriticality(ctx context.Context, limit int) ([]Ser
 		return ranked[i].Service.ID < ranked[j].Service.ID // stable tie-break
 	})
 
-	if len(ranked) > limit {
-		ranked = ranked[:limit]
+	// An empty ranking is not cached. Caching it would pin "nothing to rank"
+	// for a full TTL on a backend that has only just started discovering
+	// services - the same first-run trap as the history range - and there is
+	// nothing to protect here anyway: the traversal this cache exists to
+	// throttle is O(0) when there are no services.
+	if len(ranked) > 0 {
+		ts.criticalityRanked = ranked
+		ts.criticalityAt = time.Now()
 	}
 	return ranked, nil
 }
@@ -626,16 +825,22 @@ func (ts *TopologyService) GetHistoryBounds(ctx context.Context) (bounds storage
 }
 
 // GetStaleServices returns decommission candidates: services whose most
-// recent observation is older than olderThan. A non-positive olderThan
-// falls back to the storage default retention window.
-func (ts *TopologyService) GetStaleServices(ctx context.Context, olderThan time.Duration) ([]storage.ServiceInterval, error) {
+// recent observation is older than olderThan, at most limit of them. A
+// non-positive olderThan falls back to staleThreshold; a non-positive limit
+// means no limit.
+//
+// An explicitly requested olderThan is honoured as given, even beyond the
+// retention window - that is the caller's stated question, and answering a
+// different one silently would be worse than returning the empty set they
+// asked for. Only the default is derived from retention.
+func (ts *TopologyService) GetStaleServices(ctx context.Context, olderThan time.Duration, limit int) ([]storage.ServiceInterval, error) {
 	if !ts.historyEnabled {
 		return nil, ErrHistoryDisabled
 	}
 	if olderThan <= 0 {
-		olderThan = storage.DefaultHistoryRetention
+		olderThan = ts.staleThreshold()
 	}
-	return ts.store.History().StaleServices(ctx, time.Now().Add(-olderThan), 0)
+	return ts.store.History().StaleServices(ctx, time.Now().Add(-olderThan), limit)
 }
 
 // TopologyDiff is the set difference between the topology at two instants:
@@ -657,6 +862,24 @@ type TopologyDiff struct {
 func (ts *TopologyService) GetTopologyDiff(ctx context.Context, from, to time.Time) (*TopologyDiff, error) {
 	if !ts.historyEnabled {
 		return nil, ErrHistoryDisabled
+	}
+	// Bounded by retention, not an arbitrary constant: a span wider than what
+	// the store still holds does four interval queries' worth of work to
+	// answer a question the prune has already made unanswerable for the part
+	// outside the window. This is also what keeps the endpoint's cost bounded
+	// for an unauthenticated caller - see the public-endpoint cost analysis in
+	// CODE-REVIEW-FINDINGS.md (O5).
+	//
+	// The cap is 2x retention, not 1x: pruning runs on its own interval
+	// (PRUNE_INTERVAL), not continuously, so the oldest data actually present
+	// can lag "now - retention" by up to one prune cycle. At a short
+	// HISTORY_RETENTION that slop is proportionally large (a 5m default prune
+	// interval is half of a 10m retention), so a 1x cap would reject the
+	// legitimate "diff against the oldest data we still have" request the UI
+	// makes by default. 2x keeps a hard bound while absorbing that slop at any
+	// configured retention.
+	if to.Sub(from) > 2*ts.historyRetention {
+		return nil, ErrDiffRangeTooLarge
 	}
 
 	fromSvc, err := ts.store.History().ServicesAt(ctx, from, ts.historyMaxGap)

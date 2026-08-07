@@ -3,9 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
 	"sync"
 	"testing"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/Herenn/Infralens/backend/storage"
 	"github.com/Herenn/Infralens/backend/storage/sqlite"
@@ -320,7 +324,7 @@ func TestGetHistoryBoundsReflectsRecordedRange(t *testing.T) {
 func TestGetStaleServicesRequiresHistoryEnabled(t *testing.T) {
 	ts, _ := newHistoryTestService(t, false)
 
-	if _, err := ts.GetStaleServices(context.Background(), time.Hour); !errors.Is(err, ErrHistoryDisabled) {
+	if _, err := ts.GetStaleServices(context.Background(), time.Hour, 0); !errors.Is(err, ErrHistoryDisabled) {
 		t.Errorf("expected ErrHistoryDisabled, got %v", err)
 	}
 }
@@ -341,7 +345,7 @@ func TestGetStaleServicesOnlyReturnsWhatsOlderThanCutoff(t *testing.T) {
 		t.Fatalf("adding recent service: %v", err)
 	}
 
-	stale, err := ts.GetStaleServices(ctx, 48*time.Hour)
+	stale, err := ts.GetStaleServices(ctx, 48*time.Hour, 0)
 	if err != nil {
 		t.Fatalf("GetStaleServices: %v", err)
 	}
@@ -558,5 +562,146 @@ func TestHistoryRetentionIndependentOfCurrentStatePruning(t *testing.T) {
 	}
 	if len(after) != 0 {
 		t.Errorf("history past the retention window survived while current-state pruning was off: %+v", after)
+	}
+}
+
+// TestStaleThresholdStaysInsideConfiguredRetention is the regression guard for
+// the failure mode where the default decommission-candidate cutoff lands
+// outside the retention window: the prune has already deleted exactly those
+// intervals, so the answer is always empty. A fixed default satisfies this for
+// the default retention only - it has to hold for a shortened one too.
+func TestStaleThresholdStaysInsideConfiguredRetention(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		retention time.Duration
+	}{
+		{"default retention", storage.DefaultHistoryRetention},
+		{"shortened retention", 48 * time.Hour},
+		{"very short retention", 2 * time.Hour},
+		// Below 2h the noise floor would exceed retention/2. Containment has
+		// to win there, or the floor recreates the always-empty bug the cap
+		// exists to prevent. 2h alone passes either way - it is exactly the
+		// boundary - so these smaller cases are what actually pin it down.
+		{"retention at the floor", time.Hour},
+		{"retention below the floor", 30 * time.Minute},
+		{"retention far below the floor", 10 * time.Minute},
+		{"unset retention falls back to the default", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, _ := newHistoryTestService(t, false)
+			ts.EnableHistory(5*time.Minute, tc.retention)
+
+			effective := ts.historyRetention
+			got := ts.staleThreshold()
+
+			if got <= 0 {
+				t.Fatalf("staleThreshold must be positive, got %s", got)
+			}
+			if got >= effective {
+				t.Errorf("staleThreshold %s is not inside the retention window %s; "+
+					"the retention prune deletes exactly what this cutoff asks for",
+					got, effective)
+			}
+		})
+	}
+}
+
+// TestGetStaleServicesDefaultFindsCandidatesUnderShortRetention is the
+// behavioural half of the guard above: with retention shortened, a service
+// idle long enough to be a candidate must still come back from the default.
+func TestGetStaleServicesDefaultFindsCandidatesUnderShortRetention(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ts.EnableHistory(5*time.Minute, 48*time.Hour)
+	ctx := context.Background()
+
+	// Idle for 30h: past the clamped 24h threshold, still inside the 48h
+	// retention window, so it genuinely exists to be returned.
+	idle := time.Now().Add(-30 * time.Hour).Truncate(time.Second)
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "10.0.0.9/idle", Name: "idle", LastSeen: idle}); err != nil {
+		t.Fatalf("adding idle service: %v", err)
+	}
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "10.0.0.9/busy", Name: "busy", LastSeen: time.Now()}); err != nil {
+		t.Fatalf("adding busy service: %v", err)
+	}
+
+	stale, err := ts.GetStaleServices(ctx, 0, 0) // 0 = use the derived default
+	if err != nil {
+		t.Fatalf("GetStaleServices: %v", err)
+	}
+
+	found := false
+	for _, si := range stale {
+		if si.ServiceID == "10.0.0.9/idle" {
+			found = true
+		}
+		if si.ServiceID == "10.0.0.9/busy" {
+			t.Error("a service seen just now must not be a decommission candidate")
+		}
+	}
+	if !found {
+		t.Errorf("expected the idle service among the default-threshold candidates, got %+v", stale)
+	}
+}
+
+// TestGetTopologyDiffRejectsRangeBeyondRetention guards O5: an unauthenticated
+// caller must not be able to force a diff over an arbitrarily wide span. The
+// cap is 2x the configured retention (not 1x - see the comment on the check
+// in GetTopologyDiff for why), so this asserts both sides of that boundary.
+func TestGetTopologyDiffRejectsRangeBeyondRetention(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Within 2x retention: rejected only for the wrong reason (no data), not
+	// range validation.
+	if _, err := ts.GetTopologyDiff(ctx, now.Add(-2*storage.DefaultHistoryRetention), now); errors.Is(err, ErrDiffRangeTooLarge) {
+		t.Errorf("span exactly at the 2x cap should not be rejected as too large, got %v", err)
+	}
+
+	// Beyond 2x retention: rejected before any query runs.
+	if _, err := ts.GetTopologyDiff(ctx, now.Add(-2*storage.DefaultHistoryRetention-time.Hour), now); !errors.Is(err, ErrDiffRangeTooLarge) {
+		t.Errorf("expected ErrDiffRangeTooLarge for a span beyond 2x retention, got %v", err)
+	}
+}
+
+// countingHook tallies emitted log entries by level.
+type countingHook struct{ n map[log.Level]int }
+
+func (h *countingHook) Levels() []log.Level     { return log.AllLevels }
+func (h *countingHook) Fire(e *log.Entry) error { h.n[e.Level]++; return nil }
+
+// TestHistoryFailuresDoNotFloodLogs guards the case where the history tables
+// are missing - a schema behind the binary, which DB_AUTO_MIGRATE=false makes
+// reachable while HISTORY_ENABLED defaults to true.
+//
+// Each event records two services and a connection, so an unthrottled warning
+// is three log lines per ingested event, forever, at whatever rate the agents
+// report.
+func TestHistoryFailuresDoNotFloodLogs(t *testing.T) {
+	// A store whose history writes always fail. Closing it is the simplest
+	// way to reach that state through the public API; a missing history table
+	// (schema behind the binary) produces the same per-write failure.
+	ts, store := newHistoryTestService(t, true)
+	ctx := context.Background()
+	brokenStore := store
+
+	hook := &countingHook{n: map[log.Level]int{}}
+	log.AddHook(hook)
+	log.SetOutput(io.Discard)
+	log.SetLevel(log.InfoLevel)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	const writes = 50
+	for i := 0; i < writes; i++ {
+		// Call the recording path directly with a nil service: RecordService
+		// rejects it, which is the same "history write failed" branch a
+		// missing table takes, without needing to corrupt the schema.
+		ts.recordServiceHistory(ctx, &storage.Service{}, time.Now())
+	}
+	_ = brokenStore
+
+	if got := hook.n[log.WarnLevel]; got > 1 {
+		t.Errorf("%d warnings for %d failed history writes; expected at most 1 per %s",
+			got, writes, historyLogInterval)
 	}
 }

@@ -1045,6 +1045,161 @@ func TestHandleGetStaleServices_ReturnsOnlyOldServices(t *testing.T) {
 	}
 }
 
+// The UI requests this endpoint with no olderThan, so the default has to
+// return something. It previously defaulted to the history retention window,
+// which asks for exactly the intervals the retention prune has already
+// deleted - always an empty list.
+func TestHandleGetStaleServices_DefaultThresholdFindsCandidates(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+
+	// Idle long enough to be a candidate, but still well inside the history
+	// retention window, so it is genuinely present to be returned.
+	idle := time.Now().Add(-14 * 24 * time.Hour)
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: "idle-svc", Name: "idle", LastSeen: idle}); err != nil {
+		t.Fatalf("adding idle service: %v", err)
+	}
+	if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: "busy-svc", Name: "busy", LastSeen: time.Now()}); err != nil {
+		t.Fatalf("adding busy service: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/stale", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp []handlers.StaleServiceResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 1 || resp[0].ID != "idle-svc" {
+		t.Errorf("expected the default threshold to return exactly [idle-svc], got %+v", resp)
+	}
+}
+
+func TestHandleGetStaleServices_LimitCapsResults(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+
+	idle := time.Now().Add(-14 * 24 * time.Hour)
+	for _, id := range []string{"idle-a", "idle-b", "idle-c"} {
+		if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: id, Name: id, LastSeen: idle}); err != nil {
+			t.Fatalf("adding %s: %v", id, err)
+		}
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/stale?limit=2", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp []handlers.StaleServiceResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Errorf("expected limit=2 to cap the response at 2, got %d", len(resp))
+	}
+
+	bad := httptest.NewRequest("GET", "/api/v1/topology/history/stale?limit=0", nil)
+	badRR := httptest.NewRecorder()
+	ts.router.ServeHTTP(badRR, bad)
+	if badRR.Code != http.StatusBadRequest {
+		t.Errorf("expected limit=0 to be rejected, got %d", badRR.Code)
+	}
+}
+
+func TestHandleGetTopologyDiff_RejectsReversedRange(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+
+	// Escaped, not interpolated raw: an RFC 3339 timestamp in a non-UTC zone
+	// ends in a "+HH:MM" offset, and a literal "+" in a query string decodes
+	// to a space. Unescaped, these would fail to parse and the handler would
+	// return 400 for the wrong reason - making this test pass whether or not
+	// the ordering check it is meant to cover exists at all.
+	from := url.QueryEscape(time.Now().Format(time.RFC3339))
+	to := url.QueryEscape(time.Now().Add(-time.Hour).Format(time.RFC3339))
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+from+"&to="+to, nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected a reversed range to be rejected, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// The same two instants the right way round must be accepted, so the
+	// assertion above can only be satisfied by the ordering check.
+	ok := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+to+"&to="+from, nil)
+	okRR := httptest.NewRecorder()
+	ts.router.ServeHTTP(okRR, ok)
+	if okRR.Code != http.StatusOK {
+		t.Errorf("expected a correctly ordered range to be accepted, got %d: %s", okRR.Code, okRR.Body.String())
+	}
+}
+
+// TestHandleGetTopologyDiff_RejectsRangeBeyondRetention guards O5: an
+// unauthenticated caller must not be able to force /history/diff to run its
+// four interval queries over an arbitrarily wide span.
+func TestHandleGetTopologyDiff_RejectsRangeBeyondRetention(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	now := time.Now()
+
+	from := url.QueryEscape(now.Add(-2*storage.DefaultHistoryRetention - time.Hour).Format(time.RFC3339))
+	to := url.QueryEscape(now.Format(time.RFC3339))
+
+	req := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+from+"&to="+to, nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected a span beyond 2x retention to be rejected, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// A span within the cap must still be accepted, so the assertion above can
+	// only be satisfied by the range check.
+	okFrom := url.QueryEscape(now.Add(-time.Hour).Format(time.RFC3339))
+	ok := httptest.NewRequest("GET", "/api/v1/topology/history/diff?from="+okFrom+"&to="+to, nil)
+	okRR := httptest.NewRecorder()
+	ts.router.ServeHTTP(okRR, ok)
+	if okRR.Code != http.StatusOK {
+		t.Errorf("expected a 1-hour span to be accepted, got %d: %s", okRR.Code, okRR.Body.String())
+	}
+}
+
+func TestHandleGetOrphans_LimitCapsResults(t *testing.T) {
+	ts := newTestServer(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"orphan-a", "orphan-b", "orphan-c"} {
+		if err := ts.topology.AddOrUpdateService(ctx, &storage.Service{ID: id, Name: id, LastSeen: time.Now()}); err != nil {
+			t.Fatalf("adding %s: %v", id, err)
+		}
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/graph/orphans?limit=2", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp []handlers.ServiceResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Errorf("expected limit=2 to cap the response at 2, got %d", len(resp))
+	}
+}
+
 // =============================================================================
 // Helper to read response body
 // =============================================================================

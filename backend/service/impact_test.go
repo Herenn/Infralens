@@ -321,3 +321,42 @@ func TestGetOrphanServices_CountsPhantomEdgesAsIsolated(t *testing.T) {
 			"edge points at a service that does not exist renders isolated", got)
 	}
 }
+
+// TestGetCriticality_IgnoresPhantomEndpoints is the regression guard for a
+// blast radius counting services that don't exist.
+//
+// A connection can outlive its endpoints: UpdateStats refreshes a
+// connection's last_seen from throughput reports, while only a connect/accept
+// event refreshes a service's, so a busy long-lived connection keeps itself
+// alive while its endpoints age out and are pruned. Counting those phantoms
+// inflated the ranking - and could report a blast radius larger than the
+// total number of services.
+func TestGetCriticality_IgnoresPhantomEndpoints(t *testing.T) {
+	ts := newImpactTestService(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "real-target", Name: "db", LastSeen: now}); err != nil {
+		t.Fatalf("adding service: %v", err)
+	}
+	for _, ghost := range []string{"ghost-1", "ghost-2", "ghost-3"} {
+		if err := ts.AddConnection(ctx, &storage.Connection{
+			ID: ghost + "->real-target", SourceID: ghost, TargetID: "real-target",
+			Port: 5432, Protocol: "tcp", LastSeen: now,
+		}); err != nil {
+			t.Fatalf("adding connection from %s: %v", ghost, err)
+		}
+	}
+
+	ranked, err := ts.GetCriticality(ctx, 10)
+	if err != nil {
+		t.Fatalf("GetCriticality: %v", err)
+	}
+	if len(ranked) != 1 {
+		t.Fatalf("expected 1 ranked service, got %d", len(ranked))
+	}
+	if ranked[0].BlastRadius != 0 {
+		t.Errorf("blast radius = %d, want 0: none of the three callers exist as services",
+			ranked[0].BlastRadius)
+	}
+}
