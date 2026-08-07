@@ -71,8 +71,16 @@ func DefaultAuthConfig() AuthConfig {
 			"/api/v1/ai/providers",
 		},
 		SkipPrefixes: []string{
-			// Only to cover /api/v1/services/{id}. The trailing slash matters:
-			// without it this would also exempt e.g. /api/v1/services-admin.
+			// Covers the per-service read endpoints: /api/v1/services/{id} and
+			// /api/v1/services/{id}/impact. Service IDs contain literal "/"
+			// (e.g. "10.0.1.10/nginx"), so these can't be enumerated as exact
+			// paths the way the entries above are.
+			//
+			// Being a prefix, this exempts anything mounted under
+			// /api/v1/services/ - including routes that don't exist yet. Only
+			// add public reads there; anything privileged needs its own path.
+			// The trailing slash matters: without it this would also exempt
+			// e.g. /api/v1/services-admin.
 			"/api/v1/services/",
 		},
 	}

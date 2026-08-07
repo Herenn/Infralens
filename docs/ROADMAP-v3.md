@@ -146,12 +146,15 @@ release cycle.
 
 Store topology over time instead of overwriting current state.
 
-- Time-bucketed connection/service observations rather than a single mutable
-  row per entity, with rollups (1m → 5m → 1h) so retention is bounded without
-  losing shape.
-- Retention policy that is a *policy*, not a `DELETE` — configurable window,
-  downsampling rather than deletion.
-- `GET /api/v1/topology?at=<timestamp>` and `?from=&to=`.
+- Interval-based service/connection observations (`[first_seen, last_seen]`
+  rows, extended in place while still active) rather than bucketed rollups —
+  write volume tracks how often the architecture *changes*, not how often
+  agents report, which is what keeps this viable on SQLite without needing
+  1m/5m/1h downsampling.
+- Retention policy that is a *policy*, not a bare `DELETE` — configurable
+  window (`HISTORY_RETENTION`), independent of current-state pruning.
+- `GET /api/v1/topology?at=<timestamp>`. (`?from=&to=` was scaffolded at the
+  storage layer but not wired up to an endpoint — deferred.)
 - A timeline scrubber in the UI. Dragging it re-renders the graph at that
   moment. This is the demo that sells the release.
 
@@ -165,8 +168,11 @@ This is mostly backend, schema, and UI work — all domains this codebase
 already handles well, which is exactly why it fits the window.
 
 **Watch out for:** write amplification. The agent reports every second per
-node; naive per-sample rows will not survive a real cluster. Design the
-bucketing before writing the migration, not after.
+node; naive per-sample rows will not survive a real cluster. The interval
+model avoids this by construction (a re-observed entity extends its existing
+row instead of inserting a new one) — but get the concurrent-write path right
+before writing the migration, not after; two racing writers extending the
+same interval is exactly where that guarantee breaks first.
 
 ### 2. Change detection & alerting — the feature that determines adoption
 
@@ -201,6 +207,32 @@ running this on a real company network.
   everything.
 - Remove the read endpoints from the auth skip list once the UI can
   authenticate — this is the change that closes the v2.1 known limitation.
+
+**Decision for v3.0.0: not shipping in this release.** Auth/sessions/RBAC did
+not land in the v3.0.0 branch. Worse than simply missing, the branch *widens*
+the unauthenticated surface: `?at=`, `/history/diff`, `/history/stale`,
+`/services/{id}/impact`, and `/graph/orphans` are all new, all public, and the
+history endpoints expose up to `HISTORY_RETENTION` (30 days by default) of
+past topology — namespaces, node names, pod IPs, and labels included. That is
+strictly more than the v2.1 known limitation this section describes.
+
+This is a conscious call for v3.0.0, not an oversight, made for two reasons:
+first, it is consistent with the existing, already-public `/topology` and the
+WebSocket — a partial fix (auth on the five new endpoints only, nothing else)
+would be inconsistent rather than safer, and a full fix requires the shipped
+frontend to gain a login flow and a way to send a credential on every read,
+which is a real feature, not a bounded fix; second, mitigations that reduce
+the actual exposure did ship this release — `/history/diff` rejects a span
+over 2x `HISTORY_RETENTION`, and `/graph/orphans`/`/history/stale` are
+limit-capped — so the *cost* of leaving this open is bounded even though the
+*exposure* is not closed.
+
+**This is not closed by v3.0.0 and must not be allowed to go quiet again.**
+Track it explicitly as the first item for the release after v3.0.0 (v3.1 or
+v4, whichever comes first) rather than letting "documented tradeoff" become
+permanent by default. Anyone deploying v3.0.0 on a network they don't fully
+trust should put it behind a reverse-proxy auth layer (or `ALLOW_NO_AUTH`'s
+existing ingestion-key gate extended manually) until this ships properly.
 
 ### 4. Real latency measurement (small, high visible value)
 
