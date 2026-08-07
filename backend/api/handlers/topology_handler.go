@@ -38,7 +38,7 @@ func (h *TopologyHandler) HandleGetTopology(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(convertTopologyToResponse(topology))
+		json.NewEncoder(w).Encode(convertTopologyToResponse(topology, true))
 		return
 	}
 
@@ -59,7 +59,7 @@ func (h *TopologyHandler) HandleGetTopology(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(convertTopologyToResponse(topology))
+	json.NewEncoder(w).Encode(convertTopologyToResponse(topology, false))
 }
 
 // HandleGetHistoryRange returns the earliest and latest instants covered by
@@ -249,7 +249,7 @@ func (h *TopologyHandler) HandleGetImpact(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(convertTopologyToResponse(topology))
+	json.NewEncoder(w).Encode(convertTopologyToResponse(topology, true))
 }
 
 // HandleGetServices returns all services.
@@ -264,7 +264,7 @@ func (h *TopologyHandler) HandleGetServices(w http.ResponseWriter, r *http.Reque
 	// Convert to response format
 	response := make([]ServiceResponse, 0, len(services))
 	for _, svc := range services {
-		response = append(response, convertServiceToResponse(svc))
+		response = append(response, convertServiceToResponse(svc, true))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -287,7 +287,7 @@ func (h *TopologyHandler) HandleGetService(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	response := convertServiceToResponse(*svc)
+	response := convertServiceToResponse(*svc, true)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -384,7 +384,7 @@ func (h *TopologyHandler) HandleGetOrphans(w http.ResponseWriter, r *http.Reques
 
 	response := make([]ServiceResponse, 0, len(orphans))
 	for _, svc := range orphans {
-		response = append(response, convertServiceToResponse(svc))
+		response = append(response, convertServiceToResponse(svc, true))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -415,7 +415,7 @@ type ServiceResponse struct {
 	PodIP        string            `json:"pod_ip,omitempty"`
 	Labels       map[string]string `json:"labels,omitempty"`
 	LastSeen     string            `json:"last_seen"`
-	Healthy      bool              `json:"healthy"`
+	Healthy      *bool             `json:"healthy,omitempty"`
 }
 
 // ConnectionResponse is the connection format expected by the frontend.
@@ -476,10 +476,13 @@ type MetricsResponse struct {
 
 // Conversion functions
 
-func convertTopologyToResponse(t *storage.Topology) TopologyResponse {
+// convertTopologyToResponse renders a topology. healthKnown is false for
+// topologies rebuilt from history: intervals do not record health, so the
+// field is omitted rather than invented. See convertServiceToResponse.
+func convertTopologyToResponse(t *storage.Topology, healthKnown bool) TopologyResponse {
 	services := make([]ServiceResponse, 0, len(t.Services))
 	for _, svc := range t.Services {
-		services = append(services, convertServiceToResponse(svc))
+		services = append(services, convertServiceToResponse(svc, healthKnown))
 	}
 
 	connections := make([]ConnectionResponse, 0, len(t.Connections))
@@ -500,7 +503,18 @@ func convertTopologyToResponse(t *storage.Topology) TopologyResponse {
 	}
 }
 
-func convertServiceToResponse(svc storage.Service) ServiceResponse {
+// convertServiceToResponse renders a service. When healthKnown is false the
+// `healthy` field is omitted entirely: a service reconstructed from a history
+// interval carries no health information, and reporting it as healthy would be
+// inventing data - every service in every past topology would look fine
+// regardless of what was actually happening at the time. Consumers already
+// treat a missing value as healthy, so omitting it changes no rendering.
+func convertServiceToResponse(svc storage.Service, healthKnown bool) ServiceResponse {
+	var healthy *bool
+	if healthKnown {
+		h := svc.Healthy
+		healthy = &h
+	}
 	return ServiceResponse{
 		ID:           svc.ID,
 		Name:         svc.Name,
@@ -514,7 +528,7 @@ func convertServiceToResponse(svc storage.Service) ServiceResponse {
 		PodIP:        svc.PodIP,
 		Labels:       svc.Labels,
 		LastSeen:     svc.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
-		Healthy:      svc.Healthy,
+		Healthy:      healthy,
 	}
 }
 
@@ -561,11 +575,11 @@ type TopologyDiffResponse struct {
 func convertTopologyDiffToResponse(d *service.TopologyDiff) TopologyDiffResponse {
 	addedSvc := make([]ServiceResponse, 0, len(d.AddedServices))
 	for _, svc := range d.AddedServices {
-		addedSvc = append(addedSvc, convertServiceToResponse(svc))
+		addedSvc = append(addedSvc, convertServiceToResponse(svc, false))
 	}
 	removedSvc := make([]ServiceResponse, 0, len(d.RemovedServices))
 	for _, svc := range d.RemovedServices {
-		removedSvc = append(removedSvc, convertServiceToResponse(svc))
+		removedSvc = append(removedSvc, convertServiceToResponse(svc, false))
 	}
 	addedConn := make([]ConnectionResponse, 0, len(d.AddedConnections))
 	for _, conn := range d.AddedConnections {
