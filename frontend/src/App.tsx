@@ -46,6 +46,10 @@ type AppEdge = Edge<any>
 // depths, in one session.
 const IMPACT_DEPTH = 20
 
+// How often the recorded-history window is refreshed. Slow: it only bounds a
+// timeline control, and the data behind it moves on the scale of minutes.
+const HISTORY_RANGE_POLL_INTERVAL = 30000
+
 const nodeTypes = {
   service: ServiceNode,
   server: ServerNode,
@@ -251,6 +255,9 @@ function App() {
   const lastLayoutTimeRef = useRef<number>(0)
   const storedPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map())
   const MIN_LAYOUT_INTERVAL = 5000 // Minimum 5 seconds between layouts
+  // Which instant the last layout was built from, so a switch between live
+  // and historical topology can bypass the debounce above.
+  const prevTimelineAtRef = useRef<string | null>(null)
 
   const { topology, isConnected } = useWebSocket()
 
@@ -265,18 +272,36 @@ function App() {
 
   const activeTopology = timelineAt ? historicalTopology : topology
 
+  // Polled, not fetched once. On a fresh deployment history is empty at page
+  // load, so a single fetch leaves `historyRange` null forever - and every
+  // history control is gated on it, so the whole feature would stay invisible
+  // until someone happened to reload. Polling also keeps `latest` from going
+  // stale as new history accumulates during a long-lived session.
   useEffect(() => {
     let cancelled = false
-    fetch(apiUrl('/api/v1/topology/history/range'))
-      .then(res => (res.ok ? res.json() : null))
-      .then((data: { earliest: string | null; latest: string | null } | null) => {
-        if (cancelled || !data?.earliest || !data?.latest) return
-        setHistoryRange({ earliest: data.earliest, latest: data.latest })
-      })
-      .catch(() => {
-        // History disabled or unreachable - the scrubber just stays hidden.
-      })
-    return () => { cancelled = true }
+
+    const loadRange = () => {
+      fetch(apiUrl('/api/v1/topology/history/range'))
+        .then(res => (res.ok ? res.json() : null))
+        .then((data: { earliest: string | null; latest: string | null } | null) => {
+          if (cancelled || !data?.earliest || !data?.latest) return
+          // Only replace the object when a bound actually moved. A fresh
+          // object every poll would re-render the timeline controls on a 30s
+          // pulse for no reason, since the value is usually unchanged.
+          setHistoryRange(prev =>
+            prev && prev.earliest === data.earliest && prev.latest === data.latest
+              ? prev
+              : { earliest: data.earliest!, latest: data.latest! }
+          )
+        })
+        .catch(() => {
+          // History disabled or unreachable - the scrubber just stays hidden.
+        })
+    }
+
+    loadRange()
+    const timer = window.setInterval(loadRange, HISTORY_RANGE_POLL_INTERVAL)
+    return () => { cancelled = true; window.clearInterval(timer) }
   }, [])
 
   useEffect(() => {
@@ -437,7 +462,17 @@ function App() {
     
     // Also check minimum time since last layout (debounce)
     const now = Date.now()
-    const canLayout = now - lastLayoutTimeRef.current > MIN_LAYOUT_INTERVAL
+    // The debounce exists to stop live WebSocket churn re-laying out the graph
+    // constantly. It must not apply when the topology *source* changes (live
+    // <-> historical, or a different instant): those produce a wholly
+    // different node set exactly once, and the fallback path below only
+    // updates data on existing nodes - it can neither add nor remove any. In
+    // live mode a dropped layout self-heals on the next flush a second later;
+    // in historical mode nothing further arrives, so it would stay wrong until
+    // the user changed something else.
+    const sourceChanged = timelineAt !== prevTimelineAtRef.current
+    const canLayout = sourceChanged || now - lastLayoutTimeRef.current > MIN_LAYOUT_INTERVAL
+    prevTimelineAtRef.current = timelineAt
 
     if (structureChanged && canLayout) {
       // Structure changed - run full layout
@@ -500,7 +535,7 @@ function App() {
         connections: activeTopology.connections.length,
       })
     }
-  }, [filteredTopology, filters, activeTopology, setNodes, setEdges])
+  }, [filteredTopology, filters, activeTopology, timelineAt, setNodes, setEdges])
 
   // Custom nodes change handler that saves positions when dragged
   const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
@@ -584,6 +619,12 @@ function App() {
   const onPaneClick = useCallback(() => {
     setDrawerOpen(false)
     setSelectedServiceId(null)
+    // Clearing the impact view here matters: its only other affordance is
+    // re-clicking the same direction button on the same service, inside the
+    // drawer. Dismiss the drawer without that and the graph stays dimmed with
+    // no visible way back - and because impact takes priority over search
+    // highlighting (see highlightIds), search would appear broken too.
+    setImpactRoot(null)
   }, [])
 
   // Update edge highlighting when selection changes
@@ -829,7 +870,7 @@ function App() {
       {/* Service Details Drawer */}
       <ServiceDrawer
         isOpen={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        onClose={() => { setDrawerOpen(false); setImpactRoot(null) }}
         service={selectedNode.service}
         connections={filteredTopology?.connections || activeTopology?.connections || []}
         ports={selectedNode.ports}
