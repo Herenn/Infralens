@@ -379,16 +379,23 @@ func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, dire
 
 	services := make([]storage.Service, 0, len(visited))
 	for id := range visited {
-		// A connection can reference an endpoint that has aged out of the
-		// current services table (e.g. one side just went stale) while the
-		// edge itself hasn't been pruned yet - skip rather than emit a
-		// zero-value Service for it.
+		// A connection can reference an endpoint that is not in the services
+		// table - see realReachedCount for why that is routine rather than
+		// exceptional. Skip rather than emit a zero-value Service for it.
 		if svc, ok := svcByID[id]; ok {
 			services = append(services, svc)
 		}
 	}
+	// Edges are filtered to match. Emitting an edge whose endpoint was just
+	// dropped above would hand back a graph referencing nodes it doesn't
+	// contain, which anything that renders the response has to special-case.
 	connections := make([]storage.Connection, 0, len(reachedConns))
 	for _, conn := range reachedConns {
+		_, haveSource := svcByID[conn.SourceID]
+		_, haveTarget := svcByID[conn.TargetID]
+		if !haveSource || !haveTarget {
+			continue
+		}
 		connections = append(connections, conn)
 	}
 
@@ -509,8 +516,25 @@ func (ts *TopologyService) GetOrphanServices(ctx context.Context) ([]storage.Ser
 		return nil, fmt.Errorf("getting topology: %w", err)
 	}
 
+	known := make(map[string]bool, len(topo.Services))
+	for _, svc := range topo.Services {
+		known[svc.ID] = true
+	}
+
+	// An edge only counts as connecting something if both of its endpoints
+	// exist. A connection pointing at a service that is gone draws nothing on
+	// the graph, so a service whose only edge is one of those looks isolated -
+	// and is exactly the "leftover" this panel is meant to surface. Counting it
+	// as connected made the panel disagree with the picture beside it.
+	//
+	// Reachable in normal operation: throughput reports refresh a connection's
+	// last_seen while only connect/accept refreshes a service's, so a peer can
+	// be pruned out from under a still-live edge (see realReachedCount).
 	connected := make(map[string]bool, len(topo.Connections)*2)
 	for _, conn := range topo.Connections {
+		if !known[conn.SourceID] || !known[conn.TargetID] {
+			continue
+		}
 		connected[conn.SourceID] = true
 		connected[conn.TargetID] = true
 	}
@@ -546,11 +570,37 @@ func (ts *TopologyService) GetTopologyAt(ctx context.Context, at time.Time) (*st
 		return nil, fmt.Errorf("querying connections at %s: %w", at, err)
 	}
 
+	services := servicesFromIntervals(svcIntervals)
 	return &storage.Topology{
-		Services:    servicesFromIntervals(svcIntervals),
-		Connections: connectionsFromIntervals(connIntervals),
+		Services:    services,
+		Connections: edgesWithinServices(connectionsFromIntervals(connIntervals), services),
 		UpdatedAt:   at,
 	}, nil
+}
+
+// edgesWithinServices drops connections whose endpoints are not among the
+// given services, so a reconstructed topology is a coherent graph rather than
+// one referencing nodes it does not contain.
+//
+// The two interval tables are queried independently and can legitimately
+// disagree at an instant: an edge may be observed before its endpoints are
+// fingerprinted, and retention prunes each table on its own rows - a service's
+// newest interval can end before its connection's, because throughput reports
+// refresh a connection's last_seen while only connect/accept events refresh a
+// service's. Consumers cannot draw an edge with no node, and App.tsx wraps
+// layout in a try/catch that would swallow the failure silently.
+func edgesWithinServices(conns []storage.Connection, services []storage.Service) []storage.Connection {
+	present := make(map[string]bool, len(services))
+	for _, svc := range services {
+		present[svc.ID] = true
+	}
+	out := make([]storage.Connection, 0, len(conns))
+	for _, c := range conns {
+		if present[c.SourceID] && present[c.TargetID] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // GetHistoryBounds returns the earliest and latest instants covered by

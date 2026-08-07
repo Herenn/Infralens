@@ -247,3 +247,77 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestGetImpact_OmitsEdgesToMissingEndpoints: services absent from the
+// current topology are already dropped from the response, so the edges that
+// reach them must go too - otherwise the returned graph references nodes it
+// does not contain.
+func TestGetImpact_OmitsEdgesToMissingEndpoints(t *testing.T) {
+	ts := newImpactTestService(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: "target", Name: "db", LastSeen: now}); err != nil {
+		t.Fatalf("adding service: %v", err)
+	}
+	if err := ts.AddConnection(ctx, &storage.Connection{
+		ID: "ghost->target", SourceID: "ghost", TargetID: "target",
+		Port: 5432, Protocol: "tcp", LastSeen: now,
+	}); err != nil {
+		t.Fatalf("adding connection: %v", err)
+	}
+
+	topo, err := ts.GetImpact(ctx, "target", ImpactUpstream, 5)
+	if err != nil {
+		t.Fatalf("GetImpact: %v", err)
+	}
+	if got := serviceIDs(topo); !equalStrings(got, []string{"target"}) {
+		t.Errorf("services = %v, want [target]", got)
+	}
+	if len(topo.Connections) != 0 {
+		t.Errorf("connections = %+v, want none: the only edge points at a service not in the response",
+			topo.Connections)
+	}
+}
+
+// TestGetOrphanServices_CountsPhantomEdgesAsIsolated pins the orphans panel to
+// what the graph actually draws.
+//
+// The graph renders a node per service and an edge per connection, so an edge
+// whose other endpoint has no service row draws nothing. A service holding
+// only such an edge appears isolated on screen; it used to be excluded from
+// the list that claims to enumerate exactly that.
+func TestGetOrphanServices_CountsPhantomEdgesAsIsolated(t *testing.T) {
+	ts := newImpactTestService(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, id := range []string{"truly-alone", "looks-connected"} {
+		if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: id, Name: id, LastSeen: now}); err != nil {
+			t.Fatalf("adding %s: %v", id, err)
+		}
+	}
+	// Its only peer has no service row.
+	if err := ts.AddConnection(ctx, &storage.Connection{
+		ID: "looks-connected->ghost", SourceID: "looks-connected", TargetID: "ghost",
+		Port: 80, Protocol: "tcp", LastSeen: now,
+	}); err != nil {
+		t.Fatalf("adding phantom edge: %v", err)
+	}
+	// A real pair, to prove genuinely connected services are still excluded.
+	addChain(t, ts, "web", "db")
+
+	orphans, err := ts.GetOrphanServices(ctx)
+	if err != nil {
+		t.Fatalf("GetOrphanServices: %v", err)
+	}
+	got := make([]string, 0, len(orphans))
+	for _, o := range orphans {
+		got = append(got, o.ID)
+	}
+	sort.Strings(got)
+	if !equalStrings(got, []string{"looks-connected", "truly-alone"}) {
+		t.Errorf("orphans = %v, want [looks-connected truly-alone]: a service whose only "+
+			"edge points at a service that does not exist renders isolated", got)
+	}
+}

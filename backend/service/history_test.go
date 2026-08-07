@@ -195,10 +195,18 @@ func TestGetTopologyAtReconstructsPastShape(t *testing.T) {
 	ctx := context.Background()
 
 	past := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
-	if err := ts.AddOrUpdateService(ctx, &storage.Service{
-		ID: "10.0.0.4/db", Name: "db", Type: "database", LastSeen: past,
-	}); err != nil {
-		t.Fatalf("adding service: %v", err)
+	// Both endpoints, as processEvent always records them: it upserts the
+	// source and destination services before the connection between them.
+	// (An earlier version of this fixture recorded only the target, which
+	// produced an edge to a service that never existed - a shape the ingest
+	// path cannot produce, and one GetTopologyAt now filters out.)
+	for _, svc := range []*storage.Service{
+		{ID: "10.0.0.4/api", Name: "api", Type: "web_server", LastSeen: past},
+		{ID: "10.0.0.4/db", Name: "db", Type: "database", LastSeen: past},
+	} {
+		if err := ts.AddOrUpdateService(ctx, svc); err != nil {
+			t.Fatalf("adding service %s: %v", svc.ID, err)
+		}
 	}
 	if err := ts.AddConnection(ctx, &storage.Connection{
 		ID: "10.0.0.4/api->10.0.0.4/db:5432", SourceID: "10.0.0.4/api",
@@ -211,8 +219,8 @@ func TestGetTopologyAtReconstructsPastShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTopologyAt: %v", err)
 	}
-	if len(topo.Services) != 1 || topo.Services[0].ID != "10.0.0.4/db" {
-		t.Errorf("expected the one service present at %s, got %+v", past, topo.Services)
+	if len(topo.Services) != 2 {
+		t.Errorf("expected both services present at %s, got %+v", past, topo.Services)
 	}
 	if len(topo.Connections) != 1 || topo.Connections[0].ID != "10.0.0.4/api->10.0.0.4/db:5432" {
 		t.Errorf("expected the one connection present at %s, got %+v", past, topo.Connections)
@@ -229,8 +237,43 @@ func TestGetTopologyAtReconstructsPastShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTopologyAt (re-query): %v", err)
 	}
-	if len(topo.Services) != 1 {
+	if len(topo.Services) != 2 {
 		t.Errorf("a service added after %s leaked into the reconstruction: got %+v", past, topo.Services)
+	}
+}
+
+// TestGetTopologyAtOmitsEdgesWithMissingEndpoints: a reconstructed topology
+// must be a coherent graph, not one referencing nodes it does not contain.
+//
+// The two interval tables are queried independently and can disagree at an
+// instant - an edge observed before its endpoints are fingerprinted, or a
+// service interval pruned while its connection's survives (throughput reports
+// refresh a connection's last_seen, only connect/accept refreshes a
+// service's). Reached through /history/range in practice: scrubbing to the
+// advertised `earliest` returned 0 services and 1 connection.
+func TestGetTopologyAtOmitsEdgesWithMissingEndpoints(t *testing.T) {
+	ts, store := newHistoryTestService(t, true)
+	ctx := context.Background()
+	at := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
+
+	// An edge recorded straight into history with no endpoint services.
+	if err := store.History().RecordConnection(ctx, &storage.Connection{
+		ID: "ghost-a->ghost-b:80", SourceID: "ghost-a", TargetID: "ghost-b",
+		Port: 80, Protocol: "tcp",
+	}, at, storage.DefaultHistoryMaxGap); err != nil {
+		t.Fatalf("recording connection: %v", err)
+	}
+
+	topo, err := ts.GetTopologyAt(ctx, at)
+	if err != nil {
+		t.Fatalf("GetTopologyAt: %v", err)
+	}
+	if len(topo.Services) != 0 {
+		t.Fatalf("test premise broken: expected no services, got %+v", topo.Services)
+	}
+	if len(topo.Connections) != 0 {
+		t.Errorf("returned %d edge(s) whose endpoints are absent from the same response: %+v",
+			len(topo.Connections), topo.Connections)
 	}
 }
 
