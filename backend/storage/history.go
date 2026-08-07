@@ -61,15 +61,40 @@ type HistoryRepository interface {
 	RecordConnection(ctx context.Context, conn *Connection, at time.Time, maxGap time.Duration) error
 
 	// ServicesAt returns the services present at a point in time.
-	ServicesAt(ctx context.Context, at time.Time) ([]ServiceInterval, error)
+	//
+	// grace extends how long after its last observation an interval still
+	// counts as covering an instant. Without it, nothing is ever "present
+	// now": last_seen is the last time an entity was *observed*, always
+	// slightly in the past, so a strict `last_seen >= at` excludes everything
+	// currently alive. Pass the same maxGap used when recording - that is
+	// already the window within which a sighting extends the open interval
+	// rather than starting a new one, so using it here makes reads agree with
+	// writes about when an interval is still open.
+	ServicesAt(ctx context.Context, at time.Time, grace time.Duration) ([]ServiceInterval, error)
 
-	// ConnectionsAt returns the edges present at a point in time.
-	ConnectionsAt(ctx context.Context, at time.Time) ([]ConnectionInterval, error)
+	// ConnectionsAt returns the edges present at a point in time. See
+	// ServicesAt for grace.
+	ConnectionsAt(ctx context.Context, at time.Time, grace time.Duration) ([]ConnectionInterval, error)
 
-	// ServicesBetween returns service intervals overlapping [from, to].
+	// ServicesBetween returns every service interval overlapping [from, to],
+	// one row per interval.
+	//
+	// Deliberately NOT merged per service: over a window, separate intervals
+	// are the answer. Collapsing them into one spanning row would erase the
+	// gaps - the absences this model exists to record - and report a service
+	// as continuously present across a week it was gone.
+	//
+	// No production caller as of v3 - ?from=&to= on /topology was scaffolded
+	// on top of this but never wired up to an endpoint (see docs/ROADMAP-v3.md
+	// and CODE-REVIEW-FINDINGS.md O20). Kept on the interface anyway: it is
+	// the only way the HistoryRepoSuite test suite can verify raw
+	// interval-splitting behaviour (one row per interval, unmerged) rather
+	// than behaviour that happens to look right through ServicesAt's grace
+	// window. Removing it would weaken that coverage for no correctness gain.
 	ServicesBetween(ctx context.Context, from, to time.Time) ([]ServiceInterval, error)
 
-	// ConnectionsBetween returns connection intervals overlapping [from, to].
+	// ConnectionsBetween returns every connection interval overlapping
+	// [from, to], one row per interval. See ServicesBetween.
 	ConnectionsBetween(ctx context.Context, from, to time.Time) ([]ConnectionInterval, error)
 
 	// DeleteStale removes intervals that ended before the cutoff. Unlike
@@ -85,7 +110,11 @@ type HistoryRepository interface {
 	// last observation is older than `before` - decommission candidates:
 	// things that used to exist and haven't been seen since. One row per
 	// service, its newest interval, not every interval it ever had.
-	StaleServices(ctx context.Context, before time.Time) ([]ServiceInterval, error)
+	//
+	// limit caps the rows returned, oldest first; a non-positive limit means
+	// no cap. It is applied in the query rather than by the caller so a large
+	// cluster's full candidate set is never materialized just to be discarded.
+	StaleServices(ctx context.Context, before time.Time, limit int) ([]ServiceInterval, error)
 }
 
 // mergeServiceIntervals collapses intervals belonging to the same service into

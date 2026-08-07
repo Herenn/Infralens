@@ -31,6 +31,10 @@ type TopologyService struct {
 	// historyMaxGap is how long an entity may go unobserved before its
 	// interval is treated as ended.
 	historyMaxGap time.Duration
+
+	// historyRetention mirrors the window the store prunes history on, so
+	// query defaults derived from it stay inside what actually still exists.
+	historyRetention time.Duration
 }
 
 // NewTopologyService creates a new topology service.
@@ -41,14 +45,22 @@ func NewTopologyService(store storage.Store, eventBus *EventBus) *TopologyServic
 	}
 }
 
-// EnableHistory turns on topology history recording. A non-positive maxGap
-// falls back to the storage default.
-func (ts *TopologyService) EnableHistory(maxGap time.Duration) {
+// EnableHistory turns on topology history recording. Non-positive values fall
+// back to the storage defaults.
+//
+// retention is the same window the store prunes history on. It is needed here,
+// not just at the storage layer, because the decommission-candidate threshold
+// is only meaningful relative to it - see staleThreshold.
+func (ts *TopologyService) EnableHistory(maxGap, retention time.Duration) {
 	if maxGap <= 0 {
 		maxGap = storage.DefaultHistoryMaxGap
 	}
+	if retention <= 0 {
+		retention = storage.DefaultHistoryRetention
+	}
 	ts.historyEnabled = true
 	ts.historyMaxGap = maxGap
+	ts.historyRetention = retention
 }
 
 // recordServiceHistory records a service sighting.
@@ -561,11 +573,11 @@ func (ts *TopologyService) GetTopologyAt(ctx context.Context, at time.Time) (*st
 		return nil, ErrHistoryDisabled
 	}
 
-	svcIntervals, err := ts.store.History().ServicesAt(ctx, at)
+	svcIntervals, err := ts.store.History().ServicesAt(ctx, at, ts.historyMaxGap)
 	if err != nil {
 		return nil, fmt.Errorf("querying services at %s: %w", at, err)
 	}
-	connIntervals, err := ts.store.History().ConnectionsAt(ctx, at)
+	connIntervals, err := ts.store.History().ConnectionsAt(ctx, at, ts.historyMaxGap)
 	if err != nil {
 		return nil, fmt.Errorf("querying connections at %s: %w", at, err)
 	}
@@ -623,7 +635,7 @@ func (ts *TopologyService) GetStaleServices(ctx context.Context, olderThan time.
 	if olderThan <= 0 {
 		olderThan = storage.DefaultHistoryRetention
 	}
-	return ts.store.History().StaleServices(ctx, time.Now().Add(-olderThan))
+	return ts.store.History().StaleServices(ctx, time.Now().Add(-olderThan), 0)
 }
 
 // TopologyDiff is the set difference between the topology at two instants:
@@ -647,19 +659,19 @@ func (ts *TopologyService) GetTopologyDiff(ctx context.Context, from, to time.Ti
 		return nil, ErrHistoryDisabled
 	}
 
-	fromSvc, err := ts.store.History().ServicesAt(ctx, from)
+	fromSvc, err := ts.store.History().ServicesAt(ctx, from, ts.historyMaxGap)
 	if err != nil {
 		return nil, fmt.Errorf("querying services at %s: %w", from, err)
 	}
-	toSvc, err := ts.store.History().ServicesAt(ctx, to)
+	toSvc, err := ts.store.History().ServicesAt(ctx, to, ts.historyMaxGap)
 	if err != nil {
 		return nil, fmt.Errorf("querying services at %s: %w", to, err)
 	}
-	fromConn, err := ts.store.History().ConnectionsAt(ctx, from)
+	fromConn, err := ts.store.History().ConnectionsAt(ctx, from, ts.historyMaxGap)
 	if err != nil {
 		return nil, fmt.Errorf("querying connections at %s: %w", from, err)
 	}
-	toConn, err := ts.store.History().ConnectionsAt(ctx, to)
+	toConn, err := ts.store.History().ConnectionsAt(ctx, to, ts.historyMaxGap)
 	if err != nil {
 		return nil, fmt.Errorf("querying connections at %s: %w", to, err)
 	}

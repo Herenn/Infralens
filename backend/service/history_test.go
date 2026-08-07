@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func newHistoryTestService(t *testing.T, enable bool) (*TopologyService, storage
 
 	ts := NewTopologyService(store, bus)
 	if enable {
-		ts.EnableHistory(5 * time.Minute)
+		ts.EnableHistory(5*time.Minute, storage.DefaultHistoryRetention)
 	}
 	return ts, store
 }
@@ -64,7 +65,7 @@ func TestHistoryRecordedThroughTopologyService(t *testing.T) {
 		t.Fatalf("adding connection: %v", err)
 	}
 
-	services, err := store.History().ServicesAt(ctx, observed)
+	services, err := store.History().ServicesAt(ctx, observed, storage.DefaultHistoryMaxGap)
 	if err != nil {
 		t.Fatalf("reconstructing services: %v", err)
 	}
@@ -75,7 +76,7 @@ func TestHistoryRecordedThroughTopologyService(t *testing.T) {
 		t.Errorf("service attributes not carried into history: %+v", services[0])
 	}
 
-	connections, err := store.History().ConnectionsAt(ctx, observed)
+	connections, err := store.History().ConnectionsAt(ctx, observed, storage.DefaultHistoryMaxGap)
 	if err != nil {
 		t.Fatalf("reconstructing connections: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestHistoryOffByDefault(t *testing.T) {
 		t.Fatalf("adding service: %v", err)
 	}
 
-	got, err := store.History().ServicesAt(ctx, observed)
+	got, err := store.History().ServicesAt(ctx, observed, storage.DefaultHistoryMaxGap)
 	if err != nil {
 		t.Fatalf("querying history: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestHistorySurvivesCurrentStatePruning(t *testing.T) {
 	defer bus.Close()
 
 	ts := NewTopologyService(store, bus)
-	ts.EnableHistory(5 * time.Minute)
+	ts.EnableHistory(5*time.Minute, storage.DefaultHistoryRetention)
 	ctx := context.Background()
 
 	observed := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
@@ -161,7 +162,7 @@ func TestHistorySurvivesCurrentStatePruning(t *testing.T) {
 	}
 
 	// The history is the point: still answerable after the live row is gone.
-	past, err := store.History().ServicesAt(ctx, observed)
+	past, err := store.History().ServicesAt(ctx, observed, storage.DefaultHistoryMaxGap)
 	if err != nil {
 		t.Fatalf("reconstructing past topology: %v", err)
 	}
@@ -447,5 +448,115 @@ func TestGetTopologyDiffIsEmptyWhenNothingChanged(t *testing.T) {
 	if len(diff.AddedServices) != 0 || len(diff.RemovedServices) != 0 {
 		t.Errorf("expected no service changes for a steady service, got added=%+v removed=%+v",
 			diff.AddedServices, diff.RemovedServices)
+	}
+}
+
+// TestConcurrentObservationsDoNotMultiplyIntervals is the regression guard for
+// interval count scaling with event volume instead of with architecture change.
+//
+// RecordService refuses to move last_seen backwards, so an observation whose
+// timestamp is behind the recorded one cannot extend the open interval. Under
+// concurrency that is the common case, not a rare one: goroutines stamp
+// time.Now() and then race to commit, and the store serializes them in an order
+// barely related to their timestamps. When those writes fell through to an
+// unconditional INSERT, one continuously present service accumulated an
+// interval per racing write - 120 of them for 200 observations - which breaks
+// the premise the interval model rests on ("write volume proportional to how
+// often the architecture changes, not how often agents report").
+func TestConcurrentObservationsDoNotMultiplyIntervals(t *testing.T) {
+	ts, store := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	const workers, perWorker = 8, 100
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				if err := ts.AddOrUpdateService(ctx, &storage.Service{
+					ID: "10.0.0.50/busy", Name: "busy", LastSeen: time.Now(),
+				}); err != nil {
+					t.Errorf("adding service: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	rows, err := store.History().ServicesBetween(ctx,
+		time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ServicesBetween: %v", err)
+	}
+
+	intervals := 0
+	for _, si := range rows {
+		if si.ServiceID == "10.0.0.50/busy" {
+			intervals++
+		}
+	}
+
+	// Ideally one. A first-ever appearance observed by several goroutines at
+	// once can still open one interval each - none of them sees a row to
+	// extend - so the bound is the worker count, NOT the observation count.
+	// The bug this guards against produced roughly one interval per write.
+	if intervals > workers {
+		t.Errorf("%d intervals for one continuously observed service after %d observations; "+
+			"expected at most %d (one per racing first-appearance), so interval count is "+
+			"scaling with event volume", intervals, workers*perWorker, workers)
+	}
+}
+
+// TestHistoryRetentionIndependentOfCurrentStatePruning guards the coupling
+// between the two retention windows.
+//
+// PRUNE_MAX_AGE=0 is a documented way to say "do not expire current state".
+// It used to also gate whether the prune loop ran at all, silently switching
+// off HISTORY_RETENTION - and history is the one that grows without bound
+// (current-state rows are updated in place; interval rows accumulate).
+func TestHistoryRetentionIndependentOfCurrentStatePruning(t *testing.T) {
+	store, err := sqlite.New(storage.Config{
+		Driver: "sqlite", DSN: ":memory:", AutoMigrate: true,
+		HistoryEnabled:   true,
+		HistoryRetention: 24 * time.Hour,
+		PruneMaxAge:      0, // current state is never expired
+		PruneInterval:    0, // drive Prune by hand rather than wait on a ticker
+	})
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	// Older than the history window, so retention should collect it.
+	ancient := time.Now().Add(-72 * time.Hour)
+	if err := store.History().RecordService(ctx,
+		&storage.Service{ID: "10.0.0.8/ancient", Name: "ancient"},
+		ancient, storage.DefaultHistoryMaxGap); err != nil {
+		t.Fatalf("recording ancient interval: %v", err)
+	}
+
+	before, err := store.History().ServicesAt(ctx, ancient, storage.DefaultHistoryMaxGap)
+	if err != nil {
+		t.Fatalf("querying before prune: %v", err)
+	}
+	if len(before) == 0 {
+		t.Fatal("test premise broken: the interval should exist before pruning")
+	}
+
+	// What the background loop does when PruneMaxAge <= 0.
+	if _, err := store.PruneHistoryForTest(ctx); err != nil {
+		t.Fatalf("pruning history: %v", err)
+	}
+
+	after, err := store.History().ServicesAt(ctx, ancient, storage.DefaultHistoryMaxGap)
+	if err != nil {
+		t.Fatalf("querying after prune: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("history past the retention window survived while current-state pruning was off: %+v", after)
 	}
 }

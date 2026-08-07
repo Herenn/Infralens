@@ -46,7 +46,7 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 		// Present at the start, the middle, and the end of that stretch.
 		for _, offset := range []time.Duration{0, 2 * time.Minute, 4 * time.Minute} {
 			at := base.Add(offset)
-			got, err := history.ServicesAt(ctx, at)
+			got, err := history.ServicesAt(ctx, at, maxGap)
 			if err != nil {
 				t.Fatalf("querying services at +%s: %v", offset, err)
 			}
@@ -59,7 +59,7 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 		intervals := servicesWithID(mustServicesBetween(t, history, ctx,
 			base.Add(-time.Hour), base.Add(time.Hour)), "hist-continuous")
 		if len(intervals) != 1 {
-			t.Fatalf("expected 1 merged interval for a continuously observed service, got %d", len(intervals))
+			t.Fatalf("expected 1 interval for a continuously observed service, got %d", len(intervals))
 		}
 		if !intervals[0].FirstSeen.Equal(base) {
 			t.Errorf("first_seen = %s, want %s", intervals[0].FirstSeen, base)
@@ -84,14 +84,14 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 		intervals := servicesWithID(mustServicesBetween(t, history, ctx,
 			base.Add(-time.Hour), base.Add(2*time.Hour)), "hist-gap")
 
-		// ServicesBetween merges by ID for the caller's convenience, so the
-		// absence is verified by querying the moment inside the gap.
+		// ServicesBetween returns one row per interval, so a gap shows up as
+		// two rows; the absence itself is verified by querying inside the gap.
 		if len(intervals) == 0 {
 			t.Fatal("expected the service to appear in the window")
 		}
 
 		duringGap := base.Add(15 * time.Minute)
-		got, err := history.ServicesAt(ctx, duringGap)
+		got, err := history.ServicesAt(ctx, duringGap, maxGap)
 		if err != nil {
 			t.Fatalf("querying during gap: %v", err)
 		}
@@ -100,11 +100,81 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 		}
 
 		// Still present at both ends.
-		if !containsService(mustServicesAt(t, history, ctx, base), "hist-gap") {
+		if !containsService(mustServicesAt(t, history, ctx, base, maxGap), "hist-gap") {
 			t.Error("service missing at its first sighting")
 		}
-		if !containsService(mustServicesAt(t, history, ctx, returned), "hist-gap") {
+		if !containsService(mustServicesAt(t, history, ctx, returned, maxGap), "hist-gap") {
 			t.Error("service missing at its second sighting")
+		}
+	})
+
+	t.Run("OutOfOrderObservationDoesNotRegressLastSeen", func(t *testing.T) {
+		// Events are timestamped independently per request with no
+		// per-service ordering guarantee, so a straggler can be recorded
+		// after a later observation has already landed. That must not move
+		// last_seen backward - it would corrupt the interval and could even
+		// push last_seen below first_seen.
+		svc := &Service{ID: "hist-ooo", Name: "api"}
+		later := base.Add(4 * time.Minute)
+		earlier := base.Add(1 * time.Minute)
+
+		if err := history.RecordService(ctx, svc, later, maxGap); err != nil {
+			t.Fatalf("recording later observation: %v", err)
+		}
+		if err := history.RecordService(ctx, svc, earlier, maxGap); err != nil {
+			t.Fatalf("recording out-of-order earlier observation: %v", err)
+		}
+
+		intervals := servicesWithID(mustServicesBetween(t, history, ctx,
+			base.Add(-time.Hour), base.Add(time.Hour)), "hist-ooo")
+		if len(intervals) == 0 {
+			t.Fatal("expected the service to appear in the window")
+		}
+		// The straggler is allowed to open its own (nested) interval - what it
+		// must not do is drag the existing one backwards. So the invariant is
+		// on the newest last_seen across intervals, not on every interval:
+		// ServicesBetween reports each one separately, and a nested
+		// [earlier, earlier] row is the expected shape of the fall-through.
+		var newest time.Time
+		for _, iv := range intervals {
+			if iv.LastSeen.After(newest) {
+				newest = iv.LastSeen
+			}
+			if iv.LastSeen.Before(iv.FirstSeen) {
+				t.Errorf("interval has last_seen %s before first_seen %s", iv.LastSeen, iv.FirstSeen)
+			}
+		}
+		if newest.Before(later) {
+			t.Errorf("newest last_seen = %s regressed behind the already-recorded observation at %s", newest, later)
+		}
+
+		// The later observation must still be reconstructible.
+		if !containsService(mustServicesAt(t, history, ctx, later, maxGap), "hist-ooo") {
+			t.Error("service missing at the already-recorded later instant after an out-of-order write")
+		}
+
+		connSvc := &Connection{ID: "hist-ooo-a->hist-ooo-b:80", SourceID: "hist-ooo-a", TargetID: "hist-ooo-b", Port: 80, Protocol: "tcp"}
+		if err := history.RecordConnection(ctx, connSvc, later, maxGap); err != nil {
+			t.Fatalf("recording later connection observation: %v", err)
+		}
+		if err := history.RecordConnection(ctx, connSvc, earlier, maxGap); err != nil {
+			t.Fatalf("recording out-of-order earlier connection observation: %v", err)
+		}
+		connGot, err := history.ConnectionsAt(ctx, later, maxGap)
+		if err != nil {
+			t.Fatalf("querying connections at %s: %v", later, err)
+		}
+		found := false
+		for _, ci := range connGot {
+			if ci.ConnectionID == connSvc.ID {
+				found = true
+				if ci.LastSeen.Before(later) {
+					t.Errorf("connection last_seen = %s regressed behind the already-recorded observation at %s", ci.LastSeen, later)
+				}
+			}
+		}
+		if !found {
+			t.Error("connection missing at the already-recorded later instant after an out-of-order write")
 		}
 	})
 
@@ -122,7 +192,7 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 			t.Fatalf("recording added service: %v", err)
 		}
 
-		early := mustServicesAt(t, history, ctx, base)
+		early := mustServicesAt(t, history, ctx, base, maxGap)
 		if !containsService(early, "hist-retired") {
 			t.Error("retired service should be present at the earlier instant")
 		}
@@ -130,7 +200,7 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 			t.Error("service added later must not appear in an earlier reconstruction")
 		}
 
-		late := mustServicesAt(t, history, ctx, laterOn)
+		late := mustServicesAt(t, history, ctx, laterOn, maxGap)
 		if !containsService(late, "hist-added") {
 			t.Error("added service should be present at the later instant")
 		}
@@ -155,7 +225,7 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 			}
 		}
 
-		got, err := history.ConnectionsAt(ctx, base.Add(time.Minute))
+		got, err := history.ConnectionsAt(ctx, base.Add(time.Minute), maxGap)
 		if err != nil {
 			t.Fatalf("querying connections: %v", err)
 		}
@@ -193,7 +263,7 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 			t.Fatalf("recording connection without protocol: %v", err)
 		}
 
-		got := mustConnectionsAt(t, history, ctx, base)
+		got := mustConnectionsAt(t, history, ctx, base, maxGap)
 		for _, ci := range got {
 			if ci.ConnectionID == conn.ID && ci.Protocol != "tcp" {
 				t.Errorf("protocol = %q, want it defaulted to tcp", ci.Protocol)
@@ -235,10 +305,10 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 			t.Fatalf("pruning history: %v", err)
 		}
 
-		if containsService(mustServicesAt(t, history, ctx, oldAt), "hist-prunable") {
+		if containsService(mustServicesAt(t, history, ctx, oldAt, maxGap), "hist-prunable") {
 			t.Error("interval ending before the cutoff should have been pruned")
 		}
-		if !containsService(mustServicesAt(t, history, ctx, recentAt), "hist-keep") {
+		if !containsService(mustServicesAt(t, history, ctx, recentAt, maxGap), "hist-keep") {
 			t.Error("interval ending after the cutoff must be retained")
 		}
 	})
@@ -286,7 +356,7 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 		}
 
 		cutoff := base.Add(-48 * time.Hour)
-		got, err := history.StaleServices(ctx, cutoff)
+		got, err := history.StaleServices(ctx, cutoff, 0)
 		if err != nil {
 			t.Fatalf("StaleServices: %v", err)
 		}
@@ -301,6 +371,39 @@ func HistoryRepoSuite(t *testing.T, store Store) {
 		// One row per service - its newest interval, not every interval.
 		if rows := servicesWithID(got, "hist-stale-old"); len(rows) != 1 {
 			t.Errorf("expected exactly one row for hist-stale-old, got %d: %+v", len(rows), rows)
+		}
+	})
+
+	t.Run("StaleServicesLimitKeepsTheOldestCandidates", func(t *testing.T) {
+		// Three services, idle for different lengths of time. A limit must
+		// return the oldest ones - the strongest decommission candidates -
+		// not an arbitrary subset, so the cap is applied after the ordering.
+		for i, id := range []string{"hist-limit-oldest", "hist-limit-middle", "hist-limit-newest"} {
+			at := base.Add(-time.Duration(300-i*24) * time.Hour)
+			if err := history.RecordService(ctx, &Service{ID: id, Name: id}, at, maxGap); err != nil {
+				t.Fatalf("recording %s: %v", id, err)
+			}
+		}
+
+		cutoff := base.Add(-48 * time.Hour)
+		got, err := history.StaleServices(ctx, cutoff, 1)
+		if err != nil {
+			t.Fatalf("StaleServices with limit: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected limit=1 to return 1 row, got %d", len(got))
+		}
+		if got[0].ServiceID != "hist-limit-oldest" {
+			t.Errorf("limit should keep the oldest candidate, got %q", got[0].ServiceID)
+		}
+
+		// A non-positive limit means no cap.
+		all, err := history.StaleServices(ctx, cutoff, 0)
+		if err != nil {
+			t.Fatalf("StaleServices without limit: %v", err)
+		}
+		if len(all) <= 1 {
+			t.Errorf("expected limit=0 to be uncapped, got %d rows", len(all))
 		}
 	})
 }
@@ -326,9 +429,9 @@ func servicesWithID(intervals []ServiceInterval, id string) []ServiceInterval {
 	return out
 }
 
-func mustServicesAt(t *testing.T, h HistoryRepository, ctx context.Context, at time.Time) []ServiceInterval {
+func mustServicesAt(t *testing.T, h HistoryRepository, ctx context.Context, at time.Time, grace time.Duration) []ServiceInterval {
 	t.Helper()
-	got, err := h.ServicesAt(ctx, at)
+	got, err := h.ServicesAt(ctx, at, grace)
 	if err != nil {
 		t.Fatalf("ServicesAt(%s): %v", at, err)
 	}
@@ -344,9 +447,9 @@ func mustServicesBetween(t *testing.T, h HistoryRepository, ctx context.Context,
 	return got
 }
 
-func mustConnectionsAt(t *testing.T, h HistoryRepository, ctx context.Context, at time.Time) []ConnectionInterval {
+func mustConnectionsAt(t *testing.T, h HistoryRepository, ctx context.Context, at time.Time, grace time.Duration) []ConnectionInterval {
 	t.Helper()
-	got, err := h.ConnectionsAt(ctx, at)
+	got, err := h.ConnectionsAt(ctx, at, grace)
 	if err != nil {
 		t.Fatalf("ConnectionsAt(%s): %v", at, err)
 	}

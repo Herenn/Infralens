@@ -89,8 +89,14 @@ func New(cfg storage.Config) (*Store, error) {
 		}
 	}
 
-	// Start pruning goroutine if enabled
-	if cfg.PruneInterval > 0 && cfg.PruneMaxAge > 0 {
+	// Start pruning goroutine if enabled.
+	//
+	// History retention is deliberately part of this condition. Requiring
+	// PruneMaxAge > 0 alone would mean "do not expire my current state" also
+	// silently switched off HISTORY_RETENTION - and history, unlike current
+	// state, grows without bound (current-state rows are updated in place;
+	// interval rows accumulate), so nothing would ever collect it.
+	if cfg.PruneInterval > 0 && (cfg.PruneMaxAge > 0 || cfg.HistoryEnabled) {
 		store.startPruning()
 	}
 
@@ -157,7 +163,19 @@ func (s *Store) startPruning() {
 			select {
 			case <-ticker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				pruned, err := s.Prune(ctx, s.config.PruneMaxAge)
+				// Prune(maxAge) treats a non-positive maxAge as "cutoff at or
+				// after now", i.e. delete everything - so a configured
+				// PruneMaxAge of 0 ("do not expire current state") must not be
+				// handed to it. Prune history on its own window instead: the
+				// two retentions are independent, and history is the one that
+				// grows without bound if nothing collects it.
+				var pruned int64
+				var err error
+				if s.config.PruneMaxAge > 0 {
+					pruned, err = s.Prune(ctx, s.config.PruneMaxAge)
+				} else {
+					pruned, err = s.pruneHistory(ctx)
+				}
 				cancel()
 				if err != nil {
 					log.WithError(err).Error("Pruning failed")
@@ -283,19 +301,31 @@ func (s *Store) Prune(ctx context.Context, maxAge time.Duration) (int64, error) 
 	// History is pruned on its own, much longer clock. maxAge governs current
 	// state and is measured in minutes; applying it to history would discard
 	// the record almost as fast as it is written.
-	if s.config.HistoryEnabled {
-		retention := s.config.HistoryRetention
-		if retention <= 0 {
-			retention = storage.DefaultHistoryRetention
-		}
-		historyPruned, err := s.history.DeleteStale(ctx, time.Now().Add(-retention))
-		if err != nil {
-			return total, fmt.Errorf("pruning history: %w", err)
-		}
-		total += historyPruned
+	historyPruned, err := s.pruneHistory(ctx)
+	if err != nil {
+		return total, err
 	}
+	total += historyPruned
 
 	return total, nil
+}
+
+// pruneHistory deletes history intervals past the retention window. Separate
+// from Prune so the background loop can run it even when current-state
+// pruning is switched off (PruneMaxAge <= 0) - the two windows are unrelated.
+func (s *Store) pruneHistory(ctx context.Context) (int64, error) {
+	if !s.config.HistoryEnabled {
+		return 0, nil
+	}
+	retention := s.config.HistoryRetention
+	if retention <= 0 {
+		retention = storage.DefaultHistoryRetention
+	}
+	n, err := s.history.DeleteStale(ctx, time.Now().Add(-retention))
+	if err != nil {
+		return 0, fmt.Errorf("pruning history: %w", err)
+	}
+	return n, nil
 }
 
 // Close closes the store and releases resources.

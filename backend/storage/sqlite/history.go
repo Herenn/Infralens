@@ -30,8 +30,20 @@ func (r *HistoryRepo) executor(ctx context.Context) interface {
 //
 // The UPDATE targets exactly one row - the newest interval for this service -
 // and only fires if that interval is recent enough to be considered still
-// open. Zero rows affected means either the service has never been seen or its
-// last sighting is older than maxGap; both cases are a new interval.
+// open. Zero rows affected means either the service has never been seen, its
+// last sighting is older than maxGap, or `at` is behind that interval's
+// last_seen (see below); all three cases open a new interval.
+//
+// The `last_seen <= ?` guard makes last_seen monotonically non-decreasing:
+// events are timestamped independently per request with no per-service
+// ordering guarantee, so a concurrent or replayed observation can arrive with
+// an `at` behind one already recorded. Without the guard the SET would
+// silently regress last_seen backward, corrupting the interval (potentially
+// below first_seen) and making DeleteStale prune it earlier than its real
+// retention window. Falling through to INSERT for that case can open a
+// redundant interval nested inside the existing one, but the point-in-time
+// reads merge duplicate intervals for the same entity (see
+// MergeServiceIntervals), so that's harmless where regressing last_seen is not.
 func (r *HistoryRepo) RecordService(ctx context.Context, svc *storage.Service, at time.Time, maxGap time.Duration) error {
 	if svc == nil || svc.ID == "" {
 		return fmt.Errorf("recording service interval: service is nil or has no ID")
@@ -49,9 +61,10 @@ func (r *HistoryRepo) RecordService(ctx context.Context, svc *storage.Service, a
 			ORDER BY last_seen DESC
 			LIMIT 1
 		)
-		AND last_seen >= ?`,
+		AND last_seen >= ?
+		AND last_seen <= ?`,
 		at, svc.Name, svc.Type, svc.Tech, svc.Namespace, svc.Node,
-		svc.ID, cutoff)
+		svc.ID, cutoff, at)
 	if err != nil {
 		return fmt.Errorf("extending service interval: %w", err)
 	}
@@ -64,18 +77,33 @@ func (r *HistoryRepo) RecordService(ctx context.Context, svc *storage.Service, a
 		return nil
 	}
 
+	// Guarded so an out-of-order observation that lands *inside* an existing
+	// interval is a no-op instead of opening a redundant nested one. Under
+	// concurrent ingestion the guard above fails constantly - goroutines stamp
+	// time.Now() and then race to commit, so commit order barely relates to
+	// timestamp order - and without this a single continuously observed
+	// service accumulated one interval per racing write rather than one total.
+	// That would make row count scale with event volume instead of with how
+	// often the architecture actually changes, which is the premise the whole
+	// interval model rests on.
 	_, err = exec.ExecContext(ctx, `
 		INSERT INTO service_intervals
 			(service_id, name, type, tech, namespace, node, first_seen, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		svc.ID, svc.Name, svc.Type, svc.Tech, svc.Namespace, svc.Node, at, at)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM service_intervals
+			WHERE service_id = ? AND first_seen <= ? AND last_seen >= ?
+		)`,
+		svc.ID, svc.Name, svc.Type, svc.Tech, svc.Namespace, svc.Node, at, at,
+		svc.ID, at, at)
 	if err != nil {
 		return fmt.Errorf("opening service interval: %w", err)
 	}
 	return nil
 }
 
-// RecordConnection is RecordService for edges.
+// RecordConnection is RecordService for edges - see RecordService for why the
+// extend UPDATE also guards against `at` being behind the recorded last_seen.
 func (r *HistoryRepo) RecordConnection(ctx context.Context, conn *storage.Connection, at time.Time, maxGap time.Duration) error {
 	if conn == nil || conn.ID == "" {
 		return fmt.Errorf("recording connection interval: connection is nil or has no ID")
@@ -98,8 +126,9 @@ func (r *HistoryRepo) RecordConnection(ctx context.Context, conn *storage.Connec
 			ORDER BY last_seen DESC
 			LIMIT 1
 		)
-		AND last_seen >= ?`,
-		at, conn.ID, cutoff)
+		AND last_seen >= ?
+		AND last_seen <= ?`,
+		at, conn.ID, cutoff, at)
 	if err != nil {
 		return fmt.Errorf("extending connection interval: %w", err)
 	}
@@ -112,11 +141,17 @@ func (r *HistoryRepo) RecordConnection(ctx context.Context, conn *storage.Connec
 		return nil
 	}
 
+	// See RecordService for why this insert is guarded.
 	_, err = exec.ExecContext(ctx, `
 		INSERT INTO connection_intervals
 			(connection_id, source_id, target_id, port, protocol, first_seen, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		conn.ID, conn.SourceID, conn.TargetID, conn.Port, protocol, at, at)
+		SELECT ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM connection_intervals
+			WHERE connection_id = ? AND first_seen <= ? AND last_seen >= ?
+		)`,
+		conn.ID, conn.SourceID, conn.TargetID, conn.Port, protocol, at, at,
+		conn.ID, at, at)
 	if err != nil {
 		return fmt.Errorf("opening connection interval: %w", err)
 	}
@@ -141,12 +176,13 @@ func (r *HistoryRepo) scanServiceIntervals(rows *sql.Rows) ([]storage.ServiceInt
 }
 
 // ServicesAt returns services whose interval covers the given instant.
-func (r *HistoryRepo) ServicesAt(ctx context.Context, at time.Time) ([]storage.ServiceInterval, error) {
+func (r *HistoryRepo) ServicesAt(ctx context.Context, at time.Time, grace time.Duration) ([]storage.ServiceInterval, error) {
+	covers := at.Add(-grace)
 	rows, err := r.executor(ctx).QueryContext(ctx, `
 		SELECT `+serviceIntervalColumns+`
 		FROM service_intervals
 		WHERE first_seen <= ? AND last_seen >= ?
-		ORDER BY service_id, first_seen`, at, at)
+		ORDER BY service_id, first_seen`, at, covers)
 	if err != nil {
 		return nil, fmt.Errorf("querying services at %s: %w", at, err)
 	}
@@ -171,11 +207,7 @@ func (r *HistoryRepo) ServicesBetween(ctx context.Context, from, to time.Time) (
 		return nil, fmt.Errorf("querying services between: %w", err)
 	}
 
-	intervals, err := r.scanServiceIntervals(rows)
-	if err != nil {
-		return nil, err
-	}
-	return storage.MergeServiceIntervals(intervals), nil
+	return r.scanServiceIntervals(rows)
 }
 
 const connectionIntervalColumns = `id, connection_id, source_id, target_id, port, protocol, first_seen, last_seen`
@@ -196,12 +228,13 @@ func (r *HistoryRepo) scanConnectionIntervals(rows *sql.Rows) ([]storage.Connect
 }
 
 // ConnectionsAt returns edges whose interval covers the given instant.
-func (r *HistoryRepo) ConnectionsAt(ctx context.Context, at time.Time) ([]storage.ConnectionInterval, error) {
+func (r *HistoryRepo) ConnectionsAt(ctx context.Context, at time.Time, grace time.Duration) ([]storage.ConnectionInterval, error) {
+	covers := at.Add(-grace)
 	rows, err := r.executor(ctx).QueryContext(ctx, `
 		SELECT `+connectionIntervalColumns+`
 		FROM connection_intervals
 		WHERE first_seen <= ? AND last_seen >= ?
-		ORDER BY connection_id, first_seen`, at, at)
+		ORDER BY connection_id, first_seen`, at, covers)
 	if err != nil {
 		return nil, fmt.Errorf("querying connections at %s: %w", at, err)
 	}
@@ -224,11 +257,7 @@ func (r *HistoryRepo) ConnectionsBetween(ctx context.Context, from, to time.Time
 		return nil, fmt.Errorf("querying connections between: %w", err)
 	}
 
-	intervals, err := r.scanConnectionIntervals(rows)
-	if err != nil {
-		return nil, err
-	}
-	return storage.MergeConnectionIntervals(intervals), nil
+	return r.scanConnectionIntervals(rows)
 }
 
 // Bounds returns the earliest and latest instants covered by recorded
@@ -263,6 +292,14 @@ func (r *HistoryRepo) Bounds(ctx context.Context) (storage.HistoryBounds, bool, 
 			SELECT last_seen FROM connection_intervals
 		)
 		ORDER BY last_seen DESC LIMIT 1`).Scan(&latest)
+	// Same ErrNoRows handling as the first query, not just defensiveness: the
+	// two run as separate statements, so the retention prune can empty the
+	// tables in between. Treating that as an error would turn an ordinary
+	// "no history" into a 500, and would diverge from the Postgres
+	// implementation, which gets both bounds from one query and reports empty.
+	if err == sql.ErrNoRows {
+		return storage.HistoryBounds{}, false, nil
+	}
 	if err != nil {
 		return storage.HistoryBounds{}, false, fmt.Errorf("querying latest history bound: %w", err)
 	}
@@ -278,15 +315,25 @@ func (r *HistoryRepo) Bounds(ctx context.Context) (storage.HistoryBounds, bool, 
 // ever used inside the subquery, for comparison, never projected. That's the
 // same decltype trap Bounds() hit: aggregating a DATETIME column in the
 // outer SELECT returns an unparseable driver string instead of time.Time.
-func (r *HistoryRepo) StaleServices(ctx context.Context, before time.Time) ([]storage.ServiceInterval, error) {
-	rows, err := r.executor(ctx).QueryContext(ctx, `
-		SELECT `+serviceIntervalColumns+`
+func (r *HistoryRepo) StaleServices(ctx context.Context, before time.Time, limit int) ([]storage.ServiceInterval, error) {
+	query := `
+		SELECT ` + serviceIntervalColumns + `
 		FROM service_intervals si
 		WHERE last_seen = (
 			SELECT MAX(last_seen) FROM service_intervals WHERE service_id = si.service_id
 		)
 		AND last_seen < ?
-		ORDER BY last_seen ASC`, before)
+		ORDER BY last_seen ASC`
+	args := []interface{}{before}
+	if limit > 0 {
+		// Ordered oldest-first above, so truncating here keeps the strongest
+		// candidates rather than an arbitrary slice of them.
+		query += `
+		LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := r.executor(ctx).QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying stale services: %w", err)
 	}

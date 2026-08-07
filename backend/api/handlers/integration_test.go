@@ -94,7 +94,7 @@ func newTestServer(t *testing.T) *testServer {
 func newTestServerWithHistory(t *testing.T) *testServer {
 	t.Helper()
 	ts := newTestServer(t)
-	ts.topology.EnableHistory(5 * time.Minute)
+	ts.topology.EnableHistory(5*time.Minute, storage.DefaultHistoryRetention)
 	return ts
 }
 
@@ -1056,4 +1056,54 @@ func readBody(t *testing.T, body io.Reader) string {
 		t.Fatalf("Failed to read body: %v", err)
 	}
 	return string(data)
+}
+
+// TestHandleGetTopology_LivePresentAtNow is the regression guard for the
+// point-in-time queries excluding everything that is currently alive.
+//
+// last_seen is the last time an entity was *observed*, always slightly in the
+// past, so a strict `last_seen >= at` matched nothing at or near the present:
+// ?at=now returned an empty topology, and the "compare to now" diff reported
+// every long-lived service as disappeared.
+func TestHandleGetTopology_LivePresentAtNow(t *testing.T) {
+	ts := newTestServerWithHistory(t)
+	ctx := context.Background()
+	h := ts.store.History()
+
+	// Observed every minute for the last hour, up to a second ago.
+	svc := &storage.Service{ID: "long-lived", Name: "api"}
+	for i := 60; i >= 0; i-- {
+		at := time.Now().Add(-time.Duration(i)*time.Minute - time.Second)
+		if err := h.RecordService(ctx, svc, at, storage.DefaultHistoryMaxGap); err != nil {
+			t.Fatalf("recording observation: %v", err)
+		}
+	}
+
+	now := url.QueryEscape(time.Now().Format(time.RFC3339))
+
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/topology?at="+now, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	var topo handlers.TopologyResponse
+	if err := json.NewDecoder(rr.Body).Decode(&topo); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(topo.Services) != 1 {
+		t.Errorf("?at=now returned %d services, want the 1 live service", len(topo.Services))
+	}
+
+	// And the diff that DiffPanel drives must not call it disappeared.
+	from := url.QueryEscape(time.Now().Add(-30 * time.Minute).Format(time.RFC3339))
+	rr2 := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr2, httptest.NewRequest("GET",
+		"/api/v1/topology/history/diff?from="+from+"&to="+now, nil))
+	var diff handlers.TopologyDiffResponse
+	if err := json.NewDecoder(rr2.Body).Decode(&diff); err != nil {
+		t.Fatalf("decode diff: %v", err)
+	}
+	if len(diff.RemovedServices) != 0 {
+		t.Errorf("a service observed a second ago was reported as disappeared: %+v", diff.RemovedServices)
+	}
 }

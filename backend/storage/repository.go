@@ -267,6 +267,24 @@ const (
 	// network blip without registering a disappearance, while still noticing a
 	// service that is genuinely gone within a few minutes.
 	DefaultHistoryMaxGap = 5 * time.Minute
+
+	// DefaultStaleThreshold is the upper bound on how long a service must go
+	// unobserved before it is offered as a decommission candidate: long enough
+	// that a service idle that long is genuinely suspicious.
+	//
+	// It is an upper bound rather than a flat default because the threshold is
+	// only meaningful relative to the retention window. A cutoff at or beyond
+	// retention asks for exactly the intervals the retention prune has already
+	// deleted, so the answer is always empty. Callers must therefore clamp this
+	// against the configured retention rather than using it bare - see
+	// service.TopologyService.staleThreshold, which is what the API goes
+	// through.
+	DefaultStaleThreshold = 7 * 24 * time.Hour
+
+	// MinStaleThreshold is the floor for that clamp. Below roughly an hour,
+	// "not seen recently" stops meaning "probably decommissioned" and starts
+	// flagging anything briefly quiet, which is noise rather than a signal.
+	MinStaleThreshold = time.Hour
 )
 
 // DefaultConfig returns a Config with sensible defaults for SQLite.
