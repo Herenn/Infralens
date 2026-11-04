@@ -45,6 +45,11 @@ services:
       - HISTORY_ENABLED=${HISTORY_ENABLED:-true}
       - HISTORY_RETENTION=${HISTORY_RETENTION:-720h}
       - HISTORY_MAX_GAP=${HISTORY_MAX_GAP:-5m}
+      # Architecture drift notifications - off unless a webhook URL is set
+      - DRIFT_WEBHOOK_URL=${DRIFT_WEBHOOK_URL:-}
+      - DRIFT_CHECK_INTERVAL=${DRIFT_CHECK_INTERVAL:-5m}
+      - DRIFT_GONE_AFTER=${DRIFT_GONE_AFTER:-24h}
+      - DRIFT_WARMUP=${DRIFT_WARMUP:-1h}
     volumes:
       # The backend's SQLite database lives in the image's WORKDIR (/data).
       # Without this volume every restart discards it - and topology history,

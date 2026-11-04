@@ -26,6 +26,22 @@ backend:
     retention: 720h
     maxGap: 5m
 
+  # Architecture drift notifications (v3): POST to a webhook when a dependency
+  # appears that has never been seen before (flagging ones that reach the
+  # public internet) or an established one stops being observed. Works with
+  # Slack/Mattermost incoming webhooks as-is. Off unless webhookUrl is set;
+  # needs history.enabled. The URL is stored in the chart's Secret, since
+  # Slack-style webhook URLs embed their credential.
+  drift:
+    webhookUrl: ""
+    checkInterval: 5m
+    # How long a dependency must go unobserved before it is reported gone.
+    # Long on purpose: this is drift, not outage alerting.
+    goneAfter: 24h
+    # Suppresses "new dependency" reports for the first hour of history, so
+    # a fresh install does not announce the whole cluster.
+    warmup: 1h
+
   # Persistence for the backend's SQLite database. Disabled by default keeps
   # the quick-start single-command, but history does NOT survive a restart
   # without it - unlike current state, it cannot be re-derived by the agents.

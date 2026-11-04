@@ -102,6 +102,20 @@ spec:
               value: {{ .Values.backend.history.retention | quote }}
             - name: HISTORY_MAX_GAP
               value: {{ .Values.backend.history.maxGap | quote }}
+            {{- if .Values.backend.drift.webhookUrl }}
+            # Architecture drift notifications.
+            - name: DRIFT_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "infralens.fullname" . }}-secrets
+                  key: drift-webhook-url
+            - name: DRIFT_CHECK_INTERVAL
+              value: {{ .Values.backend.drift.checkInterval | quote }}
+            - name: DRIFT_GONE_AFTER
+              value: {{ .Values.backend.drift.goneAfter | quote }}
+            - name: DRIFT_WARMUP
+              value: {{ .Values.backend.drift.warmup | quote }}
+            {{- end }}
             {{- with .Values.backend.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
