@@ -68,6 +68,9 @@ func main() {
 	if err := cfg.Auth.Validate(); err != nil {
 		log.WithError(err).Fatal("Refusing to start with an insecure authentication configuration")
 	}
+	if err := cfg.Drift.Validate(); err != nil {
+		log.WithError(err).Fatal("Invalid drift notification configuration")
+	}
 	if cfg.Auth.APIKey == "" {
 		log.Warn("Running without API key authentication (ALLOW_NO_AUTH=true) - " +
 			"all ingest and AI endpoints accept unauthenticated requests")

@@ -94,7 +94,10 @@ type HistoryRepository interface {
 	ServicesBetween(ctx context.Context, from, to time.Time) ([]ServiceInterval, error)
 
 	// ConnectionsBetween returns every connection interval overlapping
-	// [from, to], one row per interval. See ServicesBetween.
+	// [from, to], one row per interval. See ServicesBetween. Unlike it, this
+	// one does have a production caller: drift detection
+	// (service.DriftDetector) seeds its known-dependency set from it and then
+	// reads each check window through it.
 	ConnectionsBetween(ctx context.Context, from, to time.Time) ([]ConnectionInterval, error)
 
 	// DeleteStale removes intervals that ended before the cutoff. Unlike

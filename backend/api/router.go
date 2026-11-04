@@ -2,11 +2,13 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"runtime"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	log "github.com/sirupsen/logrus"
 
 	"github.com/Herenn/Infralens/backend/api/handlers"
 	"github.com/Herenn/Infralens/backend/api/middleware"
@@ -28,6 +30,9 @@ type Server struct {
 	eventBus   *service.EventBus
 	k8sWatcher *k8s.Watcher
 	llmManager *llm.Manager
+
+	// stopBackground cancels goroutines the server owns (drift detection).
+	stopBackground context.CancelFunc
 }
 
 // NewServer creates a new API server.
@@ -63,8 +68,32 @@ func NewServer(
 	// Set build info for metrics
 	metrics.SetBuildInfo(handlers.Version, runtime.Version())
 
+	bgCtx, cancel := context.WithCancel(context.Background())
+	s.stopBackground = cancel
+	s.startDriftDetection(bgCtx)
+
 	s.setupRoutes()
 	return s
+}
+
+// startDriftDetection starts architecture drift notifications if a webhook is
+// configured. Drift is computed from topology history, so it needs history on.
+func (s *Server) startDriftDetection(ctx context.Context) {
+	if !s.config.Drift.Enabled() {
+		return
+	}
+	detector, err := s.topology.NewDriftDetector(service.DriftConfig{
+		Interval:  s.config.Drift.Interval,
+		GoneAfter: s.config.Drift.GoneAfter,
+		Warmup:    s.config.Drift.Warmup,
+	}, service.NewWebhookDriftNotifier(s.config.Drift.WebhookURL))
+	if err != nil {
+		log.WithError(err).Warn("DRIFT_WEBHOOK_URL is set but drift detection could not start " +
+			"(it requires HISTORY_ENABLED=true) - no drift notifications will be sent")
+		return
+	}
+	log.Info("Architecture drift notifications enabled")
+	go detector.Run(ctx)
 }
 
 // setupRoutes configures all API routes.
@@ -161,5 +190,8 @@ func (s *Server) TopologyService() *service.TopologyService {
 
 // Close closes the server and releases resources.
 func (s *Server) Close() {
+	if s.stopBackground != nil {
+		s.stopBackground()
+	}
 	s.eventBus.Close()
 }
