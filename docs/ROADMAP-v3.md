@@ -1,8 +1,19 @@
 # InfraLens v3.0 — Roadmap
 
-**Target: September 1st.** Long-lived work only. Security fixes and bug
-patches ship independently as 2.2 / 2.3 / 2.4 / … from `main` and are merged
-*into* this branch periodically — never the other way around until v3 lands.
+**Shipped as v3.0.0 on 2026-11-04** (original target: September 1st).
+
+## Status at release
+
+| Item | v3.0.0 |
+|---|---|
+| 1. Historical topology | **Shipped** — intervals, `?at=`, timeline scrubber; plus topology diff, blast radius, criticality, orphans, decommission candidates built on it |
+| 2. Change detection | **Shipped, minimal** — continuous drift detection with webhook delivery (`DRIFT_WEBHOOK_URL`, Slack-compatible): new never-seen dependency (internet-bound ones flagged), established dependency gone. No rules engine, no traffic-change (%N) rule, no persisted alert log, no in-UI notification feed — candidates for v3.1 |
+| 3. Auth / sessions / RBAC | **Not shipped** — see the decision below; first item after v3.0.0 |
+| 4. Real latency | **Not shipped** — moved out of v3; still needs no schema/API change, so it can land in any 3.x |
+
+---
+
+The rest of this document is the original planning record, kept as written.
 
 ---
 

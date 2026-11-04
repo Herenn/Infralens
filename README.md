@@ -8,7 +8,7 @@ InfraLens uses eBPF to discover and visualize service-to-service communication i
 on Kubernetes clusters and plain Linux servers. No sidecars. No SDKs. No instrumentation.
 
 [![CI](https://github.com/Herenn/Infralens/actions/workflows/ci.yml/badge.svg)](https://github.com/Herenn/Infralens/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v2.1.0-blue)](https://github.com/Herenn/Infralens/releases)
+[![Release](https://img.shields.io/badge/release-v3.0.0-blue)](https://github.com/Herenn/Infralens/releases)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/Herenn/Infralens)](https://go.dev/)
 [![License](https://img.shields.io/github/license/Herenn/Infralens)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -60,10 +60,28 @@ InfraLens answers it from the kernel — deploy the agent, and every TCP connect
 - 🔬 **Deep inspection** — protocol probing (HTTP headers, DB handshakes), dependency discovery from `package.json`/`go.mod`/`requirements.txt`
 - ⌨️ **Search & export** — find any node instantly (`/`), export the graph as PNG, JSON, Mermaid, or Graphviz DOT
 
+**Remember it** *(v3)*
+- ⏪ **Time travel** — topology history is recorded continuously; scrub the timeline to see the architecture as it was at any moment in the retention window (30 days by default)
+- 🔀 **Topology diff** — what appeared and disappeared between any two instants
+- 🔔 **Drift notifications** — a webhook (Slack-compatible) fires when a never-before-seen dependency appears, flagging ones that reach the public internet, or an established one stops being observed
+- 💥 **Blast radius & criticality** — what breaks if a service goes down, and which services are the riskiest single points of failure
+- 🧹 **Orphans & decommission candidates** — services nothing talks to, and services not seen in days
+
 **Run it anywhere**
 - ☸️ **Kubernetes native** — DaemonSet + RBAC, automatic IP → Pod/Service name resolution via `client-go` informers
 - 🖥️ **Plain Linux servers** — one-line installer, systemd service, multi-node agents reporting to one backend
 - 🔒 **Production ready** — API-key agent auth, HTTPS support, SQLite/PostgreSQL persistence, Prometheus `/metrics`, CO-RE portability across kernels 5.8+
+
+<details>
+<summary><b>What's new in v3.0.0</b></summary>
+
+- **Topology history** — interval-based recording, `GET /topology?at=`, and a timeline scrubber in the UI
+- **Architecture drift notifications** — `DRIFT_WEBHOOK_URL`
+- **Topology diff, blast radius, criticality ranking, orphan detection, decommission candidates**
+
+Upgrading: history needs a persistent volume to survive restarts (Helm: `--set backend.persistence.enabled=true`). New read endpoints are public, like `/topology` — read *Security details* under Configuration before exposing InfraLens on an untrusted network. See [CHANGELOG.md](CHANGELOG.md).
+
+</details>
 
 <details>
 <summary><b>What's new in v2.0.0</b></summary>
@@ -217,11 +235,21 @@ HISTORY_ENABLED=true           # Record topology history (on by default; ~30% mo
 HISTORY_RETENTION=720h         # How long history is kept (30 days)
 HISTORY_MAX_GAP=5m             # Gap before a re-appearance opens a new interval
 
+# ── Drift notifications (needs HISTORY_ENABLED) ─────────
+DRIFT_WEBHOOK_URL=             # POST here on architecture drift (empty = off).
+                               # Slack/Mattermost incoming webhook URLs work as-is:
+                               # the payload has a "text" field plus structured
+                               # "appeared"/"disappeared" lists for custom receivers
+DRIFT_CHECK_INTERVAL=5m        # How often history is checked for changes
+DRIFT_GONE_AFTER=24h           # Unobserved this long = reported as gone
+DRIFT_WARMUP=1h                # No "new dependency" reports for the first hour of
+                               # history, so a fresh install doesn't announce everything
+
 # ── Security ────────────────────────────────────────────
 API_KEY=                       # API key for agent auth (empty = disabled)
 API_KEY_HEADER=X-API-Key       # Header name for API key
 CORS_ORIGINS=*                 # Comma-separated allowed origins
-CORS_CREDENTIALS=true          # Allow credentials in CORS
+CORS_CREDENTIALS=false         # Allow credentials in CORS (can't combine with origin *)
 
 # ── AI providers ────────────────────────────────────────
 OPENAI_API_KEY=sk-...          # OpenAI API key
@@ -247,6 +275,8 @@ DEFAULT_LLM_PROVIDER=openai
 
 **Public endpoints (always accessible):**
 `GET /api/v1/topology`, `/api/v1/topology/history/range`, `/api/v1/topology/history/stale`, `/api/v1/topology/history/diff`, `/api/v1/services` (including `/{id}`), `/api/v1/graph/stats`, `/api/v1/graph/criticality`, `/api/v1/graph/orphans`, `/api/v1/graph/impact`, `/api/v1/ws` (WebSocket), `/health`, `/ready`
+
+> **Known limitation (v3.0):** read endpoints are unauthenticated because the UI has no login flow yet, and the history endpoints expose up to `HISTORY_RETENTION` of past topology (service names, namespaces, nodes, IPs). On a network you don't fully trust, put InfraLens behind an authenticating reverse proxy. UI authentication is the first item after v3.0.
 
 **CORS:**
 
@@ -394,8 +424,10 @@ cd frontend && npm install && npm run dev
 - [x] UDP tracing *(v2.0)*
 - [x] Delta-based WebSocket updates *(v2.0)*
 - [x] Demo mode, topology search, Mermaid/DOT export *(v2.0)*
-- [ ] Historical time-series storage & time-travel view
-- [ ] Anomaly detection & alerting
+- [x] Topology history & time-travel view *(v3.0)*
+- [x] Architecture drift notifications, topology diff, blast radius *(v3.0)*
+- [ ] Authentication & RBAC for the UI and read endpoints
+- [ ] Real per-connection latency (TCP smoothed RTT)
 - [ ] HTTP-level (L7) request tracing
 - [ ] Service mesh integration
 
