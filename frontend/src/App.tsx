@@ -370,7 +370,7 @@ function App() {
     // Carry the viewed instant through: a blast radius asked for while scrubbed
     // to a past moment must be traversed over that graph, not today's.
     const at = timelineAt ? `&at=${encodeURIComponent(timelineAt)}` : ''
-    fetch(apiUrl(`/api/v1/services/${encodeURIComponent(impactRoot.id)}/impact?direction=${impactRoot.direction}&depth=${IMPACT_DEPTH}${at}`))
+    fetch(apiUrl(`/api/v1/graph/impact?service=${encodeURIComponent(impactRoot.id)}&direction=${impactRoot.direction}&depth=${IMPACT_DEPTH}${at}`))
       .then(res => {
         if (!res.ok) throw new Error(`Failed to load impact: ${res.status}`)
         return res.json()

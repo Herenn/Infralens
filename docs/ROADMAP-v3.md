@@ -211,7 +211,7 @@ running this on a real company network.
 **Decision for v3.0.0: not shipping in this release.** Auth/sessions/RBAC did
 not land in the v3.0.0 branch. Worse than simply missing, the branch *widens*
 the unauthenticated surface: `?at=`, `/history/diff`, `/history/stale`,
-`/services/{id}/impact`, and `/graph/orphans` are all new, all public, and the
+`/graph/impact`, and `/graph/orphans` are all new, all public, and the
 history endpoints expose up to `HISTORY_RETENTION` (30 days by default) of
 past topology — namespaces, node names, pod IPs, and labels included. That is
 strictly more than the v2.1 known limitation this section describes.

@@ -66,10 +66,11 @@ func newTestServer(t *testing.T) *testServer {
 	api.HandleFunc("/topology/history/stale", topologyHandler.HandleGetStaleServices).Methods("GET")
 	api.HandleFunc("/topology/history/diff", topologyHandler.HandleGetTopologyDiff).Methods("GET")
 	api.HandleFunc("/services", topologyHandler.HandleGetServices).Methods("GET")
-	// Route order/pattern mirrors router.go: /impact must be registered
-	// before the bare route, and {id} must be greedy to match IDs
-	// containing a literal "/" - see the comment there for why.
-	api.HandleFunc("/services/{id:.+}/impact", topologyHandler.HandleGetImpact).Methods("GET")
+	// Route pattern mirrors router.go: impact takes its id as a query
+	// parameter rather than a path segment, and {id} on the bare route must
+	// be greedy to match IDs containing a literal "/" - see the comment
+	// there for why.
+	api.HandleFunc("/graph/impact", topologyHandler.HandleGetImpact).Methods("GET")
 	api.HandleFunc("/services/{id:.+}", topologyHandler.HandleGetService).Methods("GET")
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
 	api.HandleFunc("/graph/criticality", topologyHandler.HandleGetCriticality).Methods("GET")
@@ -723,7 +724,7 @@ func TestHandleGetImpact_Upstream(t *testing.T) {
 	ts := newTestServer(t)
 	seedChain(t, ts, "A", "B", "C", "D")
 
-	req := httptest.NewRequest("GET", "/api/v1/services/C/impact?direction=upstream", nil)
+	req := httptest.NewRequest("GET", "/api/v1/graph/impact?service=C&direction=upstream", nil)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 
@@ -741,15 +742,15 @@ func TestHandleGetImpact_Upstream(t *testing.T) {
 	}
 }
 
-// TestHandleGetImpact_IDContainsSlash is TestHandleGetService_IDContainsSlash
-// for the impact route - the same routing regression risk, doubled: {id}
-// must be greedy AND the /impact route must be registered before the bare
-// one, or a greedy bare route swallows ".../impact" as part of the id.
+// TestHandleGetImpact_IDContainsSlash covers a service ID containing a
+// literal "/" (e.g. "10.0.1.10/nginx") reaching HandleGetImpact intact.
+// service is a query parameter rather than a path segment specifically so
+// this case needs no special routing at all - see router.go.
 func TestHandleGetImpact_IDContainsSlash(t *testing.T) {
 	ts := newTestServer(t)
 	seedChain(t, ts, "10.0.1.10/nginx", "10.0.2.10/api-gateway")
 
-	req := httptest.NewRequest("GET", "/api/v1/services/10.0.1.10%2Fnginx/impact?direction=downstream", nil)
+	req := httptest.NewRequest("GET", "/api/v1/graph/impact?service=10.0.1.10%2Fnginx&direction=downstream", nil)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 
@@ -766,11 +767,27 @@ func TestHandleGetImpact_IDContainsSlash(t *testing.T) {
 	}
 }
 
+// TestHandleGetImpact_MissingService covers the query-parameter contract
+// itself, now that id has moved off the path: an omitted ?service= must 400
+// rather than reach GetImpact with an empty id.
+func TestHandleGetImpact_MissingService(t *testing.T) {
+	ts := newTestServer(t)
+	seedChain(t, ts, "A", "B")
+
+	req := httptest.NewRequest("GET", "/api/v1/graph/impact?direction=upstream", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandleGetImpact_InvalidDirection(t *testing.T) {
 	ts := newTestServer(t)
 	seedChain(t, ts, "A", "B")
 
-	req := httptest.NewRequest("GET", "/api/v1/services/A/impact?direction=sideways", nil)
+	req := httptest.NewRequest("GET", "/api/v1/graph/impact?service=A&direction=sideways", nil)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 
@@ -783,7 +800,7 @@ func TestHandleGetImpact_InvalidDepth(t *testing.T) {
 	ts := newTestServer(t)
 	seedChain(t, ts, "A", "B")
 
-	req := httptest.NewRequest("GET", "/api/v1/services/A/impact?depth=0", nil)
+	req := httptest.NewRequest("GET", "/api/v1/graph/impact?service=A&depth=0", nil)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 
@@ -796,7 +813,7 @@ func TestHandleGetImpact_NotFound(t *testing.T) {
 	ts := newTestServer(t)
 	seedChain(t, ts, "A", "B")
 
-	req := httptest.NewRequest("GET", "/api/v1/services/does-not-exist/impact", nil)
+	req := httptest.NewRequest("GET", "/api/v1/graph/impact?service=does-not-exist", nil)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 

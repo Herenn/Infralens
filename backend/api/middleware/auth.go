@@ -66,15 +66,18 @@ func DefaultAuthConfig() AuthConfig {
 			"/api/v1/graph/stats",
 			"/api/v1/graph/criticality",
 			"/api/v1/graph/orphans",
+			"/api/v1/graph/impact",
 			"/api/v1/k8s/status",
 			"/api/v1/ai/status",
 			"/api/v1/ai/providers",
 		},
 		SkipPrefixes: []string{
-			// Covers the per-service read endpoints: /api/v1/services/{id} and
-			// /api/v1/services/{id}/impact. Service IDs contain literal "/"
-			// (e.g. "10.0.1.10/nginx"), so these can't be enumerated as exact
-			// paths the way the entries above are.
+			// Covers the per-service read endpoint /api/v1/services/{id}.
+			// Service IDs contain literal "/" (e.g. "10.0.1.10/nginx"), so
+			// this can't be enumerated as an exact path the way the entries
+			// above are. /graph/impact takes the id as a query parameter
+			// instead of a path segment for exactly this reason and needs no
+			// prefix of its own - see router.go.
 			//
 			// Being a prefix, this exempts anything mounted under
 			// /api/v1/services/ - including routes that don't exist yet. Only

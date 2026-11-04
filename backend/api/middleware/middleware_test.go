@@ -112,9 +112,9 @@ func TestAuthSkipsOnlyDeclaredPaths(t *testing.T) {
 		{"/api/v1/topology/history/diff", http.StatusOK, "declared public"},
 		{"/api/v1/services", http.StatusOK, "declared public"},
 		{"/api/v1/services/10.0.0.1%2Fnginx", http.StatusOK, "covered by the services/ prefix"},
-		{"/api/v1/services/10.0.0.1%2Fnginx/impact", http.StatusOK, "covered by the services/ prefix"},
 		{"/api/v1/graph/criticality", http.StatusOK, "declared public"},
 		{"/api/v1/graph/orphans", http.StatusOK, "declared public"},
+		{"/api/v1/graph/impact?service=10.0.0.1%2Fnginx", http.StatusOK, "declared public (exact match; service is a query param, not a path segment)"},
 
 		{"/api/v1/events", http.StatusUnauthorized, "ingest endpoint"},
 		{"/api/v1/inspection", http.StatusUnauthorized, "ingest endpoint"},

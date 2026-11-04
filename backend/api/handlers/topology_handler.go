@@ -188,17 +188,28 @@ func (h *TopologyHandler) HandleGetStaleServices(w http.ResponseWriter, r *http.
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
-// HandleGetImpact returns the subgraph reachable from a service, answering
-// "what breaks if I take this down" (?direction=upstream, the default) or
-// "what does this depend on" (?direction=downstream). ?depth=<n> caps how
-// many hops out the traversal goes (default 5, capped at 20).
+// HandleGetImpact returns the subgraph reachable from a service (?service=,
+// required), answering "what breaks if I take this down" (?direction=upstream,
+// the default) or "what does this depend on" (?direction=downstream).
+// ?depth=<n> caps how many hops out the traversal goes (default 5, capped at
+// 20).
+//
+// service is a query parameter rather than a path segment
+// ("/services/{id}/impact") deliberately: service IDs contain literal "/",
+// so a service whose ID happens to end in the substring "/impact" would be
+// indistinguishable at the URL level from a bare ID plus this action - no
+// route ordering resolves that, since both requests produce the same path.
 func (h *TopologyHandler) HandleGetImpact(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["id"]
 	ctx := r.Context()
+
+	id := r.URL.Query().Get("service")
+	if id == "" {
+		http.Error(w, "Missing 'service' query parameter", http.StatusBadRequest)
+		return
+	}
 
 	direction := service.ImpactUpstream
 	if d := r.URL.Query().Get("direction"); d != "" {
@@ -249,7 +260,7 @@ func (h *TopologyHandler) HandleGetImpact(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(convertTopologyToResponse(topology, true))
+	_ = json.NewEncoder(w).Encode(convertTopologyToResponse(topology, true))
 }
 
 // HandleGetServices returns all services.

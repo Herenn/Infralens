@@ -95,11 +95,15 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/services", topologyHandler.HandleGetServices).Methods("GET")
 	// Service IDs routinely contain a literal "/" (e.g. "10.0.1.10/nginx"),
 	// so {id} must be greedy (".+", not the default "[^/]+") to match them at
-	// all. The /impact route has to be registered before the bare one:
-	// gorilla/mux tries routes in registration order, and a greedy bare
-	// "/services/{id:.+}" checked first would swallow ".../impact" as part
-	// of the id instead of matching the more specific route.
-	api.HandleFunc("/services/{id:.+}/impact", topologyHandler.HandleGetImpact).Methods("GET")
+	// all. Impact is deliberately NOT a nested path segment
+	// ("/services/{id}/impact"): a service whose ID happens to end in the
+	// literal substring "/impact" (e.g. a real service named "impact" - not
+	// far-fetched) would be indistinguishable at the URL level from the
+	// bare ID ".../impact" plus an /impact suffix, and no amount of route
+	// ordering fixes that ambiguity since both parse to the same path. A
+	// query parameter carries the id outside the path entirely, matching
+	// direction/depth/at which are already query params on this endpoint.
+	api.HandleFunc("/graph/impact", topologyHandler.HandleGetImpact).Methods("GET")
 	api.HandleFunc("/services/{id:.+}", topologyHandler.HandleGetService).Methods("GET")
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
 	api.HandleFunc("/graph/criticality", topologyHandler.HandleGetCriticality).Methods("GET")
