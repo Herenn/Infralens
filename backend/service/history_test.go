@@ -705,3 +705,78 @@ func TestHistoryFailuresDoNotFloodLogs(t *testing.T) {
 			got, writes, historyLogInterval)
 	}
 }
+
+// TestHistoryExtendedByThroughput covers a long-lived connection - opened
+// once, then reused - whose only ongoing sign of life is throughput reports.
+// Before throughput counted as a sighting, its history interval (and its
+// endpoints') stopped at the connect event, so history reported a dependency
+// that was still carrying traffic as gone once maxGap had passed.
+func TestHistoryExtendedByThroughput(t *testing.T) {
+	ts, store := newHistoryTestService(t, true)
+	ctx := context.Background()
+
+	// Inside maxGap (5m), so a refresh extends the same interval rather than
+	// opening a second one.
+	opened := time.Now().Add(-4 * time.Minute).Truncate(time.Second)
+
+	for _, id := range []string{"api", "db"} {
+		if err := ts.AddOrUpdateService(ctx, &storage.Service{ID: id, Name: id, LastSeen: opened}); err != nil {
+			t.Fatalf("adding service %s: %v", id, err)
+		}
+	}
+	if err := ts.AddConnection(ctx, &storage.Connection{
+		ID: "api->db:5432", SourceID: "api", TargetID: "db", Port: 5432, LastSeen: opened,
+	}); err != nil {
+		t.Fatalf("adding connection: %v", err)
+	}
+
+	before := time.Now()
+	if err := ts.UpdateConnectionStats(ctx, "api->db:5432", 100, 200, 1, 2, 3, 4); err != nil {
+		t.Fatalf("updating stats: %v", err)
+	}
+
+	conns, err := store.History().ConnectionsBetween(ctx, opened.Add(-time.Minute), time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("querying connection history: %v", err)
+	}
+	if len(conns) != 1 {
+		t.Fatalf("expected the existing interval to be extended, not split: got %d intervals", len(conns))
+	}
+	if conns[0].LastSeen.Before(before.Truncate(time.Second)) {
+		t.Errorf("connection interval not extended by throughput: last_seen %s, want >= %s", conns[0].LastSeen, before)
+	}
+
+	svcs, err := store.History().ServicesBetween(ctx, opened.Add(-time.Minute), time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("querying service history: %v", err)
+	}
+	if len(svcs) != 2 {
+		t.Fatalf("expected one interval per endpoint, got %d", len(svcs))
+	}
+	for _, si := range svcs {
+		if si.LastSeen.Before(before.Truncate(time.Second)) {
+			t.Errorf("endpoint %s not extended by throughput: last_seen %s", si.ServiceID, si.LastSeen)
+		}
+	}
+}
+
+// TestHistoryRefreshThrottled pins the write-volume guarantee: throughput
+// arrives every second per socket, and recording each one would make history
+// writes scale with report rate instead of with the number of live entities.
+func TestHistoryRefreshThrottled(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true) // maxGap 5m -> refresh every 2.5m
+	now := time.Now()
+
+	if !ts.claimHistoryRefresh("c:x", now) {
+		t.Fatal("first refresh should be claimed")
+	}
+	if ts.claimHistoryRefresh("c:x", now.Add(time.Minute)) {
+		t.Error("refresh within maxGap/2 should be throttled")
+	}
+	if !ts.claimHistoryRefresh("c:x", now.Add(3*time.Minute)) {
+		t.Error("refresh after maxGap/2 should be claimed again")
+	}
+	if !ts.claimHistoryRefresh("c:y", now.Add(time.Minute)) {
+		t.Error("throttling must be per entity")
+	}
+}

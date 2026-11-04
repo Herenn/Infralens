@@ -67,6 +67,12 @@ type TopologyService struct {
 	historyLogMu         sync.Mutex
 	historyLogLast       time.Time
 	historyLogSuppressed int
+
+	// Throttles history refreshes driven by throughput reports. See
+	// refreshHistoryFromStats.
+	historyRefreshMu    sync.Mutex
+	historyRefreshed    map[string]time.Time
+	historyRefreshSwept time.Time
 }
 
 // NewTopologyService creates a new topology service.
@@ -213,6 +219,79 @@ func (ts *TopologyService) recordConnectionHistory(ctx context.Context, conn *st
 	if err := ts.store.History().RecordConnection(ctx, conn, observationTime(at), ts.historyMaxGap); err != nil {
 		ts.logHistoryFailure(err, "conn_id", conn.ID)
 	}
+}
+
+// refreshHistoryFromStats extends the history intervals of a connection that
+// is carrying traffic, and of both of its endpoint services.
+//
+// Without this, history is only ever extended by connect/accept events, so a
+// long-lived connection - a database pool, a gRPC channel, a Kafka consumer,
+// opened once and then reused for days - stops being extended maxGap after it
+// was opened. History then reports it (and often both its endpoints) as gone
+// while traffic is still flowing over it: the timeline shows a dependency
+// vanishing that never did, and drift detection announces a disappearance
+// that didn't happen. Throughput reports are the only ongoing proof such a
+// connection is alive, so they have to count as sightings.
+//
+// Throughput arrives far more often than connect events (every agent reports
+// every socket each second by default), so writes are throttled to one per
+// entity per maxGap/2 - often enough that an interval is always extended
+// before its maxGap grace runs out even if a refresh is missed, rare enough
+// that history write volume still tracks the number of live entities rather
+// than the report rate.
+//
+// Endpoint services are refreshed from current state rather than synthesized
+// from the connection: a service that has already been pruned from current
+// state is the phantom-endpoint case (see GetImpact) and is deliberately not
+// resurrected in history either.
+func (ts *TopologyService) refreshHistoryFromStats(ctx context.Context, conn *storage.Connection) {
+	if !ts.historyEnabled || conn == nil {
+		return
+	}
+	now := time.Now()
+
+	if ts.claimHistoryRefresh("c:"+conn.ID, now) {
+		ts.recordConnectionHistory(ctx, conn, now)
+	}
+	for _, id := range []string{conn.SourceID, conn.TargetID} {
+		if !ts.claimHistoryRefresh("s:"+id, now) {
+			continue
+		}
+		svc, err := ts.store.Services().Get(ctx, id)
+		if err != nil || svc == nil {
+			continue
+		}
+		ts.recordServiceHistory(ctx, svc, now)
+	}
+}
+
+// claimHistoryRefresh reports whether key is due a throughput-driven history
+// refresh at now, and if so records that it has had one. Entries older than
+// the refresh interval are swept at most once per maxGap so the map stays
+// proportional to the set of entities currently carrying traffic.
+func (ts *TopologyService) claimHistoryRefresh(key string, now time.Time) bool {
+	interval := ts.historyMaxGap / 2
+
+	ts.historyRefreshMu.Lock()
+	defer ts.historyRefreshMu.Unlock()
+
+	if ts.historyRefreshed == nil {
+		ts.historyRefreshed = make(map[string]time.Time)
+	}
+	if last, ok := ts.historyRefreshed[key]; ok && now.Sub(last) < interval {
+		return false
+	}
+	ts.historyRefreshed[key] = now
+
+	if now.Sub(ts.historyRefreshSwept) > ts.historyMaxGap {
+		for k, last := range ts.historyRefreshed {
+			if now.Sub(last) >= interval {
+				delete(ts.historyRefreshed, k)
+			}
+		}
+		ts.historyRefreshSwept = now
+	}
+	return true
 }
 
 // HistoryEnabled reports whether topology history is being recorded.
@@ -390,6 +469,7 @@ func (ts *TopologyService) UpdateConnectionStats(ctx context.Context, connID str
 	// Get updated connection for event
 	conn, _ := ts.store.Connections().Get(ctx, connID)
 	if conn != nil {
+		ts.refreshHistoryFromStats(ctx, conn)
 		ts.eventBus.PublishConnectionUpdated(ConnectionEvent{
 			ConnectionID:  conn.ID,
 			SourceID:      conn.SourceID,
