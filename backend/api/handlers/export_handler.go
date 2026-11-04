@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
@@ -21,11 +23,44 @@ func NewExportHandler(topology *service.TopologyService) *ExportHandler {
 	return &ExportHandler{topology: topology}
 }
 
+// errBadAt marks an unparseable `at` so the caller can answer 400 rather than
+// silently falling back to current state - the failure this whole parameter
+// exists to prevent.
+var errBadAt = errors.New("invalid at parameter")
+
+// topologyFor resolves which topology to render: current state, or the
+// reconstruction at `at` when the caller supplied one.
+func (h *ExportHandler) topologyFor(r *http.Request) (*storage.Topology, error) {
+	atParam := r.URL.Query().Get("at")
+	if atParam == "" {
+		return h.topology.GetTopology(r.Context())
+	}
+	at, err := time.Parse(time.RFC3339, atParam)
+	if err != nil {
+		return nil, errBadAt
+	}
+	return h.topology.GetTopologyAt(r.Context(), at)
+}
+
 // HandleExport handles GET /api/v1/topology/export?format=mermaid|dot
+//
+// Accepts the same `at` parameter as GET /topology. Without it the export
+// silently rendered current state even while the UI was showing a past
+// instant, so exporting "the diagram as of the incident" - the postmortem case
+// this feature exists for - produced today's diagram with nothing to indicate
+// it. The JSON export already followed the timeline; these now agree.
 func (h *ExportHandler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
 
-	topology, err := h.topology.GetTopology(r.Context())
+	topology, err := h.topologyFor(r)
+	if errors.Is(err, errBadAt) {
+		http.Error(w, "Invalid 'at' parameter: expected RFC 3339 timestamp", http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, service.ErrHistoryDisabled) {
+		http.Error(w, "Topology history is not enabled", http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		http.Error(w, "Failed to get topology", http.StatusInternalServerError)
 		return

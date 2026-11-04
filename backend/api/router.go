@@ -2,11 +2,13 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"runtime"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	log "github.com/sirupsen/logrus"
 
 	"github.com/Herenn/Infralens/backend/api/handlers"
 	"github.com/Herenn/Infralens/backend/api/middleware"
@@ -28,6 +30,9 @@ type Server struct {
 	eventBus   *service.EventBus
 	k8sWatcher *k8s.Watcher
 	llmManager *llm.Manager
+
+	// stopBackground cancels goroutines the server owns (drift detection).
+	stopBackground context.CancelFunc
 }
 
 // NewServer creates a new API server.
@@ -42,6 +47,9 @@ func NewServer(
 
 	// Create topology service
 	topologySvc := service.NewTopologyService(store, eventBus)
+	if cfg.Storage.HistoryEnabled {
+		topologySvc.EnableHistory(cfg.Storage.HistoryMaxGap, cfg.Storage.HistoryRetention)
+	}
 
 	// Create event processor
 	processor := service.NewEventProcessor(topologySvc, k8sWatcher)
@@ -60,8 +68,32 @@ func NewServer(
 	// Set build info for metrics
 	metrics.SetBuildInfo(handlers.Version, runtime.Version())
 
+	bgCtx, cancel := context.WithCancel(context.Background())
+	s.stopBackground = cancel
+	s.startDriftDetection(bgCtx)
+
 	s.setupRoutes()
 	return s
+}
+
+// startDriftDetection starts architecture drift notifications if a webhook is
+// configured. Drift is computed from topology history, so it needs history on.
+func (s *Server) startDriftDetection(ctx context.Context) {
+	if !s.config.Drift.Enabled() {
+		return
+	}
+	detector, err := s.topology.NewDriftDetector(service.DriftConfig{
+		Interval:  s.config.Drift.Interval,
+		GoneAfter: s.config.Drift.GoneAfter,
+		Warmup:    s.config.Drift.Warmup,
+	}, service.NewWebhookDriftNotifier(s.config.Drift.WebhookURL))
+	if err != nil {
+		log.WithError(err).Warn("DRIFT_WEBHOOK_URL is set but drift detection could not start " +
+			"(it requires HISTORY_ENABLED=true) - no drift notifications will be sent")
+		return
+	}
+	log.Info("Architecture drift notifications enabled")
+	go detector.Run(ctx)
 }
 
 // setupRoutes configures all API routes.
@@ -86,9 +118,25 @@ func (s *Server) setupRoutes() {
 	// Topology query endpoints
 	api.HandleFunc("/topology", topologyHandler.HandleGetTopology).Methods("GET")
 	api.HandleFunc("/topology/export", exportHandler.HandleExport).Methods("GET")
+	api.HandleFunc("/topology/history/range", topologyHandler.HandleGetHistoryRange).Methods("GET")
+	api.HandleFunc("/topology/history/stale", topologyHandler.HandleGetStaleServices).Methods("GET")
+	api.HandleFunc("/topology/history/diff", topologyHandler.HandleGetTopologyDiff).Methods("GET")
 	api.HandleFunc("/services", topologyHandler.HandleGetServices).Methods("GET")
-	api.HandleFunc("/services/{id}", topologyHandler.HandleGetService).Methods("GET")
+	// Service IDs routinely contain a literal "/" (e.g. "10.0.1.10/nginx"),
+	// so {id} must be greedy (".+", not the default "[^/]+") to match them at
+	// all. Impact is deliberately NOT a nested path segment
+	// ("/services/{id}/impact"): a service whose ID happens to end in the
+	// literal substring "/impact" (e.g. a real service named "impact" - not
+	// far-fetched) would be indistinguishable at the URL level from the
+	// bare ID ".../impact" plus an /impact suffix, and no amount of route
+	// ordering fixes that ambiguity since both parse to the same path. A
+	// query parameter carries the id outside the path entirely, matching
+	// direction/depth/at which are already query params on this endpoint.
+	api.HandleFunc("/graph/impact", topologyHandler.HandleGetImpact).Methods("GET")
+	api.HandleFunc("/services/{id:.+}", topologyHandler.HandleGetService).Methods("GET")
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
+	api.HandleFunc("/graph/criticality", topologyHandler.HandleGetCriticality).Methods("GET")
+	api.HandleFunc("/graph/orphans", topologyHandler.HandleGetOrphans).Methods("GET")
 
 	// WebSocket endpoint
 	api.HandleFunc("/ws", wsHandler.HandleWebSocket)
@@ -142,5 +190,8 @@ func (s *Server) TopologyService() *service.TopologyService {
 
 // Close closes the server and releases resources.
 func (s *Server) Close() {
+	if s.stopBackground != nil {
+		s.stopBackground()
+	}
 	s.eventBus.Close()
 }

@@ -25,6 +25,10 @@ func StoreSuite(t *testing.T, store Store) {
 		MetricsRepoSuite(t, store)
 	})
 
+	t.Run("HistoryRepository", func(t *testing.T) {
+		HistoryRepoSuite(t, store)
+	})
+
 	t.Run("Store", func(t *testing.T) {
 		StoreFunctionsSuite(t, store)
 	})

@@ -2,6 +2,8 @@
 package config
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -27,6 +29,39 @@ type Config struct {
 
 	// LLM configuration
 	LLM LLMConfig
+
+	// Architecture drift notifications
+	Drift DriftConfig
+}
+
+// DriftConfig configures architecture drift notifications: a webhook called
+// when a dependency appears that has never been seen before, or an
+// established one stops being observed. Disabled unless WebhookURL is set.
+type DriftConfig struct {
+	WebhookURL string
+	Interval   time.Duration
+	GoneAfter  time.Duration
+	Warmup     time.Duration
+}
+
+// Enabled reports whether drift notifications are configured.
+func (c DriftConfig) Enabled() bool {
+	return c.WebhookURL != ""
+}
+
+// Validate rejects a webhook URL that could never be delivered to, so a typo
+// fails at startup instead of silently dropping every notification. The URL
+// itself is never included in the error: Slack-style webhook URLs embed their
+// secret.
+func (c DriftConfig) Validate() error {
+	if !c.Enabled() {
+		return nil
+	}
+	u, err := url.Parse(c.WebhookURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("DRIFT_WEBHOOK_URL must be an absolute http(s) URL")
+	}
+	return nil
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -84,6 +119,14 @@ func Load() *Config {
 			AutoMigrate:     getBoolEnv("DB_AUTO_MIGRATE", true),
 			PruneInterval:   getDurationEnv("PRUNE_INTERVAL", 5*time.Minute),
 			PruneMaxAge:     getDurationEnv("PRUNE_MAX_AGE", 30*time.Minute),
+
+			// Topology history. Retention is deliberately unrelated to
+			// PRUNE_MAX_AGE above: that governs current state and is measured
+			// in minutes, while history is what makes "show me last week"
+			// possible and is measured in days.
+			HistoryEnabled:   getBoolEnv("HISTORY_ENABLED", true),
+			HistoryRetention: getDurationEnv("HISTORY_RETENTION", storage.DefaultHistoryRetention),
+			HistoryMaxGap:    getDurationEnv("HISTORY_MAX_GAP", storage.DefaultHistoryMaxGap),
 		},
 
 		CORS: middleware.CORSConfig{
@@ -121,6 +164,17 @@ func Load() *Config {
 			LMStudioURL:     getEnv("LMSTUDIO_URL", ""),
 			LMStudioModel:   getEnv("LMSTUDIO_MODEL", ""),
 			DefaultProvider: getEnv("DEFAULT_LLM_PROVIDER", ""),
+		},
+
+		// Unset durations fall back to the service package's defaults (5m
+		// check interval, 24h gone-after, 1h warmup) - see DriftConfig there.
+		// Warmup's unset sentinel is -1 rather than 0 so DRIFT_WARMUP=0s can
+		// mean "no warmup".
+		Drift: DriftConfig{
+			WebhookURL: getEnv("DRIFT_WEBHOOK_URL", ""),
+			Interval:   getDurationEnv("DRIFT_CHECK_INTERVAL", 0),
+			GoneAfter:  getDurationEnv("DRIFT_GONE_AFTER", 0),
+			Warmup:     getDurationEnv("DRIFT_WARMUP", -1),
 		},
 	}
 

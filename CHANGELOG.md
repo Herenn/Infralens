@@ -5,6 +5,92 @@ All notable changes to InfraLens are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-11-04
+
+InfraLens remembers. Until now it could only answer "what is talking to what
+right now" — current state was hard-deleted after 30 minutes. v3 records
+topology history and builds on it: time travel, diffs, drift notifications,
+blast radius, and cleanup candidates.
+
+### Upgrading from 2.x
+
+- **Mount a volume at `/data` if you want history to survive restarts.**
+  Current state is repopulated by agents within seconds; history cannot be
+  re-derived. Helm: `--set backend.persistence.enabled=true` (off by default
+  to keep the one-command quick start; turning it on also switches the
+  Deployment to the `Recreate` strategy). docker-compose and the raw k8s
+  manifests mount one by default.
+- **History is on by default** (`HISTORY_ENABLED=true`, 30-day
+  `HISTORY_RETENTION`). Recording costs roughly 30–40% more backend time per
+  ingested event; set `HISTORY_ENABLED=false` to opt out.
+- **The new read endpoints are public**, like `/api/v1/topology` already was,
+  and the history endpoints expose up to `HISTORY_RETENTION` of past topology.
+  The UI has no login flow yet, so on an untrusted network put InfraLens
+  behind an authenticating reverse proxy. UI authentication is the first item
+  after this release.
+
+### Added
+
+- **Topology history.** Services and connections are recorded as intervals
+  (`[first_seen, last_seen]`, extended in place while observed), so write
+  volume tracks how often the architecture changes rather than how often
+  agents report — which is what keeps this viable on SQLite. Configured with
+  `HISTORY_ENABLED`, `HISTORY_RETENTION`, `HISTORY_MAX_GAP`; retention is
+  independent of `PRUNE_MAX_AGE`.
+- **Time travel.** `GET /api/v1/topology?at=<RFC3339>` reconstructs the graph
+  at any instant in the retention window; a timeline scrubber in the UI drives
+  it. Blast radius and graph export follow the instant being viewed.
+- **Architecture drift notifications.** Set `DRIFT_WEBHOOK_URL` and InfraLens
+  POSTs when a dependency appears that has never been seen before (flagging
+  ones that reach the public internet) or an established one stops being
+  observed for `DRIFT_GONE_AFTER` (default 24h). The payload has a
+  Slack-compatible `text` field plus structured `appeared`/`disappeared`
+  lists. Built to stay quiet: a warmup window (`DRIFT_WARMUP`, 1h) on fresh
+  installs, no re-announcing after restarts, no "everything vanished" when
+  agents stop reporting, and inbound internet clients are ignored as churn.
+  Helm: `backend.drift.webhookUrl` (stored in the chart's Secret).
+- **Topology diff** — `GET /api/v1/topology/history/diff?from=&to=` and a diff
+  panel: what appeared and disappeared between two instants.
+- **Blast radius** — `GET /api/v1/graph/impact?service=<id>&direction=upstream|downstream&depth=`:
+  what transitively breaks if a service goes down, or what it depends on.
+  Highlighted in the graph from the service drawer.
+- **Criticality ranking** — `GET /api/v1/graph/criticality`: services ranked by
+  upstream blast radius, the riskiest single points of failure.
+- **Orphan detection** — `GET /api/v1/graph/orphans`: services with no
+  connections at all.
+- **Decommission candidates** — `GET /api/v1/topology/history/stale`: services
+  not observed for a while (default 7 days, or half the retention when that is
+  shorter).
+- `GET /api/v1/topology/history/range` — the time span history covers.
+- Helm `backend.extraEnv`, so new backend settings don't need a chart release.
+- CI runs the Postgres storage suite and lints new backend code with
+  golangci-lint.
+
+### Changed
+
+- The backend image's working directory is `/data`, owned by the nonroot
+  user. The default `DB_DSN` (`infralens.db`) previously resolved to an
+  unwritable `/infralens.db`, so the backend failed at startup unless
+  `DB_DSN` was overridden.
+- Responses reconstructed from history (`?at=`, diffs) omit `healthy` rather
+  than claiming every past service was healthy — intervals don't record
+  health.
+
+### Fixed
+
+- Long-lived connections (database pools, gRPC channels, Kafka consumers)
+  are kept alive in history by their throughput reports, not only by
+  connect/accept events. Previously history showed such a dependency, and
+  often both of its endpoints, as gone a few minutes after it was opened.
+- Connections whose endpoint services had already been pruned ("phantom
+  endpoints") no longer appear in blast radius, criticality, orphans, or
+  historical topology, so results never reference nodes they don't contain.
+- History writes stay one interval per continuous observation under
+  concurrent ingestion, and `?at=now` includes currently live entities.
+- The timeline scrubber and history panels no longer stay hidden forever on a
+  fresh install, the graph re-lays out when switching between live and
+  historical views, and the blast-radius highlight can be cleared.
+
 ## [2.1.0] - 2026-08-05
 
 Security release. Three of these changes will stop

@@ -1,18 +1,18 @@
 import { useState, useEffect } from 'react'
-import { 
-  X, 
-  Server, 
-  Globe, 
-  Clock, 
-  Hash, 
-  ArrowUpRight, 
-  ArrowDownLeft, 
-  Zap, 
-  Cpu, 
-  Database, 
-  HardDrive, 
-  MessageSquare, 
-  Shield, 
+import {
+  X,
+  Server,
+  Globe,
+  Clock,
+  Hash,
+  ArrowUpRight,
+  ArrowDownLeft,
+  Zap,
+  Cpu,
+  Database,
+  HardDrive,
+  MessageSquare,
+  Shield,
   Activity as ActivityIcon,
   Sparkles,
   MemoryStick,
@@ -27,7 +27,8 @@ import {
   ExternalLink,
   CheckCircle2,
   XCircle,
-  Settings
+  Settings,
+  Radar
 } from 'lucide-react'
 import { Service, Connection, ServiceInspection, formatBytes, TypeColors } from '../types'
 import { apiUrl } from '../lib/api'
@@ -78,6 +79,11 @@ interface ServiceDrawerProps {
   } | null
   // Node type
   nodeType: 'service' | 'server' | null
+  // Blast radius ("what breaks if I take this down" / "what does this depend on")
+  onShowImpact?: (serviceId: string, direction: 'upstream' | 'downstream') => void
+  onClearImpact?: () => void
+  // Set when this service is the current impact root, to the direction shown
+  activeImpactDirection?: 'upstream' | 'downstream' | null
 }
 
 type TabType = 'overview' | 'ai'
@@ -89,7 +95,10 @@ export default function ServiceDrawer({
   connections = [],
   ports = [],
   serverData,
-  nodeType
+  nodeType,
+  onShowImpact,
+  onClearImpact,
+  activeImpactDirection = null
 }: ServiceDrawerProps) {
   const [activeTab, setActiveTab] = useState<TabType>('overview')
   const [isAnimating, setIsAnimating] = useState(false)
@@ -205,10 +214,43 @@ export default function ServiceDrawer({
           </button>
         </div>
 
+        {/* Blast radius actions */}
+        {nodeType === 'service' && service && onShowImpact && (
+          <div className="flex items-center gap-2 px-5 py-2.5 border-b border-slate-700/50">
+            <Radar size={14} className="text-slate-500 shrink-0" />
+            <button
+              onClick={() => activeImpactDirection === 'upstream'
+                ? onClearImpact?.()
+                : onShowImpact(service.id, 'upstream')}
+              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
+                activeImpactDirection === 'upstream'
+                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                  : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200 hover:border-slate-600'
+              }`}
+              title="Highlight everything that (transitively) calls this service"
+            >
+              What breaks if this goes down
+            </button>
+            <button
+              onClick={() => activeImpactDirection === 'downstream'
+                ? onClearImpact?.()
+                : onShowImpact(service.id, 'downstream')}
+              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
+                activeImpactDirection === 'downstream'
+                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                  : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200 hover:border-slate-600'
+              }`}
+              title="Highlight everything this service (transitively) depends on"
+            >
+              What this depends on
+            </button>
+          </div>
+        )}
+
         {/* Tabs */}
         <div className="flex border-b border-slate-700/50">
-          <TabButton 
-            active={activeTab === 'overview'} 
+          <TabButton
+            active={activeTab === 'overview'}
             onClick={() => setActiveTab('overview')}
             icon={<ActivityIcon size={14} />}
             label="Overview"
