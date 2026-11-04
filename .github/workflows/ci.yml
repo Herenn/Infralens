@@ -12,6 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # only-new-issues below needs the base branch's history to diff
+          # against; the default shallow clone (depth 1) doesn't have it.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -30,6 +34,18 @@ jobs:
         run: |
           cd backend
           go build -v ./...
+
+      - name: Lint Backend
+        uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: backend
+          version: latest
+          # Scoped to lines this PR/push touches, not the whole tree: main
+          # currently carries ~60 pre-existing errcheck/staticcheck findings
+          # never gated on before. Ratchet the bar for new code instead of
+          # gating the whole backend on a debt backlog nobody signed up to
+          # fix in this change.
+          only-new-issues: true
 
       - name: Test Backend
         run: |

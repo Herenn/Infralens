@@ -27,7 +27,7 @@ func newHistoryTestService(t *testing.T, enable bool) (*TopologyService, storage
 	if err != nil {
 		t.Fatalf("creating store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 
 	bus := NewEventBus(64)
 	t.Cleanup(bus.Close)
@@ -132,7 +132,7 @@ func TestHistorySurvivesCurrentStatePruning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	bus := NewEventBus(64)
 	defer bus.Close()
@@ -532,7 +532,7 @@ func TestHistoryRetentionIndependentOfCurrentStatePruning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	ctx := context.Background()
 
 	// Older than the history window, so retention should collect it.

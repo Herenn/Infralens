@@ -23,7 +23,7 @@ func newImpactTestService(t *testing.T) *TopologyService {
 	if err != nil {
 		t.Fatalf("creating store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 
 	bus := NewEventBus(64)
 	t.Cleanup(bus.Close)
@@ -373,7 +373,7 @@ func TestGetImpact_AtPastInstant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	bus := NewEventBus(64)
 	t.Cleanup(bus.Close)
 	ts := NewTopologyService(store, bus)

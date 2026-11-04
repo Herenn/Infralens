@@ -38,7 +38,7 @@ func (h *TopologyHandler) HandleGetTopology(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(convertTopologyToResponse(topology, true))
+		_ = json.NewEncoder(w).Encode(convertTopologyToResponse(topology, true))
 		return
 	}
 
@@ -59,7 +59,7 @@ func (h *TopologyHandler) HandleGetTopology(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(convertTopologyToResponse(topology, false))
+	_ = json.NewEncoder(w).Encode(convertTopologyToResponse(topology, false))
 }
 
 // HandleGetHistoryRange returns the earliest and latest instants covered by
@@ -88,7 +88,7 @@ func (h *TopologyHandler) HandleGetHistoryRange(w http.ResponseWriter, r *http.R
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // HandleGetTopologyDiff returns what appeared and disappeared between two
@@ -138,7 +138,7 @@ func (h *TopologyHandler) HandleGetTopologyDiff(w http.ResponseWriter, r *http.R
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(convertTopologyDiffToResponse(diff))
+	_ = json.NewEncoder(w).Encode(convertTopologyDiffToResponse(diff))
 }
 
 // HandleGetStaleServices returns decommission candidates: services whose
@@ -279,7 +279,7 @@ func (h *TopologyHandler) HandleGetServices(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // HandleGetService returns a single service by ID.
@@ -300,7 +300,7 @@ func (h *TopologyHandler) HandleGetService(w http.ResponseWriter, r *http.Reques
 
 	response := convertServiceToResponse(*svc, true)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // HandleGetStats returns graph statistics.
@@ -313,7 +313,7 @@ func (h *TopologyHandler) HandleGetStats(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	_ = json.NewEncoder(w).Encode(stats)
 }
 
 // defaultListLimit caps the list endpoints that would otherwise serialize
@@ -369,7 +369,7 @@ func (h *TopologyHandler) HandleGetCriticality(w http.ResponseWriter, r *http.Re
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // HandleGetOrphans returns services with no connections at all - neither
@@ -399,7 +399,7 @@ func (h *TopologyHandler) HandleGetOrphans(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // Response types to maintain frontend compatibility
@@ -575,12 +575,12 @@ func convertMetricsToResponse(m storage.NodeMetrics) MetricsResponse {
 
 // TopologyDiffResponse is what appeared and disappeared between two instants.
 type TopologyDiffResponse struct {
-	From                string                `json:"from"`
-	To                  string                `json:"to"`
-	AddedServices       []ServiceResponse     `json:"added_services"`
-	RemovedServices     []ServiceResponse     `json:"removed_services"`
-	AddedConnections    []ConnectionResponse  `json:"added_connections"`
-	RemovedConnections  []ConnectionResponse  `json:"removed_connections"`
+	From               string               `json:"from"`
+	To                 string               `json:"to"`
+	AddedServices      []ServiceResponse    `json:"added_services"`
+	RemovedServices    []ServiceResponse    `json:"removed_services"`
+	AddedConnections   []ConnectionResponse `json:"added_connections"`
+	RemovedConnections []ConnectionResponse `json:"removed_connections"`
 }
 
 func convertTopologyDiffToResponse(d *service.TopologyDiff) TopologyDiffResponse {

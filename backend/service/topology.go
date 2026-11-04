@@ -876,12 +876,12 @@ func (ts *TopologyService) GetStaleServices(ctx context.Context, olderThan time.
 // TopologyDiff is the set difference between the topology at two instants:
 // what appeared and what disappeared between From and To.
 type TopologyDiff struct {
-	From                time.Time
-	To                  time.Time
-	AddedServices       []storage.Service
-	RemovedServices     []storage.Service
-	AddedConnections    []storage.Connection
-	RemovedConnections  []storage.Connection
+	From               time.Time
+	To                 time.Time
+	AddedServices      []storage.Service
+	RemovedServices    []storage.Service
+	AddedConnections   []storage.Connection
+	RemovedConnections []storage.Connection
 }
 
 // GetTopologyDiff compares the topology at two instants and returns what

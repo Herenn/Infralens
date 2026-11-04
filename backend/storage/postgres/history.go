@@ -164,7 +164,7 @@ func (r *HistoryRepo) RecordConnection(ctx context.Context, conn *storage.Connec
 const serviceIntervalColumns = `id, service_id, name, type, tech, namespace, node, first_seen, last_seen`
 
 func (r *HistoryRepo) scanServiceIntervals(rows *sql.Rows) ([]storage.ServiceInterval, error) {
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []storage.ServiceInterval
 	for rows.Next() {
@@ -214,7 +214,7 @@ func (r *HistoryRepo) ServicesBetween(ctx context.Context, from, to time.Time) (
 const connectionIntervalColumns = `id, connection_id, source_id, target_id, port, protocol, first_seen, last_seen`
 
 func (r *HistoryRepo) scanConnectionIntervals(rows *sql.Rows) ([]storage.ConnectionInterval, error) {
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []storage.ConnectionInterval
 	for rows.Next() {
