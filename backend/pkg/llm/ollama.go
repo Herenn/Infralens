@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -23,13 +23,11 @@ func NewOllamaProvider(config *Config) *OllamaProvider {
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
 	}
-	model := config.OllamaModel
-	if model == "" {
-		model = "llama2"
-	}
+	// No hard-coded default model: when OLLAMA_MODEL is unset the first
+	// locally installed model is used (see resolveModel).
 	return &OllamaProvider{
 		baseURL: baseURL,
-		model:   model,
+		model:   config.OllamaModel,
 		client: &http.Client{
 			Timeout: 5 * time.Minute, // Local models can be slow
 		},
@@ -38,6 +36,29 @@ func NewOllamaProvider(config *Config) *OllamaProvider {
 
 func (p *OllamaProvider) Name() string {
 	return "Ollama"
+}
+
+// DefaultModel returns OLLAMA_MODEL, or "" when unset (first installed model
+// is used at request time).
+func (p *OllamaProvider) DefaultModel() string { return p.model }
+
+// resolveModel picks the model for a request: explicit, configured, else the
+// first installed model.
+func (p *OllamaProvider) resolveModel(ctx context.Context, requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	if p.model != "" {
+		return p.model, nil
+	}
+	models, err := p.ListModels(ctx)
+	if err != nil {
+		return "", fmt.Errorf("OLLAMA_MODEL is not set and installed models could not be listed: %w", err)
+	}
+	if len(models) == 0 {
+		return "", fmt.Errorf("no Ollama models are installed; run `ollama pull %s` or set OLLAMA_MODEL", DefaultOllamaModel)
+	}
+	return models[0], nil
 }
 
 func (p *OllamaProvider) IsConfigured() bool {
@@ -104,9 +125,9 @@ type ollamaTagsResponse struct {
 }
 
 func (p *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
-	model := p.model
-	if req.Model != "" {
-		model = req.Model
+	model, err := p.resolveModel(ctx, req.Model)
+	if err != nil {
+		return nil, err
 	}
 
 	maxTokens := req.MaxTokens
@@ -153,9 +174,14 @@ func (p *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readBody(resp.Body, maxCompletionBody)
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		code, msg := decodeErrorFields(respBody)
+		return nil, upstreamError(string(ProviderOllama), model, resp.StatusCode, code, msg, respBody)
 	}
 
 	var ollamaResp ollamaResponse
@@ -164,7 +190,10 @@ func (p *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	}
 
 	if ollamaResp.Error != "" {
-		return nil, fmt.Errorf("Ollama error: %s", ollamaResp.Error)
+		return nil, upstreamError(string(ProviderOllama), model, resp.StatusCode, "", ollamaResp.Error, nil)
+	}
+	if strings.TrimSpace(ollamaResp.Message.Content) == "" {
+		return nil, &ResponseRefusedError{Provider: string(ProviderOllama), Model: model, Reason: fmt.Sprintf("empty response, done_reason %q", ollamaResp.DoneReason)}
 	}
 
 	return &CompletionResponse{
@@ -182,20 +211,26 @@ func (p *OllamaProvider) ListModels(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := p.client.Do(req)
+	body, status, err := doList(p.client, req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching models: %w", sanitizeTransportError(err))
+		return nil, err
 	}
-	defer resp.Body.Close()
+	if status != http.StatusOK {
+		code, msg := decodeErrorFields(body)
+		return nil, upstreamError(string(ProviderOllama), "", status, code, msg, body)
+	}
 
 	var tagsResp ollamaTagsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
+	if err := json.Unmarshal(body, &tagsResp); err != nil {
 		return nil, fmt.Errorf("parsing response: %w", err)
 	}
 
-	models := make([]string, len(tagsResp.Models))
-	for i, m := range tagsResp.Models {
-		models[i] = m.Name
+	// Installed models, minus embedding-only ones that cannot chat.
+	var models []string
+	for _, m := range tagsResp.Models {
+		if m.Name != "" && isTextModel(m.Name) {
+			models = append(models, m.Name)
+		}
 	}
 
 	return models, nil
@@ -227,6 +262,10 @@ func (p *LMStudioProvider) Name() string {
 	return "LM Studio"
 }
 
+// DefaultModel returns LMSTUDIO_MODEL, or "" when unset (first loaded model
+// is used at request time).
+func (p *LMStudioProvider) DefaultModel() string { return p.model }
+
 func (p *LMStudioProvider) IsConfigured() bool {
 	// Check if LM Studio is running
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -251,6 +290,14 @@ func (p *LMStudioProvider) Complete(ctx context.Context, req CompletionRequest) 
 	model := p.model
 	if req.Model != "" {
 		model = req.Model
+	}
+	if model == "" {
+		// Best effort: name the first loaded model so errors can say which
+		// model was used. If listing fails, send no model and let LM Studio
+		// pick its loaded one, as before.
+		if models, err := p.ListModels(ctx); err == nil && len(models) > 0 {
+			model = models[0]
+		}
 	}
 
 	maxTokens := req.MaxTokens
@@ -293,9 +340,14 @@ func (p *LMStudioProvider) Complete(ctx context.Context, req CompletionRequest) 
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readBody(resp.Body, maxCompletionBody)
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		code, msg := decodeErrorFields(respBody)
+		return nil, upstreamError(string(ProviderLMStudio), model, resp.StatusCode, code, msg, respBody)
 	}
 
 	var openAIResp openAIResponse
@@ -304,11 +356,15 @@ func (p *LMStudioProvider) Complete(ctx context.Context, req CompletionRequest) 
 	}
 
 	if openAIResp.Error != nil {
-		return nil, fmt.Errorf("LM Studio error: %s", openAIResp.Error.Message)
+		return nil, upstreamError(string(ProviderLMStudio), model, resp.StatusCode, openAIResp.Error.Code, openAIResp.Error.Message, nil)
 	}
 
 	if len(openAIResp.Choices) == 0 {
 		return nil, fmt.Errorf("no response from LM Studio")
+	}
+	ch := openAIResp.Choices[0]
+	if err := checkOpenAIChoice(string(ProviderLMStudio), model, ch.Message.Content, ch.Message.Refusal, ch.FinishReason); err != nil {
+		return nil, err
 	}
 
 	return &CompletionResponse{
@@ -326,24 +382,29 @@ func (p *LMStudioProvider) ListModels(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := p.client.Do(req)
+	body, status, err := doList(p.client, req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching models: %w", sanitizeTransportError(err))
+		return nil, err
 	}
-	defer resp.Body.Close()
+	if status != http.StatusOK {
+		code, msg := decodeErrorFields(body)
+		return nil, upstreamError(string(ProviderLMStudio), "", status, code, msg, body)
+	}
 
 	var modelsResp struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&modelsResp); err != nil {
+	if err := json.Unmarshal(body, &modelsResp); err != nil {
 		return nil, fmt.Errorf("parsing response: %w", err)
 	}
 
-	models := make([]string, len(modelsResp.Data))
-	for i, m := range modelsResp.Data {
-		models[i] = m.ID
+	var models []string
+	for _, m := range modelsResp.Data {
+		if m.ID != "" && isTextModel(m.ID) {
+			models = append(models, m.ID)
+		}
 	}
 
 	return models, nil

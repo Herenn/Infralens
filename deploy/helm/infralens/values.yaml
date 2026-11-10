@@ -177,19 +177,19 @@ backend:
     # OpenAI
     openai:
       apiKey: ""
-      model: "gpt-3.5-turbo"
+      model: ""  # empty = backend default (gpt-6-luna)
     # Anthropic
     anthropic:
       apiKey: ""
-      model: "claude-3-haiku-20240307"
+      model: ""  # empty = backend default (claude-haiku-5-5)
     # Google Gemini
     gemini:
       apiKey: ""
-      model: "gemini-pro"
+      model: ""  # empty = backend default (gemini-3.5-flash-lite)
     # Ollama (local)
     ollama:
       url: ""
-      model: "llama2"
+      model: ""  # empty = first installed local model
     # Default provider
     defaultProvider: "openai"
 

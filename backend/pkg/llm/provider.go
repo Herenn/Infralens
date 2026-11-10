@@ -52,31 +52,39 @@ type LLMProvider interface {
 	// Complete generates a completion for the given request.
 	Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error)
 
-	// ListModels returns available models for this provider.
+	// ListModels returns available models for this provider, queried live
+	// from the provider's list-models API. Callers wanting caching and a
+	// static fallback should use Manager.Models instead.
 	ListModels(ctx context.Context) ([]string, error)
+
+	// DefaultModel returns the model used when a request names none: the
+	// configured *_MODEL value, else the package default for the provider.
+	// Empty for local providers with no configured model (they use the first
+	// locally available model).
+	DefaultModel() string
 }
 
 // Config holds configuration for all LLM providers.
 type Config struct {
 	// OpenAI
 	OpenAIAPIKey string `json:"openai_api_key,omitempty"`
-	OpenAIModel  string `json:"openai_model,omitempty"` // Default: gpt-4-turbo-preview
+	OpenAIModel  string `json:"openai_model,omitempty"` // Default: DefaultOpenAIModel
 
 	// Anthropic
 	AnthropicAPIKey string `json:"anthropic_api_key,omitempty"`
-	AnthropicModel  string `json:"anthropic_model,omitempty"` // Default: claude-3-opus-20240229
+	AnthropicModel  string `json:"anthropic_model,omitempty"` // Default: DefaultAnthropicModel
 
 	// Google Gemini
 	GeminiAPIKey string `json:"gemini_api_key,omitempty"`
-	GeminiModel  string `json:"gemini_model,omitempty"` // Default: gemini-pro
+	GeminiModel  string `json:"gemini_model,omitempty"` // Default: DefaultGeminiModel
 
 	// Ollama (local)
 	OllamaURL   string `json:"ollama_url,omitempty"`   // Default: http://localhost:11434
-	OllamaModel string `json:"ollama_model,omitempty"` // Default: llama2
+	OllamaModel string `json:"ollama_model,omitempty"` // Default: first installed model, else DefaultOllamaModel
 
 	// LM Studio (local)
-	LMStudioURL   string `json:"lmstudio_url,omitempty"` // Default: http://localhost:1234
-	LMStudioModel string `json:"lmstudio_model,omitempty"`
+	LMStudioURL   string `json:"lmstudio_url,omitempty"`   // Default: http://localhost:1234
+	LMStudioModel string `json:"lmstudio_model,omitempty"` // Default: first loaded model
 
 	// Default provider to use
 	DefaultProvider Provider `json:"default_provider,omitempty"`
@@ -92,6 +100,7 @@ type Manager struct {
 	mu        sync.RWMutex
 	config    *Config
 	providers map[Provider]LLMProvider
+	models    *modelCache // list-models cache; replaced by UpdateConfig
 }
 
 // NewManager creates a new LLM manager with the given configuration.
@@ -103,6 +112,7 @@ func NewManager(config *Config) *Manager {
 	m := &Manager{
 		config:    config,
 		providers: make(map[Provider]LLMProvider),
+		models:    newModelCache(),
 	}
 
 	// Initialize providers
@@ -190,6 +200,7 @@ func (m *Manager) UpdateConfig(config *Config) {
 	defer m.mu.Unlock()
 	m.config = config
 	m.providers = providers
+	m.models = newModelCache()
 }
 
 // Config returns the manager's current configuration.

@@ -781,7 +781,7 @@ const AI_DOCS_CACHE_PREFIX = 'infralens_ai_docs_'
 const AI_DOCS_CACHE_TTL = 24 * 60 * 60 * 1000 // 24 hours
 
 // Get cached docs from localStorage
-function getCachedDocs(serviceId: string): { content: string; provider: string; timestamp: number } | null {
+function getCachedDocs(serviceId: string): { content: string; provider: string; model?: string; timestamp: number } | null {
   try {
     const cached = localStorage.getItem(AI_DOCS_CACHE_PREFIX + serviceId)
     if (!cached) return null
@@ -799,11 +799,13 @@ function getCachedDocs(serviceId: string): { content: string; provider: string; 
 }
 
 // Save docs to localStorage cache
-function cacheDocs(serviceId: string, content: string, provider: string) {
+function cacheDocs(serviceId: string, content: string, provider: string, model?: string) {
+  if (!content || !content.trim()) return // never cache an empty/failed result
   try {
     localStorage.setItem(AI_DOCS_CACHE_PREFIX + serviceId, JSON.stringify({
       content,
       provider,
+      model,
       timestamp: Date.now()
     }))
   } catch {
@@ -811,8 +813,56 @@ function cacheDocs(serviceId: string, content: string, provider: string) {
   }
 }
 
+// AI provider catalogue entry from GET /api/v1/ai/providers. Model lists are
+// discovered live from each provider when configured ("live"), else a short
+// static list ("fallback").
+interface AIProviderInfo {
+  id: string
+  name: string
+  models: string[]
+  default_model?: string
+  models_source?: 'live' | 'fallback'
+  models_error?: string
+  configured?: boolean
+}
+
+// Structured 422 body from /ai/docs and /ai/ask when the provider rejected
+// the configured model (retired, misspelled, not pulled).
+interface AIModelError {
+  error: string
+  code: 'model_unavailable'
+  provider: string
+  model: string
+  suggestions?: string[]
+}
+
+const AI_MODEL_FIELDS = [
+  { provider: 'openai', field: 'openai_model', label: 'OpenAI model' },
+  { provider: 'anthropic', field: 'anthropic_model', label: 'Anthropic model' },
+  { provider: 'gemini', field: 'gemini_model', label: 'Gemini model' },
+  { provider: 'ollama', field: 'ollama_model', label: 'Ollama model (local)' },
+  { provider: 'lmstudio', field: 'lmstudio_model', label: 'LM Studio model (local)' },
+] as const
+
+type AIModelField = typeof AI_MODEL_FIELDS[number]['field']
+
+// Reads an error response: a structured JSON error (model_unavailable,
+// response_refused, ...) or plain text.
+async function readAIError(resp: Response): Promise<{ message: string; modelError: AIModelError | null }> {
+  const text = await resp.text()
+  try {
+    const body = JSON.parse(text)
+    if (body && typeof body.error === 'string') {
+      return { message: body.error, modelError: body.code === 'model_unavailable' ? (body as AIModelError) : null }
+    }
+  } catch {
+    // not JSON: fall through to plain text
+  }
+  return { message: text || `Server error: ${resp.status}`, modelError: null }
+}
+
 // AI Docs Tab
-function AIDocsTab({ 
+function AIDocsTab({
   service, 
   serverData: _serverData, 
   nodeType 
@@ -826,19 +876,33 @@ function AIDocsTab({
   const [generating, setGenerating] = useState(false)
   const [docs, setDocs] = useState<string | null>(null)
   const [provider, setProvider] = useState<string | null>(null)
+  const [docsModel, setDocsModel] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [modelError, setModelError] = useState<AIModelError | null>(null)
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [fromCache, setFromCache] = useState(false)
+  // Empty fields are left unchanged by the backend, so an untouched key or
+  // model field never wipes a value configured via environment variables.
   const [config, setConfig] = useState({
     openai_api_key: '',
     anthropic_api_key: '',
     gemini_api_key: '',
-    ollama_url: 'http://localhost:11434',
-    default_provider: 'openai'
+    openai_model: '',
+    anthropic_model: '',
+    gemini_model: '',
+    ollama_model: '',
+    lmstudio_model: '',
+    default_provider: ''
   })
   const [savingConfig, setSavingConfig] = useState(false)
+  const [aiProviders, setAiProviders] = useState<AIProviderInfo[]>([])
+  const [loadingProviders, setLoadingProviders] = useState(false)
+  // Fields to remove/reset on the next save, and the model values currently
+  // saved on the server (to know when "Reset to default" applies).
+  const [clearFields, setClearFields] = useState<string[]>([])
+  const [savedModels, setSavedModels] = useState<Record<string, string>>({})
 
   // Name for display (used in AI prompts internally)
   // const name = nodeType === 'server' ? serverData?.serverName : service?.name
@@ -857,12 +921,15 @@ function AIDocsTab({
       if (cached) {
         setDocs(cached.content)
         setProvider(cached.provider)
+        setDocsModel(cached.model || null)
         setFromCache(true)
         setError(null)
+        setModelError(null)
       } else {
         // Reset when switching to a new service without cache
         setDocs(null)
         setProvider(null)
+        setDocsModel(null)
         setFromCache(false)
       }
     }
@@ -895,9 +962,11 @@ function AIDocsTab({
     try {
       setGenerating(true)
       setError(null)
+      setModelError(null)
       if (forceRefresh) {
         setDocs(null)
         setProvider(null)
+        setDocsModel(null)
         setFromCache(false)
       }
       // Use AbortController for timeout
@@ -913,16 +982,22 @@ function AIDocsTab({
       clearTimeout(timeoutId)
       
       if (!resp.ok) {
-        const errText = await resp.text()
-        throw new Error(errText || `Server error: ${resp.status}`)
+        const { message, modelError: me } = await readAIError(resp)
+        setModelError(me)
+        throw new Error(message)
       }
       const data = await resp.json()
+      // Never show or cache an empty result as documentation.
+      if (typeof data.content !== 'string' || !data.content.trim()) {
+        throw new Error('The AI provider returned an empty answer. Try again, or pick another model or provider.')
+      }
       setDocs(data.content)
       setProvider(data.provider || null)
+      setDocsModel(data.model || null)
       setFromCache(false)
-      
+
       // Cache the docs
-      cacheDocs(serviceId, data.content, data.provider || '')
+      cacheDocs(serviceId, data.content, data.provider || '', data.model || undefined)
     } catch (err) {
       const e = err as Error
       if (e.name === 'AbortError') {
@@ -942,6 +1017,7 @@ function AIDocsTab({
     try {
       setGenerating(true)
       setError(null)
+      setModelError(null)
       setAnswer(null)
       // Use AbortController for timeout
       const controller = new AbortController()
@@ -956,8 +1032,9 @@ function AIDocsTab({
       clearTimeout(timeoutId)
       
       if (!resp.ok) {
-        const errText = await resp.text()
-        throw new Error(errText || `Server error: ${resp.status}`)
+        const { message, modelError: me } = await readAIError(resp)
+        setModelError(me)
+        throw new Error(message)
       }
       const data = await resp.json()
       setAnswer(data.content)
@@ -979,10 +1056,12 @@ function AIDocsTab({
     try {
       setSavingConfig(true)
       setError(null)
+      // Empty fields keep the server's current value; fields listed in
+      // `clear` are removed (keys) or reset to the default (models).
       const resp = await fetch(apiUrl('/api/v1/ai/config'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config)
+        body: JSON.stringify({ ...config, clear: clearFields })
       })
       if (!resp.ok) {
         const errText = await resp.text()
@@ -990,11 +1069,90 @@ function AIDocsTab({
       }
       await fetchAIStatus()
       setShowSettings(false)
+      setModelError(null)
+      setError(null)
+      setClearFields([])
+      // Keys are never echoed back; clear them from the form after saving.
+      setConfig(c => ({ ...c, openai_api_key: '', anthropic_api_key: '', gemini_api_key: '' }))
     } catch (err) {
       setError((err as Error).message || 'Failed to save configuration')
     } finally {
       setSavingConfig(false)
     }
+  }
+
+  // Loads current model settings and the provider model catalogue when the
+  // settings panel opens.
+  const openSettings = async () => {
+    setShowSettings(true)
+    setLoadingProviders(true)
+    try {
+      const [cfgResp, provResp] = await Promise.all([
+        fetch(apiUrl('/api/v1/ai/config'), { signal: AbortSignal.timeout(5000) }),
+        fetch(apiUrl('/api/v1/ai/providers'), { signal: AbortSignal.timeout(15000) }),
+      ])
+      if (cfgResp.ok) {
+        const cfg = await cfgResp.json()
+        const models: Record<string, string> = cfg.models || {}
+        setSavedModels(models)
+        setClearFields([])
+        setConfig(c => ({
+          ...c,
+          openai_model: models.openai || '',
+          anthropic_model: models.anthropic || '',
+          gemini_model: models.gemini || '',
+          ollama_model: models.ollama || '',
+          lmstudio_model: models.lmstudio || '',
+          default_provider: cfg.default_provider || c.default_provider,
+        }))
+      }
+      if (provResp.ok) {
+        const data = await provResp.json()
+        setAiProviders(Array.isArray(data.providers) ? data.providers : [])
+      }
+    } catch (err) {
+      console.error('Failed to load AI settings:', err)
+    } finally {
+      setLoadingProviders(false)
+    }
+  }
+
+  // Marks a field to be removed/reset on save (or unmarks it).
+  const toggleClear = (field: string) => {
+    if (clearFields.includes(field)) {
+      setClearFields(clearFields.filter(f => f !== field))
+    } else {
+      setClearFields([...clearFields, field])
+      setConfig(c => ({ ...c, [field]: '' }))
+    }
+  }
+
+  // Typing a new value cancels a pending clear of that field.
+  const setConfigField = (field: string, value: string) => {
+    setConfig(c => ({ ...c, [field]: value }))
+    if (value && clearFields.includes(field)) {
+      setClearFields(clearFields.filter(f => f !== field))
+    }
+  }
+
+  const clearToggle = (field: string, label: string, pendingLabel: string) => (
+    <button
+      type="button"
+      onClick={() => toggleClear(field)}
+      className={`text-[11px] px-2 py-0.5 rounded ${clearFields.includes(field) ? 'bg-red-500/20 text-red-300' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
+      title={clearFields.includes(field) ? 'Click to undo' : 'Applies when you save. Values set by environment variables return on restart.'}
+    >
+      {clearFields.includes(field) ? pendingLabel : label}
+    </button>
+  )
+
+  // Opens settings with a suggested model pre-filled for the provider that
+  // rejected the configured one; the user reviews and saves.
+  const applySuggestedModel = (me: AIModelError, model: string) => {
+    const entry = AI_MODEL_FIELDS.find(f => f.provider === me.provider)
+    void openSettings().then(() => {
+      if (entry) setConfig(c => ({ ...c, [entry.field]: model }))
+    })
   }
 
   const getProviderIcon = (provider: string) => {
@@ -1030,12 +1188,13 @@ function AIDocsTab({
           <div className="space-y-2">
             <label className="text-xs text-slate-400 flex items-center gap-2">
               {getProviderIcon('openai')} OpenAI API Key
+              {aiStatus?.providers?.openai && clearToggle('openai_api_key', 'Remove key', 'Key will be removed')}
             </label>
             <input
               type="password"
-              placeholder="sk-..."
+              placeholder={aiStatus?.providers?.openai ? 'key set (leave empty to keep)' : 'sk-...'}
               value={config.openai_api_key}
-              onChange={e => setConfig({ ...config, openai_api_key: e.target.value })}
+              onChange={e => setConfigField('openai_api_key', e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
           </div>
@@ -1044,12 +1203,13 @@ function AIDocsTab({
           <div className="space-y-2">
             <label className="text-xs text-slate-400 flex items-center gap-2">
               {getProviderIcon('anthropic')} Anthropic API Key
+              {aiStatus?.providers?.anthropic && clearToggle('anthropic_api_key', 'Remove key', 'Key will be removed')}
             </label>
             <input
               type="password"
-              placeholder="sk-ant-..."
+              placeholder={aiStatus?.providers?.anthropic ? 'key set (leave empty to keep)' : 'sk-ant-...'}
               value={config.anthropic_api_key}
-              onChange={e => setConfig({ ...config, anthropic_api_key: e.target.value })}
+              onChange={e => setConfigField('anthropic_api_key', e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
           </div>
@@ -1058,28 +1218,57 @@ function AIDocsTab({
           <div className="space-y-2">
             <label className="text-xs text-slate-400 flex items-center gap-2">
               {getProviderIcon('gemini')} Google Gemini API Key
+              {aiStatus?.providers?.gemini && clearToggle('gemini_api_key', 'Remove key', 'Key will be removed')}
             </label>
             <input
               type="password"
-              placeholder="AIza..."
+              placeholder={aiStatus?.providers?.gemini ? 'key set (leave empty to keep)' : 'AIza...'}
               value={config.gemini_api_key}
-              onChange={e => setConfig({ ...config, gemini_api_key: e.target.value })}
+              onChange={e => setConfigField('gemini_api_key', e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
           </div>
 
-          {/* Ollama */}
-          <div className="space-y-2">
-            <label className="text-xs text-slate-400 flex items-center gap-2">
-              {getProviderIcon('ollama')} Ollama URL (local)
-            </label>
-            <input
-              type="text"
-              placeholder="http://localhost:11434"
-              value={config.ollama_url}
-              onChange={e => setConfig({ ...config, ollama_url: e.target.value })}
-              className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-            />
+          {/* Models: free text with suggestions from the provider's live
+              model list (or a short fallback list when not reachable). */}
+          <div className="space-y-3 pt-2 border-t border-slate-700/50">
+            <div className="text-xs text-slate-500 flex items-center gap-2">
+              Models {loadingProviders && <Loader2 size={12} className="animate-spin" />}
+            </div>
+            {AI_MODEL_FIELDS.map(({ provider: pid, field, label }) => {
+              const info = aiProviders.find(p => p.id === pid)
+              const value = config[field as AIModelField]
+              return (
+                <div key={pid} className="space-y-1">
+                  <label className="text-xs text-slate-400 flex items-center gap-2">
+                    {getProviderIcon(pid)} {label}
+                    {info?.models_source && (
+                      <span
+                        className={`text-[10px] px-1.5 rounded ${info.models_source === 'live' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700/50 text-slate-500'}`}
+                        title={info.models_error || (info.models_source === 'live' ? 'Listed live from the provider' : 'Suggested models (provider not reachable or not configured)')}
+                      >
+                        {info.models_source === 'live' ? 'live list' : 'suggested'}
+                      </span>
+                    )}
+                    {savedModels[pid] && clearToggle(field, 'Reset to default', 'Will reset to default')}
+                  </label>
+                  <input
+                    type="text"
+                    list={`ai-models-${pid}`}
+                    placeholder={clearFields.includes(field) ? 'built-in default' : (info?.default_model ? `default: ${info.default_model}` : 'default')}
+                    value={value}
+                    onChange={e => setConfigField(field, e.target.value.trim())}
+                    className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                  />
+                  <datalist id={`ai-models-${pid}`}>
+                    {(info?.models || []).map(m => <option key={m} value={m} />)}
+                  </datalist>
+                </div>
+              )
+            })}
+            <p className="text-xs text-slate-500">
+              Leave a field empty to keep the current setting; use Remove key / Reset to default to clear one (values from environment variables come back on restart). Ollama / LM Studio URLs are set with the OLLAMA_URL / LMSTUDIO_URL environment variables.
+            </p>
           </div>
 
           {/* Default Provider */}
@@ -1090,6 +1279,7 @@ function AIDocsTab({
               onChange={e => setConfig({ ...config, default_provider: e.target.value })}
               className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
             >
+              <option value="">Keep current / first configured</option>
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
               <option value="gemini">Google Gemini</option>
@@ -1141,7 +1331,7 @@ function AIDocsTab({
             </div>
           </div>
           <button
-            onClick={() => setShowSettings(true)}
+            onClick={() => void openSettings()}
             className="p-2 rounded-lg hover:bg-slate-800/50 text-slate-400 hover:text-slate-200 transition-colors"
             title="Configure AI"
           >
@@ -1181,7 +1371,7 @@ function AIDocsTab({
             Add your API keys to enable AI documentation
           </p>
           <button
-            onClick={() => setShowSettings(true)}
+            onClick={() => void openSettings()}
             className="px-4 py-2 rounded-lg bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium transition-colors"
           >
             Open Settings
@@ -1230,7 +1420,7 @@ function AIDocsTab({
                     </span>
                   )}
                   <span className="text-xs text-slate-500 bg-slate-700/50 px-2 py-1 rounded">
-                    {provider || 'AI'}
+                    {provider || 'AI'}{docsModel ? ` · ${docsModel}` : ''}
                   </span>
                   <button
                     onClick={() => handleGenerateDocs(true)}
@@ -1280,8 +1470,30 @@ function AIDocsTab({
           </div>
 
           {error && (
-            <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-              {error}
+            <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm space-y-2">
+              <div>{error}</div>
+              {modelError && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {(modelError.suggestions || []).length > 0 && (
+                    <span className="text-xs text-slate-400">Try:</span>
+                  )}
+                  {(modelError.suggestions || []).map(m => (
+                    <button
+                      key={m}
+                      onClick={() => applySuggestedModel(modelError, m)}
+                      className="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-mono"
+                    >
+                      {m}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => void openSettings()}
+                    className="text-xs px-2 py-1 rounded bg-blue-500/20 hover:bg-blue-500/30 text-blue-300"
+                  >
+                    Open AI settings
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </>

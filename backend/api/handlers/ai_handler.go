@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -90,6 +91,43 @@ type AIConfigRequest struct {
 	OllamaModel     string `json:"ollama_model,omitempty"`
 	LMStudioModel   string `json:"lmstudio_model,omitempty"`
 	DefaultProvider string `json:"default_provider,omitempty"`
+
+	// Clear lists fields to reset: an API key is removed, a model or the
+	// default provider goes back to the built-in default. Omitted or empty
+	// fields are left unchanged, so this is the only way to remove a value.
+	// Values configured from the environment are cleared for this process
+	// only; they come back on restart.
+	Clear []string `json:"clear,omitempty"`
+}
+
+// clearableAIFields maps the names accepted in AIConfigRequest.Clear to the
+// config field they reset.
+func clearableAIFields(c *llm.Config) map[string]*string {
+	return map[string]*string{
+		"openai_api_key":    &c.OpenAIAPIKey,
+		"openai_model":      &c.OpenAIModel,
+		"anthropic_api_key": &c.AnthropicAPIKey,
+		"anthropic_model":   &c.AnthropicModel,
+		"gemini_api_key":    &c.GeminiAPIKey,
+		"gemini_model":      &c.GeminiModel,
+		"ollama_model":      &c.OllamaModel,
+		"lmstudio_model":    &c.LMStudioModel,
+	}
+}
+
+// requestAsConfig copies the submitted values into a fresh llm.Config.
+func requestAsConfig(req AIConfigRequest) *llm.Config {
+	return &llm.Config{
+		OpenAIAPIKey:    req.OpenAIAPIKey,
+		OpenAIModel:     req.OpenAIModel,
+		AnthropicAPIKey: req.AnthropicAPIKey,
+		AnthropicModel:  req.AnthropicModel,
+		GeminiAPIKey:    req.GeminiAPIKey,
+		GeminiModel:     req.GeminiModel,
+		OllamaModel:     req.OllamaModel,
+		LMStudioModel:   req.LMStudioModel,
+		DefaultProvider: llm.Provider(req.DefaultProvider),
+	}
 }
 
 // HandleConfig gets or sets AI configuration.
@@ -106,9 +144,20 @@ func (h *AIHandler) HandleConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		cfg := llmManager.Config()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"configured": true,
-			"providers":  llmManager.Status(),
+			"configured":       true,
+			"providers":        llmManager.Status(),
+			"default_provider": string(cfg.DefaultProvider),
+			// Configured model per provider (empty = provider default). Never
+			// includes API keys.
+			"models": map[string]string{
+				"openai":    cfg.OpenAIModel,
+				"anthropic": cfg.AnthropicModel,
+				"gemini":    cfg.GeminiModel,
+				"ollama":    cfg.OllamaModel,
+				"lmstudio":  cfg.LMStudioModel,
+			},
 		})
 		return
 	}
@@ -120,17 +169,7 @@ func (h *AIHandler) HandleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config := &llm.Config{
-		OpenAIAPIKey:    req.OpenAIAPIKey,
-		OpenAIModel:     req.OpenAIModel,
-		AnthropicAPIKey: req.AnthropicAPIKey,
-		AnthropicModel:  req.AnthropicModel,
-		GeminiAPIKey:    req.GeminiAPIKey,
-		GeminiModel:     req.GeminiModel,
-		OllamaModel:     req.OllamaModel,
-		LMStudioModel:   req.LMStudioModel,
-		DefaultProvider: llm.Provider(req.DefaultProvider),
-	}
+	config := requestAsConfig(req)
 
 	// Local-LLM endpoints stay whatever the environment configured them to be;
 	// they are never taken from the request body.
@@ -138,7 +177,46 @@ func (h *AIHandler) HandleConfig(w http.ResponseWriter, r *http.Request) {
 		if existing := llmManager.Config(); existing != nil {
 			config.OllamaURL = existing.OllamaURL
 			config.LMStudioURL = existing.LMStudioURL
+			// An omitted/empty field keeps the current value. Without this, a
+			// UI save that only sets one provider's key would silently erase
+			// the keys and *_MODEL choices configured from the environment.
+			keepIfEmpty(&config.OpenAIAPIKey, existing.OpenAIAPIKey)
+			keepIfEmpty(&config.OpenAIModel, existing.OpenAIModel)
+			keepIfEmpty(&config.AnthropicAPIKey, existing.AnthropicAPIKey)
+			keepIfEmpty(&config.AnthropicModel, existing.AnthropicModel)
+			keepIfEmpty(&config.GeminiAPIKey, existing.GeminiAPIKey)
+			keepIfEmpty(&config.GeminiModel, existing.GeminiModel)
+			keepIfEmpty(&config.OllamaModel, existing.OllamaModel)
+			keepIfEmpty(&config.LMStudioModel, existing.LMStudioModel)
+			if config.DefaultProvider == "" {
+				config.DefaultProvider = existing.DefaultProvider
+			}
 		}
+	}
+
+	// Explicit clears. Setting and clearing the same field in one request is
+	// ambiguous, so it is rejected rather than guessed at.
+	fields := clearableAIFields(config)
+	submitted := clearableAIFields(requestAsConfig(req))
+	for _, name := range req.Clear {
+		if name == "default_provider" {
+			if req.DefaultProvider != "" {
+				http.Error(w, "default_provider is both set and cleared", http.StatusBadRequest)
+				return
+			}
+			config.DefaultProvider = ""
+			continue
+		}
+		field, ok := fields[name]
+		if !ok {
+			http.Error(w, fmt.Sprintf("unknown field in clear: %q", name), http.StatusBadRequest)
+			return
+		}
+		if *submitted[name] != "" {
+			http.Error(w, fmt.Sprintf("%s is both set and cleared", name), http.StatusBadRequest)
+			return
+		}
+		*field = ""
 	}
 
 	h.mu.Lock()
@@ -214,6 +292,9 @@ func (h *AIHandler) HandleDocs(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.WithError(err).Error("Failed to generate AI documentation")
+		if h.writeModelError(w, r, err) {
+			return
+		}
 		http.Error(w, fmt.Sprintf("AI generation failed: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -275,6 +356,9 @@ func (h *AIHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 	resp, err := docsGen.AskQuestion(ctx, docReq)
 	if err != nil {
 		log.WithError(err).Error("Failed to answer question")
+		if h.writeModelError(w, r, err) {
+			return
+		}
 		http.Error(w, fmt.Sprintf("AI query failed: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -282,51 +366,112 @@ func (h *AIHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// HandleProviders returns available AI providers.
+// HandleProviders returns available AI providers and their models.
+//
+// Model lists come from each provider's list-models API when the provider is
+// configured (cached in the llm package, with a timeout), and fall back to a
+// short static list otherwise; "models_source" says which. The response is a
+// superset of the v3.0 shape (id/name/description/models/requires).
 func (h *AIHandler) HandleProviders(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	providers := []map[string]interface{}{
-		{
-			"id":          "openai",
-			"name":        "OpenAI",
-			"description": "GPT-4 and GPT-3.5 models",
-			"models":      []string{"gpt-4-turbo-preview", "gpt-4", "gpt-3.5-turbo"},
-			"requires":    "api_key",
-		},
-		{
-			"id":          "anthropic",
-			"name":        "Anthropic",
-			"description": "Claude 3 models",
-			"models":      []string{"claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"},
-			"requires":    "api_key",
-		},
-		{
-			"id":          "gemini",
-			"name":        "Google Gemini",
-			"description": "Gemini Pro models",
-			"models":      []string{"gemini-pro", "gemini-1.5-pro", "gemini-1.5-flash"},
-			"requires":    "api_key",
-		},
-		{
-			"id":          "ollama",
-			"name":        "Ollama (Local)",
-			"description": "Local LLM via Ollama",
-			"models":      []string{"llama2", "mistral", "codellama"},
-			"requires":    "local_server",
-		},
-		{
-			"id":          "lmstudio",
-			"name":        "LM Studio (Local)",
-			"description": "Local LLM via LM Studio",
-			"models":      []string{},
-			"requires":    "local_server",
-		},
+	meta := []struct {
+		id, name, description, requires string
+	}{
+		{"openai", "OpenAI", "OpenAI GPT models", "api_key"},
+		{"anthropic", "Anthropic", "Anthropic Claude models", "api_key"},
+		{"gemini", "Google Gemini", "Google Gemini models", "api_key"},
+		{"ollama", "Ollama (Local)", "Local LLM via Ollama", "local_server"},
+		{"lmstudio", "LM Studio (Local)", "Local LLM via LM Studio", "local_server"},
+	}
+
+	llmManager, _ := h.deps()
+	catalogs := map[string]llm.ModelCatalog{}
+	if llmManager != nil {
+		for _, c := range llmManager.AllModels(r.Context()) {
+			catalogs[c.Provider] = c
+		}
+	}
+
+	providers := make([]map[string]interface{}, 0, len(meta))
+	for _, m := range meta {
+		c, ok := catalogs[m.id]
+		if !ok {
+			c = llm.ModelCatalog{Provider: m.id, Models: llm.FallbackModels(llm.Provider(m.id)), Source: llm.ModelSourceFallback}
+		}
+		models := c.Models
+		if models == nil {
+			models = []string{}
+		}
+		entry := map[string]interface{}{
+			"id":            m.id,
+			"name":          m.name,
+			"description":   m.description,
+			"models":        models,
+			"default_model": c.DefaultModel,
+			"models_source": c.Source,
+			"configured":    c.Configured,
+			"requires":      m.requires,
+		}
+		if c.Error != "" {
+			entry["models_error"] = c.Error
+		}
+		providers = append(providers, entry)
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"providers": providers,
 	})
+}
+
+// writeModelError answers with HTTP 422 and a structured JSON body when err
+// means the provider rejected the requested model, so the UI can say so
+// plainly and offer alternatives. Returns false, writing nothing, for any
+// other error.
+//
+// A refused/blocked/empty answer (llm.ResponseRefusedError) is reported as
+// HTTP 502 with code "response_refused" and the provider's reason.
+func (h *AIHandler) writeModelError(w http.ResponseWriter, r *http.Request, err error) bool {
+	var re *llm.ResponseRefusedError
+	if errors.As(err, &re) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":    re.Error(),
+			"code":     "response_refused",
+			"provider": re.Provider,
+			"model":    re.Model,
+			"reason":   re.Reason,
+		})
+		return true
+	}
+	var me *llm.ModelError
+	if !errors.As(err, &me) {
+		return false
+	}
+	suggestions := []string{}
+	if llmManager, _ := h.deps(); llmManager != nil {
+		if s := llmManager.SuggestModels(r.Context(), llm.Provider(me.Provider), me.Model, 5); s != nil {
+			suggestions = s
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnprocessableEntity)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error":       me.Error(),
+		"code":        "model_unavailable",
+		"provider":    me.Provider,
+		"model":       me.Model,
+		"detail":      me.Detail,
+		"suggestions": suggestions,
+	})
+	return true
+}
+
+func keepIfEmpty(field *string, existing string) {
+	if *field == "" {
+		*field = existing
+	}
 }
 
 // buildServiceContext builds an LLM service context from storage service.
