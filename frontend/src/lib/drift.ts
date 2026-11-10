@@ -42,8 +42,10 @@ export function onDriftResync(handler: () => void): () => void {
 
 // The detected_at of the newest event the user has seen, verbatim as the
 // server sent it: handing it back as ?since= (exclusive) then counts exactly
-// the events that arrived after it.
-const LAST_SEEN_KEY = 'infralens.changes.lastSeen'
+// the events that arrived after it. The 'infralens_' prefix makes logout
+// clear it (lib/auth.ts): which changes were seen, and when, is per-user
+// state; the next person at this browser starts with the last day unread.
+const LAST_SEEN_KEY = 'infralens_changes_last_seen'
 
 // With no marker yet (first visit, or storage cleared) only the last day
 // counts as new - not the whole retention window as a "99+" badge.

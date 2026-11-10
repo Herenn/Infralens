@@ -234,24 +234,6 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           <span>Collapse</span>
         </button>
 
-        {/* Idle spend panel toggle */}
-        {onToggleIdleSpend && (
-          <button
-            onClick={onToggleIdleSpend}
-            className={`
-              flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
-              ${idleSpendOpen
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
-              }
-            `}
-            title="Idle spend: what services nothing talks to are costing"
-          >
-            <PiggyBank size={14} />
-            <span>Idle spend</span>
-          </button>
-        )}
-
         {/* Export Button with Dropdown */}
         <button
           ref={exportButtonRef}
@@ -336,7 +318,30 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
 
       {/* Stats */}
       <div className="flex items-center gap-6">
-        {changes && <ChangesButton {...changes} />}
+        {/* The two side panels that open in the map's top-left slot (one at
+            a time - see App.tsx), side by side. */}
+        {(changes || onToggleIdleSpend) && (
+          <div className="flex items-center gap-2 shrink-0">
+            {changes && <ChangesButton {...changes} />}
+            {onToggleIdleSpend && (
+              <button
+                onClick={onToggleIdleSpend}
+                aria-pressed={!!idleSpendOpen}
+                className={`
+                  flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+                  ${idleSpendOpen
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                    : 'bg-dark-800 text-dark-300 border border-dark-700 hover:text-dark-100 hover:border-dark-600'
+                  }
+                `}
+                title="Idle spend (beta): what services nothing talks to are costing"
+              >
+                <PiggyBank size={14} />
+                <span className="whitespace-nowrap">Idle spend</span>
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center gap-2 text-sm">
           <Server size={16} className="text-dark-400" />

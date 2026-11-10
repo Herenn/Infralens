@@ -416,8 +416,31 @@ function App() {
   const idleFocusIds = useMemo(() => (idleFocusId ? new Set([idleFocusId]) : null), [idleFocusId])
 
   // A service picked in the idle-spend panel is the most recent, explicit
-  // intent, so it wins over impact, drift focus and search; it is cleared on pane click or close.
+  // intent, so it wins over impact, drift focus and search; it is cleared on
+  // pane click or close.
   const highlightIds = idleFocusIds || impactIds || driftFocus.highlightIds || searchMatchIds
+
+  // The Changes and Idle-spend panels share the top-left slot, so only one
+  // is open at a time: opening one closes the other, along with whatever it
+  // had focused on the graph.
+  const closeIdleSpend = useCallback(() => {
+    setIdleSpendOpen(false)
+    setSelectedServiceId(cur => (cur === idleFocusId ? null : cur))
+    setIdleFocusId(null)
+  }, [idleFocusId])
+  const toggleChanges = useCallback(() => {
+    if (!changesOpen) closeIdleSpend()
+    setChangesOpen(!changesOpen)
+  }, [changesOpen, closeIdleSpend])
+  const toggleIdleSpend = useCallback(() => {
+    if (idleSpendOpen) {
+      closeIdleSpend()
+      return
+    }
+    setChangesOpen(false)
+    setIdleFocusId(null)
+    setIdleSpendOpen(true)
+  }, [idleSpendOpen, closeIdleSpend])
 
   // Apply highlighting: dim everything outside the active impact view or
   // search match, whichever is active.
@@ -807,9 +830,9 @@ function App() {
         onExportJson={handleExportJson}
         onExportMermaid={() => handleExportGraph('mermaid')}
         onExportDot={() => handleExportGraph('dot')}
-        changes={driftFeed.available ? { open: changesOpen, unread: driftFeed.unread, onToggle: () => setChangesOpen(o => !o) } : undefined}
+        changes={driftFeed.available ? { open: changesOpen, unread: driftFeed.unread, onToggle: toggleChanges } : undefined}
         idleSpendOpen={idleSpendOpen}
-        onToggleIdleSpend={() => { setIdleSpendOpen(o => !o); setIdleFocusId(null) }}
+        onToggleIdleSpend={toggleIdleSpend}
       />
       
       <div className="flex-1 flex overflow-hidden">
@@ -907,11 +930,7 @@ function App() {
 
           {idleSpendOpen && (
             <IdleSpendPanel
-              onClose={() => {
-                setIdleSpendOpen(false)
-                setSelectedServiceId(cur => (cur === idleFocusId ? null : cur))
-                setIdleFocusId(null)
-              }}
+              onClose={closeIdleSpend}
               onFocusService={id => { setIdleFocusId(id); setSelectedServiceId(id) }}
               focusedId={idleFocusId}
             />
