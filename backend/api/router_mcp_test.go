@@ -17,6 +17,7 @@ import (
 
 type mcpTestConfig struct {
 	apiKey, mcpKey string
+	uiPassword     string
 	allowNoAuth    bool
 	enabled        bool
 	origins        []string
@@ -40,6 +41,7 @@ func newMCPTestServer(t *testing.T, c mcpTestConfig) *httptest.Server {
 			APIKey: c.apiKey, HeaderName: "X-API-Key",
 			SkipPaths: def.SkipPaths, SkipPrefixes: def.SkipPrefixes,
 			AllowNoAuth: c.allowNoAuth,
+			UIPassword:  c.uiPassword,
 		},
 		MCP: config.MCPConfig{Enabled: c.enabled, APIKey: c.mcpKey, AllowedOrigins: c.origins},
 	}
@@ -72,58 +74,112 @@ func do(t *testing.T, method, url, body string, headers map[string]string) (int,
 
 func bearer(k string) map[string]string { return map[string]string{"Authorization": "Bearer " + k} }
 
+// mcpLogin logs in to the UI and returns the session cookie header value.
+func mcpLogin(t *testing.T, base, password string) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"username":"admin","password":%q}`, password)
+	req, _ := http.NewRequest(http.MethodPost, base+"/api/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	defer resp.Body.Close()
+	for _, c := range resp.Cookies() {
+		if c.Name == middleware.SessionCookieName {
+			return c.Name + "=" + c.Value
+		}
+	}
+	t.Fatalf("login: status %d, no session cookie", resp.StatusCode)
+	return ""
+}
+
 // TestMCPAuthMatrix pins the /mcp access rules for every combination of
-// API_KEY x MCP_API_KEY x ALLOW_NO_AUTH: any key configured means a key is
-// required (either configured key works); no key configured means open only
-// with ALLOW_NO_AUTH. MCP_API_KEY is accepted on /mcp and nowhere else.
+// UI_PASSWORD x API_KEY x MCP_API_KEY x ALLOW_NO_AUTH:
+//
+//   - any key configured: a key is required (either configured key works);
+//   - no key, UI_PASSWORD set: always refused, ALLOW_NO_AUTH or not, with a
+//     message saying how to enable it - the UI's login must not be
+//     bypassable through /mcp;
+//   - no key, no UI_PASSWORD: open only with ALLOW_NO_AUTH.
+//
+// A UI session cookie never authenticates /mcp, and MCP_API_KEY is accepted
+// on /mcp and nowhere else.
 func TestMCPAuthMatrix(t *testing.T) {
-	for _, apiKey := range []string{"", "agent-key"} {
-		for _, mcpKey := range []string{"", "reader-key"} {
-			for _, allow := range []bool{false, true} {
-				name := fmt.Sprintf("API_KEY=%q MCP_API_KEY=%q ALLOW_NO_AUTH=%v", apiKey, mcpKey, allow)
-				t.Run(name, func(t *testing.T) {
-					srv := newMCPTestServer(t, mcpTestConfig{apiKey: apiKey, mcpKey: mcpKey, allowNoAuth: allow, enabled: true})
-					anyKey := apiKey != "" || mcpKey != ""
+	const password = "correct horse battery staple"
+	for _, uiPassword := range []string{"", password} {
+		for _, apiKey := range []string{"", "agent-key"} {
+			for _, mcpKey := range []string{"", "reader-key"} {
+				for _, allow := range []bool{false, true} {
+					name := fmt.Sprintf("UI_PASSWORD=%v API_KEY=%q MCP_API_KEY=%q ALLOW_NO_AUTH=%v", uiPassword != "", apiKey, mcpKey, allow)
+					t.Run(name, func(t *testing.T) {
+						srv := newMCPTestServer(t, mcpTestConfig{apiKey: apiKey, mcpKey: mcpKey, uiPassword: uiPassword, allowNoAuth: allow, enabled: true})
+						anyKey := apiKey != "" || mcpKey != ""
+						open := !anyKey && allow && uiPassword == ""
 
-					expect := func(label string, headers map[string]string, want int) {
-						t.Helper()
-						if status, _, body := do(t, http.MethodPost, srv.URL+"/mcp", initializeBody, headers); status != want {
-							t.Errorf("%s: /mcp status %d, want %d (%s)", label, status, want, body)
+						expect := func(label string, headers map[string]string, want int) string {
+							t.Helper()
+							status, _, body := do(t, http.MethodPost, srv.URL+"/mcp", initializeBody, headers)
+							if status != want {
+								t.Errorf("%s: /mcp status %d, want %d (%s)", label, status, want, body)
+							}
+							return body
 						}
-					}
-					if anyKey || !allow {
-						expect("no credentials", nil, http.StatusUnauthorized)
-					} else {
-						expect("no credentials (open)", nil, http.StatusOK)
-					}
-					if apiKey != "" {
-						expect("API_KEY as bearer", bearer(apiKey), http.StatusOK)
-						expect("API_KEY as X-API-Key", map[string]string{"X-API-Key": apiKey}, http.StatusOK)
-					}
-					if mcpKey != "" {
-						expect("MCP_API_KEY as bearer", bearer(mcpKey), http.StatusOK)
-						expect("MCP_API_KEY as X-API-Key", map[string]string{"X-API-Key": mcpKey}, http.StatusOK)
-					}
-					if anyKey {
-						expect("wrong key", bearer("nope"), http.StatusUnauthorized)
-						expect("cookie only", map[string]string{"Cookie": "session=" + apiKey + mcpKey}, http.StatusUnauthorized)
-					}
+						if open {
+							expect("no credentials (open)", nil, http.StatusOK)
+						} else {
+							body := expect("no credentials", nil, http.StatusUnauthorized)
+							if !anyKey && !strings.Contains(body, "MCP_API_KEY") {
+								t.Errorf("refusal without any key configured should say how to enable /mcp: %s", body)
+							}
+							if !anyKey && uiPassword != "" && !strings.Contains(body, "UI_PASSWORD") {
+								t.Errorf("refusal under UI_PASSWORD should name the reason: %s", body)
+							}
+						}
+						if apiKey != "" {
+							expect("API_KEY as bearer", bearer(apiKey), http.StatusOK)
+							expect("API_KEY as X-API-Key", map[string]string{"X-API-Key": apiKey}, http.StatusOK)
+						}
+						if mcpKey != "" {
+							expect("MCP_API_KEY as bearer", bearer(mcpKey), http.StatusOK)
+							expect("MCP_API_KEY as X-API-Key", map[string]string{"X-API-Key": mcpKey}, http.StatusOK)
+						}
+						if anyKey {
+							expect("wrong key", bearer("nope"), http.StatusUnauthorized)
+							expect("fake cookie only", map[string]string{"Cookie": "session=" + apiKey + mcpKey}, http.StatusUnauthorized)
+						}
+						if uiPassword != "" {
+							// A real, valid UI session - accepted everywhere
+							// else - is not a credential for /mcp.
+							cookie := mcpLogin(t, srv.URL, uiPassword)
+							if status, _, _ := do(t, http.MethodGet, srv.URL+"/api/v1/topology", "", map[string]string{"Cookie": cookie, "Sec-Fetch-Site": "same-origin"}); status != http.StatusOK {
+								t.Fatalf("session cookie on /api/v1/topology: %d, want 200", status)
+							}
+							expect("valid session cookie only", map[string]string{"Cookie": cookie, "Sec-Fetch-Site": "same-origin"}, http.StatusUnauthorized)
+						}
 
-					// MCP_API_KEY must not unlock anything outside /mcp.
-					if mcpKey != "" && apiKey != "" {
-						status, _, _ := do(t, http.MethodPost, srv.URL+"/api/v1/events", `{}`, bearer(mcpKey))
-						if status != http.StatusUnauthorized {
-							t.Errorf("MCP_API_KEY on /api/v1/events: status %d, want 401", status)
+						// MCP_API_KEY must not unlock anything outside /mcp.
+						if mcpKey != "" && apiKey != "" {
+							status, _, _ := do(t, http.MethodPost, srv.URL+"/api/v1/events", `{}`, bearer(mcpKey))
+							if status != http.StatusUnauthorized {
+								t.Errorf("MCP_API_KEY on /api/v1/events: status %d, want 401", status)
+							}
+							status, _, _ = do(t, http.MethodGet, srv.URL+"/api/v1/ai/config", "", map[string]string{"X-API-Key": mcpKey})
+							if status != http.StatusUnauthorized {
+								t.Errorf("MCP_API_KEY on /api/v1/ai/config: status %d, want 401", status)
+							}
+							if status, _, _ := do(t, http.MethodPost, srv.URL+"/api/v1/events", `{}`, bearer(apiKey)); status == http.StatusUnauthorized {
+								t.Error("API_KEY should still authenticate /api/v1/events")
+							}
 						}
-						status, _, _ = do(t, http.MethodGet, srv.URL+"/api/v1/ai/config", "", map[string]string{"X-API-Key": mcpKey})
-						if status != http.StatusUnauthorized {
-							t.Errorf("MCP_API_KEY on /api/v1/ai/config: status %d, want 401", status)
+						if mcpKey != "" && uiPassword != "" {
+							if status, _, _ := do(t, http.MethodGet, srv.URL+"/api/v1/topology", "", bearer(mcpKey)); status != http.StatusUnauthorized {
+								t.Errorf("MCP_API_KEY on /api/v1/topology behind UI login: status %d, want 401", status)
+							}
 						}
-						if status, _, _ := do(t, http.MethodPost, srv.URL+"/api/v1/events", `{}`, bearer(apiKey)); status == http.StatusUnauthorized {
-							t.Error("API_KEY should still authenticate /api/v1/events")
-						}
-					}
-				})
+					})
+				}
 			}
 		}
 	}

@@ -437,12 +437,13 @@ func TestUIAuth_ForeignBearerWithSession(t *testing.T) {
 	}
 }
 
-// --- 10. Self-authenticating endpoints ------------------------------------
+// --- 10. No bypass list ---------------------------------------------------
 
-func TestUIAuth_SelfAuthenticatingPaths(t *testing.T) {
-	selfAuthenticatingPaths["/mcp"] = true
-	defer delete(selfAuthenticatingPaths, "/mcp")
-
+// UIAuth has no list of paths that skip it: /mcp, the one endpoint with its
+// own authentication, is served ahead of the whole chain (api/mcp.go). Should
+// a request for /mcp or a neighbour ever reach UIAuth (MCP_ENABLED=false, or a
+// path withMCP does not claim), it is protected like any other route.
+func TestUIAuth_NoSelfAuthenticatingBypass(t *testing.T) {
 	withPw := testAuthConfig()
 	sm := newTestSessions(t, withPw, newFakeClock())
 	legacyCfg := DefaultAuthConfig()
@@ -453,29 +454,13 @@ func TestUIAuth_SelfAuthenticatingPaths(t *testing.T) {
 		"password unset": UIAuth(legacyCfg, nil),
 	} {
 		t.Run(name, func(t *testing.T) {
-			code := func(method, path string) int {
+			for _, p := range []string{"/mcp", "/mcp/", "/mcp/admin", "/mcpx", "/api/v1/mcp", "/mcp/../api/v1/ai/config"} {
 				rr := httptest.NewRecorder()
-				mw(&okHandler{}).ServeHTTP(rr, httptest.NewRequest(method, path, nil))
-				return rr.Code
-			}
-			// Listed: reaches the handler, which must authenticate itself.
-			if got := code("POST", "/mcp"); got != http.StatusOK {
-				t.Errorf("listed /mcp: got %d, want 200 (handler does its own auth)", got)
-			}
-			// Unlisted neighbours and dirty variants are unaffected.
-			for _, p := range []string{"/mcp/admin", "/mcpx", "/api/v1/mcp", "/mcp/../api/v1/ai/config", "/mcp/"} {
-				if got := code("POST", p); got != http.StatusUnauthorized {
-					t.Errorf("unlisted %s: got %d, want 401", p, got)
+				mw(&okHandler{}).ServeHTTP(rr, httptest.NewRequest("POST", p, nil))
+				if rr.Code != http.StatusUnauthorized {
+					t.Errorf("%s: got %d, want 401", p, rr.Code)
 				}
 			}
 		})
-	}
-
-	// And with nothing listed (the default), /mcp is protected like any route.
-	delete(selfAuthenticatingPaths, "/mcp")
-	rr := httptest.NewRecorder()
-	UIAuth(withPw, sm)(&okHandler{}).ServeHTTP(rr, httptest.NewRequest("POST", "/mcp", nil))
-	if rr.Code != http.StatusUnauthorized {
-		t.Errorf("unlisted /mcp by default: got %d, want 401", rr.Code)
 	}
 }

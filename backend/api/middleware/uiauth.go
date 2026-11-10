@@ -19,18 +19,12 @@ var alwaysPublicPaths = map[string]bool{
 	"/api/v1/auth/status": true,
 }
 
-// selfAuthenticatingPaths are endpoints that do their own authentication and
-// so bypass this middleware entirely - session and API key checks alike, in
-// both modes. Exact, clean paths only.
-//
-// CONTRACT: a handler listed here MUST enforce its own authentication on
-// every request. Listing it removes all protection this middleware gives,
-// including the same-origin check. Do not list anything that accepts the UI
-// session cookie.
-//
-// Empty by default. The MCP server will be added here as "/mcp" when it is
-// mounted (it authenticates with MCP_API_KEY or API_KEY, never cookies).
-var selfAuthenticatingPaths = map[string]bool{}
+// There is deliberately no list of "self-authenticating" paths that skip this
+// middleware. The one endpoint with its own authentication, /mcp (MCP_API_KEY
+// or API_KEY, never the session cookie), is dispatched AHEAD of the whole
+// middleware chain in api/mcp.go (Server.withMCP) on its exact paths, so it
+// never reaches UIAuth. If MCP is disabled, /mcp falls through to the router
+// and is protected here like any other route.
 
 // Machine endpoints keep v3.0 semantics when UI login is on: the API key and
 // nothing else (agents cannot hold a session, and a browser session has no
@@ -52,7 +46,7 @@ var apiKeyOnlyPaths = map[string]bool{
 //
 // With a SessionManager it is deny-by-default: every route requires a valid
 // session cookie or the API key, except the short alwaysPublicPaths list,
-// the agent endpoints in apiKeyOnlyPaths, and selfAuthenticatingPaths.
+// and the agent endpoints in apiKeyOnlyPaths.
 // Routes added later are therefore protected without anyone having to
 // register them. Every cookie-authenticated request - reads included - must
 // also pass the same-origin check (SameOrigin), and is bound to the
@@ -66,7 +60,7 @@ func UIAuth(cfg AuthConfig, sm *SessionManager) func(http.Handler) http.Handler 
 		return func(next http.Handler) http.Handler {
 			protected := legacy(next)
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if isCleanPath(r.URL.Path) && (alwaysPublicPaths[r.URL.Path] || selfAuthenticatingPaths[r.URL.Path]) {
+				if isCleanPath(r.URL.Path) && alwaysPublicPaths[r.URL.Path] {
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -86,7 +80,7 @@ func UIAuth(cfg AuthConfig, sm *SessionManager) func(http.Handler) http.Handler 
 			// like /services/{id:.+}), the auth decision must not have been
 			// made on a different path than the one routed.
 			if isCleanPath(path) {
-				if alwaysPublicPaths[path] || selfAuthenticatingPaths[path] {
+				if alwaysPublicPaths[path] {
 					next.ServeHTTP(w, r)
 					return
 				}

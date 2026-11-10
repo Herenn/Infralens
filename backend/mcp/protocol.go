@@ -125,6 +125,11 @@ type Options struct {
 	// required: a nil Auth rejects every request (fail closed).
 	Auth Authenticator
 
+	// UnauthorizedMessage, when set, replaces the default explanation in a
+	// 401 answer. The server uses it when no key is configured and the
+	// endpoint is therefore refusing everyone, to say how to enable it.
+	UnauthorizedMessage string
+
 	// AllowedOrigins are browser origins (scheme://host[:port]) permitted to
 	// call the endpoint, in addition to loopback origins, which are always
 	// allowed. This is the endpoint's whole cross-origin policy: it decides
@@ -293,8 +298,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !allowed {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="InfraLens MCP"`)
-		writeRPC(w, http.StatusUnauthorized, rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: codeInvalidRequest,
-			Message: "Unauthorized: send the InfraLens MCP_API_KEY (or API_KEY) as 'Authorization: Bearer <key>' or 'X-API-Key: <key>'"}})
+		msg := h.opts.UnauthorizedMessage
+		if msg == "" {
+			msg = "Unauthorized: send the InfraLens MCP_API_KEY (or API_KEY) as 'Authorization: Bearer <key>' or 'X-API-Key: <key>'"
+		}
+		writeRPC(w, http.StatusUnauthorized, rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: codeInvalidRequest, Message: msg}})
 		return
 	}
 	r = r.WithContext(withAuthenticated(r.Context(), authenticated))
