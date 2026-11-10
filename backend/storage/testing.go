@@ -40,6 +40,10 @@ func StoreSuite(t *testing.T, store Store) {
 	t.Run("Concurrency", func(t *testing.T) {
 		ConcurrencySuite(t, store)
 	})
+
+	t.Run("Hostnames", func(t *testing.T) {
+		HostnamesSuite(t, store)
+	})
 }
 
 // =============================================================================

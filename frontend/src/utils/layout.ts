@@ -1,5 +1,6 @@
 import { Node, Edge } from '@xyflow/react'
 import { Topology, Service, Connection as TopologyConnection } from '../types'
+import { serviceLabel } from './hostnames'
 
 // Node dimensions
 const NODE_WIDTH = 200
@@ -161,7 +162,7 @@ export function layoutGraph(topology: Topology): LayoutResult {
         extent: 'parent',
         expandParent: true,
         data: {
-          label: service.display_name || service.name || service.id,
+          label: serviceLabel(service),
           service,
           incomingCount,
           outgoingCount,
@@ -230,8 +231,8 @@ function layoutServicesInServer(
   // Simple vertical stacking - all nodes in a single centered column
   // Sort services by name for consistent ordering
   const sortedServices = [...services].sort((a, b) => {
-    const nameA = a.display_name || a.name || a.id
-    const nameB = b.display_name || b.name || b.id
+    const nameA = serviceLabel(a)
+    const nameB = serviceLabel(b)
     return nameA.localeCompare(nameB)
   })
 
@@ -334,7 +335,7 @@ export function updateNodeData(currentNodes: Node[], topology: Topology): Node[]
       ...node,
       data: {
         ...node.data,
-        label: service.display_name || service.name || service.id,
+        label: serviceLabel(service),
         service,
         incomingCount: incoming.get(service.id) || 0,
         outgoingCount: outgoing.get(service.id) || 0,

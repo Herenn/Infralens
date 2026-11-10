@@ -35,6 +35,10 @@ type demoConnection struct {
 	port     uint16
 	protocol string // "tcp" or "udp"
 
+	// hostnames are the DNS names the source resolved the target from, as
+	// an agent would report them for an external destination.
+	hostnames []string
+
 	baseSentRate float64 // bytes/sec
 	baseRecvRate float64 // bytes/sec
 
@@ -187,8 +191,22 @@ func (s *Simulator) buildScenario() {
 		// Newer arrivals - see the drift timeline in drift.go.
 		svc("10.0.2.14/recommendations", "recommendations", "application", "Python", "python", nodeApp, "10.0.2.14"),
 		svc("10.0.3.15:9200", "search", "database", "Elasticsearch 8.13", "elasticsearch", nodeData, "10.0.3.15"),
-		svc("198.51.100.20:443", "api.stripe.com", "unknown", "HTTPS", "https", "", "198.51.100.20"),
-		svc("198.51.100.61:443", "oauth2.googleapis.com", "unknown", "HTTPS", "https", "", "198.51.100.61"),
+
+		// External SaaS dependencies, shaped exactly like what the processor
+		// creates for an outbound connection to a public address: keyed by
+		// IP:port, no node. The DNS names on their connections are what an
+		// agent learns from the answers those workloads received.
+		// Documentation-range addresses (RFC 5737), not the real services'.
+		external("198.51.100.20"), // api.stripe.com
+		external("198.51.100.61"), // oauth2.googleapis.com
+		external("198.51.100.42"), // s3.us-east-1.amazonaws.com
+		external("198.51.100.50"), // o450123.ingest.sentry.io
+		external("198.51.100.60"), // shared CDN address: two names
+	}
+
+	named := func(c *demoConnection, hostnames ...string) *demoConnection {
+		c.hostnames = hostnames
+		return c
 	}
 
 	conn := func(src, dst string, port uint16, sentKBps, recvKBps float64) *demoConnection {
@@ -228,8 +246,11 @@ func (s *Simulator) buildScenario() {
 
 		conn("10.0.2.10/api-gateway", "10.0.2.14/recommendations", 7000, 6, 18),
 		conn("10.0.2.12/orders-service", "10.0.3.15:9200", 9200, 12, 48),
-		conn("10.0.2.13/payment-worker", "198.51.100.20:443", 443, 4, 6),
-		conn("10.0.2.11/auth-service", "198.51.100.61:443", 443, 2, 5),
+		named(conn("10.0.2.13/payment-worker", "198.51.100.20:443", 443, 4, 6), "api.stripe.com"),
+		named(conn("10.0.2.11/auth-service", "198.51.100.61:443", 443, 2, 5), "oauth2.googleapis.com"),
+		named(conn("10.0.2.12/orders-service", "198.51.100.42:443", 443, 80, 10), "s3.us-east-1.amazonaws.com"),
+		named(conn("10.0.2.10/api-gateway", "198.51.100.50:443", 443, 3, 1), "o450123.ingest.sentry.io"),
+		named(conn("10.0.1.11/node", "198.51.100.60:443", 443, 2, 1), "api.segment.io", "cdn.segment.com"),
 	}
 
 	gib := func(n uint64) uint64 { return n * 1024 * 1024 * 1024 }
@@ -242,18 +263,34 @@ func (s *Simulator) buildScenario() {
 	s.buildTimeline(svc, conn)
 }
 
+// external describes an outbound HTTPS destination the way the event
+// processor records one: ID "IP:443", named by port, displayed by IP.
+func external(ip string) storage.Service {
+	return storage.Service{
+		ID:          ip + ":443",
+		Name:        ":443",
+		DisplayName: ip,
+		Type:        "web_server",
+		Tech:        "HTTPS",
+		Icon:        "https",
+		PodIP:       ip,
+		Healthy:     true,
+	}
+}
+
 // seed creates the initial services, connections, and node metrics.
 func (s *Simulator) seed(ctx context.Context) error {
 	s.refreshServices(ctx)
 
 	for _, c := range s.connections {
 		if err := s.topology.AddConnection(ctx, &storage.Connection{
-			ID:       c.id(),
-			SourceID: c.sourceID,
-			TargetID: c.targetID,
-			Port:     c.port,
-			Protocol: c.protocol,
-			LastSeen: time.Now(),
+			ID:        c.id(),
+			SourceID:  c.sourceID,
+			TargetID:  c.targetID,
+			Port:      c.port,
+			Protocol:  c.protocol,
+			LastSeen:  time.Now(),
+			Hostnames: storage.ObservedHostnames(time.Now(), c.hostnames...),
 		}); err != nil {
 			return err
 		}
@@ -263,8 +300,14 @@ func (s *Simulator) seed(ctx context.Context) error {
 	return nil
 }
 
-// refreshServices re-upserts all demo services to keep last_seen fresh.
+// refreshServices re-upserts all demo services to keep last_seen fresh, and
+// re-reports the simulated DNS names so they do not age out.
 func (s *Simulator) refreshServices(ctx context.Context) {
+	for _, c := range s.connections {
+		if len(c.hostnames) > 0 {
+			_ = s.topology.AddConnectionHostnames(ctx, c.id(), c.hostnames)
+		}
+	}
 	for i := range s.services {
 		svc := s.services[i] // copy: Upsert mutates LastSeen
 		svc.LastSeen = time.Now()

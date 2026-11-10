@@ -61,6 +61,8 @@ export interface Service {
   inspection?: ServiceInspection  // Deep inspection data
   original_id?: string     // Original service ID (for aggregated services)
   aggregated_count?: number // Number of services aggregated (for display)
+  hostname?: string        // DNS name callers used for this address (external services)
+  hostnames?: string[]     // Every DNS name observed for it, primary first
 }
 
 // A decommission candidate: a service's most recent observation, for
@@ -159,6 +161,7 @@ export interface Connection {
   packets_recv?: number
   last_seen: string
   latency_ms?: number
+  hostnames?: string[] // DNS names the source resolved the target from, newest first
 }
 
 // NodeMetrics represents CPU/RAM usage for a physical node/server

@@ -31,6 +31,7 @@ import {
   Radar
 } from 'lucide-react'
 import { Service, Connection, ServiceInspection, formatBytes, TypeColors } from '../types'
+import { primaryHostname, serviceHostnames } from '../utils/hostnames'
 import { apiUrl } from '../lib/api'
 import MarkdownRenderer from './MarkdownRenderer'
 
@@ -187,7 +188,7 @@ export default function ServiceDrawer({
                   <ServiceTypeIcon type={service.type} size={18} />
                 </div>
                 <div>
-                  <h2 className="font-semibold text-slate-100">{service.name}</h2>
+                  <h2 className="font-semibold text-slate-100">{primaryHostname(service) || service.name}</h2>
                   <div className="flex items-center gap-2">
                     {service.tech && (
                       <span 
@@ -482,6 +483,14 @@ function ServiceOverview({
           Details
         </h3>
         <div className="space-y-3">
+          {serviceHostnames(service).length > 0 && (
+            <DetailRow
+              icon={<Globe size={14} />}
+              label="DNS names (from DNS answers its callers received)"
+              value={serviceHostnames(service).join(', ')}
+              mono
+            />
+          )}
           {service.pod_ip && (
             <DetailRow icon={<Globe size={14} />} label="IP Address" value={service.pod_ip} mono />
           )}
@@ -1318,8 +1327,13 @@ function ConnectionCard({ connection, direction }: { connection: Connection; dir
   return (
     <div className="bg-slate-800/50 rounded-lg px-3 py-2 text-xs border border-slate-700/20">
       <div className="flex items-center justify-between">
-        <span className="text-slate-300 font-mono truncate">
-          {direction === 'outgoing' ? connection.target_id : connection.source_id}
+        <span
+          className="text-slate-300 font-mono truncate"
+          title={connection.hostnames?.length ? `DNS: ${connection.hostnames.join(', ')}` : undefined}
+        >
+          {direction === 'outgoing' && connection.hostnames?.length
+            ? `${connection.hostnames[0]} (${connection.target_id})`
+            : direction === 'outgoing' ? connection.target_id : connection.source_id}
         </span>
         <span className="text-slate-500 font-mono">:{connection.port}</span>
       </div>

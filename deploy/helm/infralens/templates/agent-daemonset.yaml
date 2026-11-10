@@ -33,6 +33,9 @@ spec:
             - --cluster={{ .Values.agent.clusterName }}
             {{- end }}
             - --inspect
+            {{- if eq (toString .Values.agent.dnsNames) "true" }}
+            - --dns-names=true
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:

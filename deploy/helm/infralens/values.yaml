@@ -173,7 +173,16 @@ agent:
   # Cluster name - groups all K8s nodes under this name in the UI
   # If empty, each node appears separately
   clusterName: "Kubernetes"
-  
+
+  # EXPERIMENTAL, off by default: show DNS names (api.stripe.com) instead of
+  # bare IPs for destinations. The agent learns them from DNS queries and
+  # their matching answers seen on the node (AF_PACKET capture, needs
+  # CAP_NET_RAW - granted by privileged mode). Names are only reported for
+  # destinations a workload actually connected to. Names are display labels,
+  # not verified facts: whoever controls a workload's resolver controls its
+  # labels. If capture cannot start, the agent logs once and reports IPs.
+  dnsNames: false
+
   # Agent runs with elevated privileges for eBPF
   securityContext:
     privileged: true

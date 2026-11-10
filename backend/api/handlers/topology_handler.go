@@ -427,6 +427,12 @@ type ServiceResponse struct {
 	Labels       map[string]string `json:"labels,omitempty"`
 	LastSeen     string            `json:"last_seen"`
 	Healthy      *bool             `json:"healthy,omitempty"`
+
+	// Hostname is the DNS name to label an address-keyed (external) service
+	// with - the most common of Hostnames. Hostnames lists every name its
+	// callers resolved it from. Both omitted when none was observed.
+	Hostname  string   `json:"hostname,omitempty"`
+	Hostnames []string `json:"hostnames,omitempty"`
 }
 
 // ConnectionResponse is the connection format expected by the frontend.
@@ -445,6 +451,10 @@ type ConnectionResponse struct {
 	PacketsRecv   uint64  `json:"packets_recv,omitempty"`
 	LastSeen      string  `json:"last_seen"`
 	LatencyMs     float64 `json:"latency_ms,omitempty"`
+
+	// Hostnames are the DNS names the source resolved the target from, most
+	// recent first.
+	Hostnames []string `json:"hostnames,omitempty"`
 }
 
 // HistoryRangeResponse is the earliest/latest recorded history instants,
@@ -540,7 +550,17 @@ func convertServiceToResponse(svc storage.Service, healthKnown bool) ServiceResp
 		Labels:       svc.Labels,
 		LastSeen:     svc.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
 		Healthy:      healthy,
+		Hostname:     primaryServiceHostname(svc),
+		Hostnames:    svc.Hostnames,
 	}
+}
+
+// primaryServiceHostname is the single DNS name to show for a service.
+func primaryServiceHostname(svc storage.Service) string {
+	if len(svc.Hostnames) == 0 {
+		return ""
+	}
+	return svc.Hostnames[0]
 }
 
 func convertConnectionToResponse(conn storage.Connection) ConnectionResponse {
@@ -559,6 +579,7 @@ func convertConnectionToResponse(conn storage.Connection) ConnectionResponse {
 		PacketsRecv:   conn.PacketsRecv,
 		LastSeen:      conn.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
 		LatencyMs:     conn.Latency,
+		Hostnames:     storage.HostnameNames(conn.Hostnames),
 	}
 }
 

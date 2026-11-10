@@ -153,7 +153,11 @@ func writeDriftLines(b *strings.Builder, label string, edges []DriftEdge) {
 		if e.External {
 			suffix = " [internet]"
 		}
-		fmt.Fprintf(b, "\n  - %s -> %s (port %d/%s)%s", e.SourceID, e.TargetID, e.Port, protocolOrTCP(e.Protocol), suffix)
+		target := e.TargetID
+		if e.TargetHostname != "" {
+			target = fmt.Sprintf("%s [%s]", e.TargetHostname, e.TargetID)
+		}
+		fmt.Fprintf(b, "\n  - %s -> %s (port %d/%s)%s", e.SourceID, target, e.Port, protocolOrTCP(e.Protocol), suffix)
 	}
 }
 

@@ -119,9 +119,15 @@ func (r *HistoryRepo) RecordConnection(ctx context.Context, conn *storage.Connec
 		protocol = "tcp"
 	}
 
+	// Names are only ever added to an interval, never cleared: a sighting
+	// that carries none (an older agent, a flow opened before capture
+	// started) says nothing about the names already learned.
+	hostnames := storage.EncodeHostnames(conn.Hostnames)
+
 	res, err := exec.ExecContext(ctx, `
 		UPDATE connection_intervals
-		SET last_seen = $1
+		SET last_seen = $1,
+			hostnames = CASE WHEN $5::text <> '' THEN $5::text ELSE hostnames END
 		WHERE id = (
 			SELECT id FROM connection_intervals
 			WHERE connection_id = $2
@@ -130,7 +136,7 @@ func (r *HistoryRepo) RecordConnection(ctx context.Context, conn *storage.Connec
 		)
 		AND last_seen >= $3
 		AND last_seen <= $4`,
-		at, conn.ID, cutoff, at)
+		at, conn.ID, cutoff, at, hostnames)
 	if err != nil {
 		return fmt.Errorf("extending connection interval: %w", err)
 	}
@@ -146,15 +152,15 @@ func (r *HistoryRepo) RecordConnection(ctx context.Context, conn *storage.Connec
 	// See RecordService for why this insert is guarded.
 	_, err = exec.ExecContext(ctx, `
 		INSERT INTO connection_intervals
-			(connection_id, source_id, target_id, port, protocol, first_seen, last_seen)
+			(connection_id, source_id, target_id, port, protocol, first_seen, last_seen, hostnames)
 		SELECT $1::text, $2::text, $3::text, $4::int, $5::text,
-		       $6::timestamptz, $7::timestamptz
+		       $6::timestamptz, $7::timestamptz, $11::text
 		WHERE NOT EXISTS (
 			SELECT 1 FROM connection_intervals
 			WHERE connection_id = $8 AND first_seen <= $9 AND last_seen >= $10
 		)`,
 		conn.ID, conn.SourceID, conn.TargetID, conn.Port, protocol, at, at,
-		conn.ID, at, at)
+		conn.ID, at, at, hostnames)
 	if err != nil {
 		return fmt.Errorf("opening connection interval: %w", err)
 	}
@@ -211,7 +217,7 @@ func (r *HistoryRepo) ServicesBetween(ctx context.Context, from, to time.Time) (
 	return r.scanServiceIntervals(rows)
 }
 
-const connectionIntervalColumns = `id, connection_id, source_id, target_id, port, protocol, first_seen, last_seen`
+const connectionIntervalColumns = `id, connection_id, source_id, target_id, port, protocol, first_seen, last_seen, hostnames`
 
 func (r *HistoryRepo) scanConnectionIntervals(rows *sql.Rows) ([]storage.ConnectionInterval, error) {
 	defer func() { _ = rows.Close() }()
@@ -219,10 +225,12 @@ func (r *HistoryRepo) scanConnectionIntervals(rows *sql.Rows) ([]storage.Connect
 	var out []storage.ConnectionInterval
 	for rows.Next() {
 		var ci storage.ConnectionInterval
+		var hostnames string
 		if err := rows.Scan(&ci.ID, &ci.ConnectionID, &ci.SourceID, &ci.TargetID,
-			&ci.Port, &ci.Protocol, &ci.FirstSeen, &ci.LastSeen); err != nil {
+			&ci.Port, &ci.Protocol, &ci.FirstSeen, &ci.LastSeen, &hostnames); err != nil {
 			return nil, err
 		}
+		ci.Hostnames = storage.DecodeHostnames(hostnames)
 		out = append(out, ci)
 	}
 	return out, rows.Err()
@@ -275,10 +283,12 @@ func (r *HistoryRepo) EachConnectionBetween(ctx context.Context, from, to time.T
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var ci storage.ConnectionInterval
+		var hostnames string
 		if err := rows.Scan(&ci.ID, &ci.ConnectionID, &ci.SourceID, &ci.TargetID,
-			&ci.Port, &ci.Protocol, &ci.FirstSeen, &ci.LastSeen); err != nil {
+			&ci.Port, &ci.Protocol, &ci.FirstSeen, &ci.LastSeen, &hostnames); err != nil {
 			return err
 		}
+		ci.Hostnames = storage.DecodeHostnames(hostnames)
 		if err := fn(ci); err != nil {
 			return err
 		}

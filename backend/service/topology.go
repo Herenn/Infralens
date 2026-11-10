@@ -78,6 +78,13 @@ type TopologyService struct {
 	// driftStatus is published by the running drift detector. See
 	// GetDriftStatus.
 	driftStatus atomic.Pointer[DriftStatus]
+
+	// Throttles DNS-name checks driven by throughput reports. See
+	// AddConnectionHostnames.
+	hostnames hostnameMemo
+
+	// Serializes read-merge-write of a connection's names. See connLocks.
+	connLocks connLocks
 }
 
 // NewTopologyService creates a new topology service.
@@ -420,26 +427,38 @@ func (ts *TopologyService) UpdateServiceInspection(ctx context.Context, serviceI
 
 // AddConnection adds or updates a connection in the topology.
 func (ts *TopologyService) AddConnection(ctx context.Context, conn *storage.Connection) error {
+	// Held across read-merge-write so concurrent reports for one edge don't
+	// lose each other's DNS names. See connLocks.
+	unlock := ts.connLocks.lock(conn.ID)
+
 	// Check if connection exists
 	existing, err := ts.store.Connections().Get(ctx, conn.ID)
 	if err != nil {
+		unlock()
 		return fmt.Errorf("checking existing connection: %w", err)
 	}
 
 	isNew := existing == nil
 
+	var previousNames []storage.Hostname
 	if existing != nil {
 		// Increment count for existing connection
 		conn.Count = existing.Count + 1
+		previousNames = existing.Hostnames
 	} else {
 		conn.Count = 1
 	}
+	// Names accumulate (each at its latest sighting) rather than being replaced.
+	conn.Hostnames = storage.MergeHostnames(conn.Hostnames, previousNames, time.Now())
+	namesChanged := !storage.EqualHostnames(conn.Hostnames, previousNames)
 
 	if err := ts.store.Connections().Upsert(ctx, conn); err != nil {
+		unlock()
 		return fmt.Errorf("upserting connection: %w", err)
 	}
 
 	ts.recordConnectionHistory(ctx, conn, conn.LastSeen)
+	unlock()
 
 	// Publish event
 	event := ConnectionEvent{
@@ -455,6 +474,11 @@ func (ts *TopologyService) AddConnection(ctx context.Context, conn *storage.Conn
 		ts.eventBus.PublishConnectionCreated(event)
 	} else {
 		ts.eventBus.PublishConnectionUpdated(event)
+	}
+	// The target's derived names changed, after its own update was already
+	// published (the processor stores the service before the connection).
+	if namesChanged {
+		ts.publishTargetUpdated(ctx, conn.TargetID)
 	}
 
 	return nil
@@ -505,7 +529,11 @@ func (ts *TopologyService) UpdateNodeMetrics(ctx context.Context, metrics *stora
 
 // GetService retrieves a service by ID.
 func (ts *TopologyService) GetService(ctx context.Context, id string) (*storage.Service, error) {
-	return ts.store.Services().Get(ctx, id)
+	svc, err := ts.store.Services().Get(ctx, id)
+	if err == nil {
+		ts.annotateService(ctx, svc)
+	}
+	return svc, err
 }
 
 // GetConnection retrieves a connection by ID.
@@ -520,7 +548,13 @@ func (ts *TopologyService) GetNodeMetrics(ctx context.Context, nodeName string) 
 
 // ListServices returns all services matching the given filter.
 func (ts *TopologyService) ListServices(ctx context.Context, filter storage.ServiceFilter) ([]storage.Service, error) {
-	return ts.store.Services().List(ctx, filter)
+	services, err := ts.store.Services().List(ctx, filter)
+	if err == nil && len(services) > 0 {
+		if conns, cerr := ts.store.Connections().List(ctx, storage.ConnectionFilter{}); cerr == nil {
+			AnnotateHostnames(services, conns)
+		}
+	}
+	return services, err
 }
 
 // ListConnections returns all connections matching the given filter.
@@ -530,7 +564,9 @@ func (ts *TopologyService) ListConnections(ctx context.Context, filter storage.C
 
 // GetTopology returns a snapshot of the current topology.
 func (ts *TopologyService) GetTopology(ctx context.Context) (*storage.Topology, error) {
-	return ts.store.GetTopology(ctx)
+	topo, err := ts.store.GetTopology(ctx)
+	annotateTopology(topo)
+	return topo, err
 }
 
 // ImpactDirection controls which way GetImpact traverses the graph.
@@ -563,7 +599,7 @@ const (
 // non-zero instant is supplied.
 func (ts *TopologyService) resolveTopology(ctx context.Context, at time.Time) (*storage.Topology, error) {
 	if at.IsZero() {
-		return ts.store.GetTopology(ctx)
+		return ts.GetTopology(ctx)
 	}
 	return ts.GetTopologyAt(ctx, at)
 }
@@ -897,11 +933,13 @@ func (ts *TopologyService) GetTopologyAt(ctx context.Context, at time.Time) (*st
 	}
 
 	services := servicesFromIntervals(svcIntervals)
-	return &storage.Topology{
+	topo := &storage.Topology{
 		Services:    services,
 		Connections: edgesWithinServices(connectionsFromIntervals(connIntervals), services),
 		UpdatedAt:   at,
-	}, nil
+	}
+	annotateTopologyAt(topo, at)
+	return topo, nil
 }
 
 // edgesWithinServices drops connections whose endpoints are not among the
@@ -1056,14 +1094,18 @@ func (ts *TopologyService) GetTopologyDiff(ctx context.Context, from, to time.Ti
 		}
 	}
 
-	return &TopologyDiff{
+	diff := &TopologyDiff{
 		From:               from,
 		To:                 to,
 		AddedServices:      servicesFromIntervals(addedSvc),
 		RemovedServices:    servicesFromIntervals(removedSvc),
 		AddedConnections:   connectionsFromIntervals(addedConn),
 		RemovedConnections: connectionsFromIntervals(removedConn),
-	}, nil
+	}
+	// Each side is named from the edges present at its own instant.
+	annotateHostnamesAt(diff.AddedServices, connectionsFromIntervals(toConn), to)
+	annotateHostnamesAt(diff.RemovedServices, connectionsFromIntervals(fromConn), from)
+	return diff, nil
 }
 
 func servicesFromIntervals(intervals []storage.ServiceInterval) []storage.Service {
@@ -1097,6 +1139,7 @@ func connectionsFromIntervals(intervals []storage.ConnectionInterval) []storage.
 			LastSeen:  ci.LastSeen,
 			CreatedAt: ci.FirstSeen,
 			UpdatedAt: ci.LastSeen,
+			Hostnames: ci.Hostnames,
 		})
 	}
 	return out

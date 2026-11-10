@@ -35,6 +35,9 @@ type ConnectionInterval struct {
 	Protocol     string    `json:"protocol,omitempty"`
 	FirstSeen    time.Time `json:"first_seen"`
 	LastSeen     time.Time `json:"last_seen"`
+
+	// Hostnames are the edge's DNS names as last recorded on this interval.
+	Hostnames []Hostname `json:"hostnames,omitempty"`
 }
 
 // HistoryBounds is the earliest and latest instants covered by recorded
@@ -184,6 +187,9 @@ func mergeConnectionIntervals(rows []ConnectionInterval) []ConnectionInterval {
 		if row.LastSeen.After(existing.LastSeen) {
 			existing.LastSeen = row.LastSeen
 		}
+		// Union, each name at its latest sighting. The zero "now" disables
+		// age-based expiry here: reading history must not depend on the clock.
+		existing.Hostnames = MergeHostnames(row.Hostnames, existing.Hostnames, time.Time{})
 	}
 
 	merged := make([]ConnectionInterval, 0, len(order))

@@ -85,7 +85,9 @@ func (h *ExportHandler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, out)
 }
 
-// nodeLabel returns a human-friendly label for a service.
+// nodeLabel returns a human-friendly label for a service. An external
+// (address-keyed) service its callers reached by DNS name is labelled with
+// that name, keeping the address alongside: "api.stripe.com [52.1.2.3]".
 func nodeLabel(svc storage.Service) string {
 	label := svc.DisplayName
 	if label == "" {
@@ -93,6 +95,13 @@ func nodeLabel(svc storage.Service) string {
 	}
 	if label == "" {
 		label = svc.ID
+	}
+	if len(svc.Hostnames) > 0 {
+		host := svc.Hostnames[0]
+		if more := len(svc.Hostnames) - 1; more > 0 {
+			host = fmt.Sprintf("%s +%d", host, more)
+		}
+		label = fmt.Sprintf("%s [%s]", host, label)
 	}
 	if svc.Tech != "" && !strings.EqualFold(svc.Tech, label) {
 		label = fmt.Sprintf("%s (%s)", label, svc.Tech)
@@ -132,6 +141,29 @@ func mermaidID(id string) string {
 	return "svc_" + b.String()
 }
 
+// edgeLabel is ":port" (plus "/udp"), and the edge's own DNS name when it
+// differs from the name its target node is labelled with - the case of a
+// shared (CDN) address that different callers reached under different names.
+func edgeLabel(conn storage.Connection, targets map[string]storage.Service, udpSuffix bool) string {
+	label := fmt.Sprintf(":%d", conn.Port)
+	if udpSuffix && conn.Protocol == "udp" {
+		label += "/udp"
+	}
+	target := targets[conn.TargetID]
+	if names := storage.HostnameNames(conn.Hostnames); len(names) > 0 && len(target.Hostnames) > 0 && target.Hostnames[0] != names[0] {
+		label += " " + names[0]
+	}
+	return label
+}
+
+func servicesByID(services []storage.Service) map[string]storage.Service {
+	m := make(map[string]storage.Service, len(services))
+	for _, s := range services {
+		m[s.ID] = s
+	}
+	return m
+}
+
 // renderMermaid renders the topology as a Mermaid flowchart, with services
 // grouped into subgraphs per node.
 func renderMermaid(t *storage.Topology) string {
@@ -149,13 +181,11 @@ func renderMermaid(t *storage.Topology) string {
 		b.WriteString("    end\n")
 	}
 
+	byID := servicesByID(t.Services)
 	conns := append([]storage.Connection(nil), t.Connections...)
 	sort.Slice(conns, func(a, c int) bool { return conns[a].ID < conns[c].ID })
 	for _, conn := range conns {
-		label := fmt.Sprintf(":%d", conn.Port)
-		if conn.Protocol == "udp" {
-			label += "/udp"
-		}
+		label := edgeLabel(conn, byID, true)
 		fmt.Fprintf(&b, "    %s -->|\"%s\"| %s\n",
 			mermaidID(conn.SourceID), escapeMermaid(label), mermaidID(conn.TargetID))
 	}
@@ -187,10 +217,11 @@ func renderDOT(t *storage.Topology) string {
 		b.WriteString("    }\n\n")
 	}
 
+	byID := servicesByID(t.Services)
 	conns := append([]storage.Connection(nil), t.Connections...)
 	sort.Slice(conns, func(a, c int) bool { return conns[a].ID < conns[c].ID })
 	for _, conn := range conns {
-		label := fmt.Sprintf(":%d", conn.Port)
+		label := edgeLabel(conn, byID, false)
 		attrs := fmt.Sprintf("label=%q", label)
 		if conn.Protocol == "udp" {
 			attrs += ", style=dashed"

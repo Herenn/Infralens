@@ -35,6 +35,7 @@ import { useDriftFeed } from './hooks/useDriftFeed'
 import { useDriftFocus } from './hooks/useDriftFocus'
 import { apiUrl } from './lib/api'
 import { layoutGraph, updateNodeData, updateEdgeData } from './utils/layout'
+import { unionHostnames } from './utils/hostnames'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AppNode = Node<any>
@@ -177,6 +178,9 @@ function filterTopology(topology: Topology | null, filters: FilterState): Topolo
           display_name: `${displayTech} (${svcs.length})`,
           original_id: svcs[0].id,  // Keep first service's ID for backend lookups
           aggregated_count: svcs.length,
+          // Not one destination's name: keep every name searchable, label none.
+          hostname: undefined,
+          hostnames: unionHostnames(svcs),
         }
         aggregatedExternal.push(aggregatedSvc)
         
@@ -350,7 +354,7 @@ function App() {
 
     const matches = new Set<string>()
     filteredTopology.services.forEach(svc => {
-      const haystack = [svc.id, svc.name, svc.display_name, svc.resolved_name, svc.tech, svc.type, svc.pod_ip, svc.node]
+      const haystack = [svc.id, svc.name, svc.display_name, svc.resolved_name, svc.tech, svc.type, svc.pod_ip, svc.node, ...(svc.hostnames || []), svc.hostname]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()

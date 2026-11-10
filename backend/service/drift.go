@@ -60,6 +60,10 @@ type DriftEdge struct {
 	// want to hear about, so it is flagged rather than left to be inferred
 	// from an IP.
 	External bool `json:"external"`
+
+	// TargetHostname is the DNS name the source resolved the target from,
+	// when the agent observed one: "api.stripe.com" rather than 52.1.2.3.
+	TargetHostname string `json:"target_hostname,omitempty"`
 }
 
 // DriftReport is everything one detection pass found.
@@ -526,9 +530,15 @@ func (d *DriftDetector) observe(ci storage.ConnectionInterval) (*driftEdgeState,
 			FirstSeen:    ci.FirstSeen,
 			LastSeen:     ci.LastSeen,
 			External:     isPublicServiceID(ci.TargetID),
+
+			TargetHostname: primaryHostname(ci.Hostnames),
 		}}
 		d.known[ci.ConnectionID] = st
 		return st, true
+	}
+	// A name can arrive after the edge was first recorded.
+	if h := primaryHostname(ci.Hostnames); h != "" {
+		st.edge.TargetHostname = h
 	}
 	if ci.FirstSeen.Before(st.edge.FirstSeen) {
 		st.edge.FirstSeen = ci.FirstSeen

@@ -149,6 +149,22 @@ jobs:
           cd agent
           go build -v -o infralens-agent .
 
+      # Vet needs the generated bindings above, so it runs after generate.
+      # The DNS-name capture code is pure Go and unit/fuzz-tested without
+      # any kernel support; the fuzz seeds run as regular tests here.
+      - name: Vet and Test Agent
+        run: |
+          go vet ./agent/...
+          go test -race ./agent/dnscache/...
+
+      # The real AF_PACKET capture path (socket, in-kernel filter, leg
+      # metadata) needs root; the test skips itself without it, so it is run
+      # here as a compiled binary under sudo.
+      - name: DNS capture integration test (root)
+        run: |
+          go test -c -o "$RUNNER_TEMP/dnscache.test" ./agent/dnscache
+          sudo "$RUNNER_TEMP/dnscache.test" -test.run 'TestCaptureIntegration' -test.v -test.count=1
+
   docker:
     name: Docker Build
     runs-on: ubuntu-latest

@@ -355,6 +355,13 @@ func (h *AIHandler) buildServiceContext(ctx context.Context, svc *storage.Servic
 					if targetSvc.ID == conn.TargetID {
 						connInfo.RemoteIP = targetSvc.PodIP
 						connInfo.RemoteName = targetSvc.Name
+						// The DNS name this service itself used beats a ":443" -
+						// for address-keyed targets only (the ones with derived
+						// names), like every other label; a Kubernetes-resolved
+						// target keeps its Kubernetes name.
+						if names := storage.HostnameNames(conn.Hostnames); len(names) > 0 && len(targetSvc.Hostnames) > 0 {
+							connInfo.RemoteName = names[0]
+						}
 						break
 					}
 				}

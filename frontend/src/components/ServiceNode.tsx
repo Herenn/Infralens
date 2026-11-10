@@ -15,6 +15,7 @@ import {
   ArrowUpFromLine 
 } from 'lucide-react'
 import { Service, TypeColors } from '../types'
+import { serviceHostnames } from '../utils/hostnames'
 
 export interface ServiceNodeData {
   label: string
@@ -135,6 +136,7 @@ function ServiceNode({ data, selected }: ServiceNodeProps) {
 
   const k8sType = isK8sResource(service)
   const k8sInfo = getK8sDisplayInfo(service)
+  const hostnames = serviceHostnames(service)
   
   // Get icon and color based on fingerprinted type
   const Icon = getServiceIcon(service.type, service.icon)
@@ -203,9 +205,15 @@ function ServiceNode({ data, selected }: ServiceNodeProps) {
         </div>
         
         <div className="flex-1 min-w-0">
-          {/* Primary name */}
-          <h3 className="font-medium text-dark-100 truncate text-xs leading-tight">
+          {/* Primary name: DNS name for external destinations, IP below */}
+          <h3
+            className="font-medium text-dark-100 truncate text-xs leading-tight"
+            title={hostnames.length > 0 ? `DNS: ${hostnames.join(', ')}` : undefined}
+          >
             {k8sInfo ? k8sInfo.name : label}
+            {!k8sInfo && hostnames.length > 1 && (
+              <span className="ml-1 text-[9px] font-normal text-dark-400">+{hostnames.length - 1}</span>
+            )}
           </h3>
 
           {/* Namespace (if K8s) */}
