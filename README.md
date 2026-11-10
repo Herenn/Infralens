@@ -14,6 +14,8 @@ on Kubernetes clusters and plain Linux servers. No sidecars. No SDKs. No instrum
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![GitHub Stars](https://img.shields.io/github/stars/Herenn/Infralens?style=social)](https://github.com/Herenn/Infralens/stargazers)
 
+Built and maintained by [Eren Çiftçi](https://github.com/Herenn) · Commercial support and consulting by [Opsilla](https://opsilla.com)
+
 [**Try the demo**](#-try-it-in-30-seconds) · [**Install**](#-installation) · [**How it works**](#%EF%B8%8F-how-it-works) · [**Features**](#-features) · [**Contributing**](#-contributing)
 
 ![InfraLens Demo](docs/demo.gif)
@@ -434,6 +436,17 @@ cd frontend && npm install && npm run dev
 ## 🤝 Contributing
 
 Contributions are very welcome — this project is young and there's a lot of interesting work to pick up, from eBPF probes to React Flow UX. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started, or open an issue to discuss an idea first.
+
+## Commercial support
+
+<a href="https://opsilla.com">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/opsilla-logo-dark.png">
+    <img src="docs/assets/opsilla-logo-light.png" alt="Opsilla" width="160">
+  </picture>
+</a>
+
+InfraLens is free and open source. If you want help deploying it, extending it, or running Kubernetes and cloud infrastructure more broadly, [Opsilla](https://opsilla.com) offers assessments, project work and ongoing advisory.
 
 ## 📄 License
 
