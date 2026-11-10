@@ -74,6 +74,25 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
           env:
+            # UI login (opt-in; without it reads are public as in v3.0).
+            # 1. Create the Secret:
+            #      kubectl -n infralens create secret generic infralens-ui-auth \
+            #        --from-literal=ui-password="$(openssl rand -base64 24)" \
+            #        --from-literal=session-secret="$(openssl rand -hex 32)"
+            # 2. Uncomment the two entries below. They are deliberately not
+            #    optional: if the Secret or a key is missing (a typo), the pod
+            #    refuses to start (CreateContainerConfigError) instead of
+            #    silently serving the UI without a login.
+            # - name: UI_PASSWORD
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: infralens-ui-auth
+            #       key: ui-password
+            # - name: SESSION_SECRET
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: infralens-ui-auth
+            #       key: session-secret
             # Topology history. Retention is in days and decides how far back
             # the timeline scrubs; unrelated to PRUNE_MAX_AGE (current state).
             - name: HISTORY_ENABLED

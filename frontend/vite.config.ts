@@ -14,7 +14,10 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:8080',
-        changeOrigin: true,
+        // Keep the browser's Host header (no changeOrigin): with UI login
+        // enabled the backend checks the WebSocket's Origin against Host, and
+        // Vite's WebSocket proxy sends no X-Forwarded-Host to compare with.
+        changeOrigin: false,
         ws: true,
       },
     },

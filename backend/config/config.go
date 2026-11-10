@@ -155,6 +155,13 @@ func Load() *Config {
 			// That has to be a deliberate choice, not something you get by
 			// forgetting to set a variable.
 			AllowNoAuth: getBoolEnv("ALLOW_NO_AUTH", false),
+			// UI login (opt-in). Unset UI_PASSWORD keeps v3.0 behaviour.
+			UIPassword:    getEnv("UI_PASSWORD", ""),
+			UIUsername:    getEnv("UI_USERNAME", middleware.DefaultUIUsername),
+			SessionSecret: getEnv("SESSION_SECRET", ""),
+			SessionTTL:    getDurationEnv("SESSION_TTL", middleware.DefaultSessionTTL),
+			// Whose X-Forwarded-For to believe for login throttling.
+			TrustedProxies: getEnv("TRUSTED_PROXIES", ""),
 		},
 
 		LLM: LLMConfig{

@@ -29,6 +29,13 @@ services:
       - API_KEY=${API_KEY:-}
       # Set ALLOW_NO_AUTH=true to start without an API key (development only).
       - ALLOW_NO_AUTH=${ALLOW_NO_AUTH:-}
+      # UI login (optional, empty = UI and read endpoints stay public as in v3.0)
+      - UI_PASSWORD=${UI_PASSWORD:-}
+      - UI_USERNAME=${UI_USERNAME:-admin}
+      - SESSION_SECRET=${SESSION_SECRET:-}
+      - SESSION_TTL=${SESSION_TTL:-12h}
+      # Whose X-Forwarded-For to trust for login throttling (empty = private ranges, one hop)
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
       # AI Documentation (optional)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}

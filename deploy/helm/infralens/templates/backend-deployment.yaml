@@ -24,6 +24,13 @@ spec:
     metadata:
       labels:
         {{- include "infralens.backend.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pods when the chart's Secret changes: env vars from a
+        # Secret are only read at container start, so without this a
+        # `helm upgrade` that rotates uiPassword/apiKey would leave the old
+        # (possibly leaked) values live. Not covered: backend.auth.existingSecret,
+        # which the chart does not manage - restart the Deployment yourself.
+        checksum/secret: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ include "infralens.serviceAccountName" . }}
       # fsGroup is what makes the mounted volume writable. The image runs as
@@ -52,6 +59,34 @@ spec:
             {{- if .Values.backend.auth.allowNoAuth }}
             - name: ALLOW_NO_AUTH
               value: "true"
+            {{- end }}
+            {{- with .Values.backend.auth }}
+            {{- if or .uiPassword .existingSecret }}
+            # UI login: read endpoints and the WebSocket need a session or API_KEY.
+            - name: UI_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret | default (printf "%s-secrets" (include "infralens.fullname" $)) }}
+                  key: ui-password
+            - name: UI_USERNAME
+              value: {{ .uiUsername | default "admin" | quote }}
+            - name: SESSION_TTL
+              value: {{ .sessionTTL | default "12h" | quote }}
+            {{- if .trustedProxies }}
+            - name: TRUSTED_PROXIES
+              value: {{ .trustedProxies | quote }}
+            {{- end }}
+            {{- if or .sessionSecret .existingSecret }}
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret | default (printf "%s-secrets" (include "infralens.fullname" $)) }}
+                  key: session-secret
+                  {{- if .existingSecret }}
+                  optional: true
+                  {{- end }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- if .Values.backend.demoMode }}
             - name: DEMO_MODE

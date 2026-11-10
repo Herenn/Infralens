@@ -103,6 +103,30 @@ backend:
     # Only enable it for evaluation or a trusted, isolated network.
     allowNoAuth: false
   
+    # UI login (v3.1). When uiPassword is set, the UI shows a login screen and
+    # every read endpoint and the WebSocket require a session or the apiKey.
+    # Empty keeps v3.0 behaviour: reads are public. Stored in the chart's
+    # Secret. Use a long random value: openssl rand -base64 24
+    uiPassword: ""
+    uiUsername: "admin"
+    # Signs session cookies. Optional with one replica (a random per-process
+    # key is used, so a restart signs everyone out); required for sessions to
+    # survive restarts or work across replicas. At least 32 characters:
+    # openssl rand -hex 32
+    sessionSecret: ""
+    # Absolute session lifetime; users sign in again after it.
+    sessionTTL: 12h
+    # Name of an existing Secret to read the UI credentials from instead of
+    # the values above. Keys: "ui-password" (required) and "session-secret"
+    # (optional). Pods are not restarted when it changes.
+    existingSecret: ""
+    # Whose X-Forwarded-For to believe when throttling logins per client.
+    # Empty (default): connections from loopback/private addresses (the
+    # ingress controller, the frontend's nginx) are proxies, one hop. Set an
+    # explicit CIDR list if untrusted clients can reach the backend directly
+    # from private addresses, or for multi-hop chains; "none" to ignore.
+    trustedProxies: ""
+
   # Demo mode - simulate a live topology without any agents (for evaluation)
   demoMode: false
   

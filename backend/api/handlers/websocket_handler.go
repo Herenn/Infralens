@@ -174,6 +174,15 @@ func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 		case <-sub.Done:
 			log.WithField("subscriber", subID).Info("WebSocket subscription ended")
 			return
+
+		case <-r.Context().Done():
+			// With UI login enabled the request context is bound to the
+			// session, so this is the session expiring or being logged out.
+			log.WithField("subscriber", subID).Info("WebSocket session ended")
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			_ = conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "session ended"))
+			return
 		}
 	}
 }

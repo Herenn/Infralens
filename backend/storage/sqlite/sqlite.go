@@ -207,6 +207,13 @@ func (s *Store) startPruning() {
 				} else {
 					pruned, err = s.pruneHistory(ctx)
 				}
+				// UI logouts are only needed until the session would have
+				// expired anyway.
+				if n, rerr := s.SessionRevocations().DeleteExpired(ctx, time.Now()); rerr != nil {
+					log.WithError(rerr).Error("Pruning UI session revocations failed")
+				} else {
+					pruned += n
+				}
 				cancel()
 				if err != nil {
 					log.WithError(err).Error("Pruning failed")

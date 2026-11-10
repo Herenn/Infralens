@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image, Search, X, FileCode, Share2 } from 'lucide-react'
 import { Stats } from '../types'
 import ChangesButton from './ChangesButton'
+import { LogOut } from 'lucide-react'
+import { useAuth } from '../lib/auth'
 
 interface FilterState {
   hideLocalhost: boolean
@@ -33,6 +35,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
   const filterButtonRef = useRef<HTMLButtonElement>(null)
   const exportButtonRef = useRef<HTMLButtonElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const auth = useAuth()
   
   const displayStats = filteredStats || stats
   const hasFilters = filters.hideLocalhost || filters.minConnections > 1 || filters.collapseExternal
@@ -353,6 +356,18 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             </>
           )}
         </div>
+
+        {/* Sign out (only when UI login is enabled) */}
+        {auth.loginRequired && (
+          <button
+            onClick={auth.logout}
+            className="shrink-0 flex items-center p-1.5 rounded-lg transition-all bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-200 hover:bg-dark-700"
+            title={auth.username ? `Signed in as ${auth.username} - sign out` : 'Sign out'}
+            aria-label="Sign out"
+          >
+            <LogOut size={14} />
+          </button>
+        )}
       </div>
     </header>
   )

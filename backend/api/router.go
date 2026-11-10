@@ -33,6 +33,9 @@ type Server struct {
 	k8sWatcher *k8s.Watcher
 	llmManager *llm.Manager
 
+	// sessions is nil unless UI login is enabled (UI_PASSWORD).
+	sessions *middleware.SessionManager
+
 	// stopBackground cancels goroutines the server owns (drift detection).
 	stopBackground context.CancelFunc
 	background     context.Context
@@ -68,6 +71,13 @@ func NewServer(
 		k8sWatcher: k8sWatcher,
 		llmManager: llmManager,
 	}
+	// Logouts are persisted so they survive restarts and reach every
+	// replica; both bundled stores support it.
+	var revocations storage.SessionRevocationRepository
+	if rs, ok := store.(storage.SessionRevocationStore); ok {
+		revocations = rs.SessionRevocations()
+	}
+	s.sessions = middleware.NewSessionManager(cfg.Auth, cfg.CORS.AllowedOrigins, revocations)
 
 	// Set build info for metrics
 	metrics.SetBuildInfo(handlers.Version, runtime.Version())
@@ -137,6 +147,7 @@ func (s *Server) setupRoutes() {
 	healthHandler := handlers.NewHealthHandler(s.store, s.k8sWatcher)
 	aiHandler := handlers.NewAIHandler(s.topology, s.llmManager)
 	driftHandler := handlers.NewDriftHandler(s.topology)
+	authHandler := handlers.NewAuthHandler(s.sessions)
 
 	// API v1 subrouter
 	api := s.router.PathPrefix("/api/v1").Subrouter()
@@ -187,6 +198,12 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/ai/ask", aiHandler.HandleAsk).Methods("POST")
 	api.HandleFunc("/ai/providers", aiHandler.HandleProviders).Methods("GET")
 
+	// UI login. Always public; with UI_PASSWORD set, every other route not
+	// listed in middleware/uiauth.go requires a session or the API key.
+	api.HandleFunc("/auth/login", authHandler.HandleLogin).Methods("POST")
+	api.HandleFunc("/auth/logout", authHandler.HandleLogout).Methods("POST")
+	api.HandleFunc("/auth/status", authHandler.HandleStatus).Methods("GET")
+
 	// Health/Ready endpoints
 	s.router.HandleFunc("/health", healthHandler.HandleHealth).Methods("GET")
 	s.router.HandleFunc("/ready", healthHandler.HandleReady).Methods("GET")
@@ -211,7 +228,7 @@ func (s *Server) Handler() http.Handler {
 		middleware.Logging(),
 		middleware.BodyLimit(s.config.Server.MaxRequestBytes),
 		middleware.CORS(s.config.CORS),
-		middleware.Auth(s.config.Auth),
+		middleware.UIAuth(s.config.Auth, s.sessions),
 	)(s.router)
 
 	return handler
@@ -232,5 +249,6 @@ func (s *Server) Close() {
 	if s.stopBackground != nil {
 		s.stopBackground()
 	}
+	s.sessions.Close()
 	s.eventBus.Close()
 }
