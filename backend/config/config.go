@@ -36,6 +36,30 @@ type Config struct {
 
 	// Idle spend estimation (see idlecost.go)
 	IdleCost service.IdleCostConfig
+
+	// MCP (Model Context Protocol) endpoint for AI assistants
+	MCP MCPConfig
+}
+
+// MCPConfig configures the read-only MCP endpoint served at /mcp.
+type MCPConfig struct {
+	// Enabled mounts /mcp. On by default: it is read-only, and what it serves
+	// is the same topology the public read endpoints (/api/v1/topology,
+	// /services, /graph/*, /topology/history/*, /topology/export) serve. The
+	// one addition - a service's process fingerprint (process name, listen
+	// ports, DB/HTTP server banners, pod) - is only returned to callers that
+	// authenticated with a key, never in open mode.
+	Enabled bool
+
+	// APIKey (MCP_API_KEY) is a read-only key valid on /mcp only, so AI
+	// assistant configs never need the agents' write-capable API_KEY. /mcp
+	// accepts either key; any key configured makes one required.
+	APIKey string
+
+	// AllowedOrigins are browser origins allowed to call /mcp (Origin check
+	// and CORS) besides loopback ones. Non-browser clients send no Origin and
+	// are unaffected.
+	AllowedOrigins []string
 }
 
 // DriftConfig configures architecture drift detection: a dependency appears
@@ -196,6 +220,12 @@ func Load() *Config {
 		},
 
 		IdleCost: loadIdleCost(),
+
+		MCP: MCPConfig{
+			Enabled:        getBoolEnv("MCP_ENABLED", true),
+			APIKey:         getEnv("MCP_API_KEY", ""),
+			AllowedOrigins: getListEnv("MCP_ALLOWED_ORIGINS"),
+		},
 	}
 
 	// The demo writes three days of synthetic history and drift events. With
@@ -214,6 +244,17 @@ const DefaultDemoDSN = "infralens-demo.db"
 
 func isSQLiteDriver(driver string) bool {
 	return driver == "" || driver == "sqlite" || driver == "sqlite3"
+}
+
+// getListEnv reads a comma-separated list, dropping empty entries.
+func getListEnv(key string) []string {
+	var out []string
+	for _, p := range strings.Split(os.Getenv(key), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Helper functions

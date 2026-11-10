@@ -74,6 +74,20 @@ backend:
     quietAfter: 72h
     warmup: 24h
 
+  # MCP (Model Context Protocol) endpoint at /mcp, so AI assistants (Claude
+  # Code, Claude Desktop, Cursor, ...) can query the topology: read-only tools,
+  # Streamable HTTP. When any key is set (auth.apiKey or mcp.apiKey) /mcp
+  # requires one; with neither it is open only if auth.allowNoAuth is true.
+  mcp:
+    enabled: true
+    # Read-only key accepted on /mcp only - give this to AI clients instead of
+    # the agents' write-capable auth.apiKey. Stored in the chart's Secret.
+    # Generate one with: openssl rand -hex 32
+    apiKey: ""
+    # Extra browser origins allowed to call /mcp (comma-separated). Loopback
+    # origins and non-browser clients are always allowed.
+    allowedOrigins: ""
+
   # Persistence for the backend's SQLite database. Disabled by default keeps
   # the quick-start single-command, but history does NOT survive a restart
   # without it - unlike current state, it cannot be re-derived by the agents.
@@ -270,6 +284,9 @@ ingress:
           pathType: Prefix
           service: frontend
         - path: /api
+          pathType: Prefix
+          service: backend
+        - path: /mcp
           pathType: Prefix
           service: backend
   tls: []

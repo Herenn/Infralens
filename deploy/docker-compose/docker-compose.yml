@@ -68,6 +68,11 @@ services:
       - IDLE_COST_WINDOW=${IDLE_COST_WINDOW:-720h}
       - IDLE_COST_QUIET_AFTER=${IDLE_COST_QUIET_AFTER:-72h}
       - IDLE_COST_WARMUP=${IDLE_COST_WARMUP:-24h}
+      # MCP endpoint (/mcp) for AI assistants - read-only. MCP_API_KEY is a
+      # key valid on /mcp only; give it to AI clients instead of API_KEY.
+      - MCP_ENABLED=${MCP_ENABLED:-true}
+      - MCP_API_KEY=${MCP_API_KEY:-}
+      - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-}
     volumes:
       # The backend's SQLite database lives in the image's WORKDIR (/data).
       # Without this volume every restart discards it - and topology history,

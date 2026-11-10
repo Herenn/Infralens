@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
@@ -193,7 +194,28 @@ func renderMermaid(t *storage.Topology) string {
 	return b.String()
 }
 
+// RenderMermaid renders a topology exactly as the Mermaid export endpoint
+// does, for other surfaces (the MCP server) that offer the same diagram.
+func RenderMermaid(t *storage.Topology) string {
+	return renderMermaid(t)
+}
+
+// escapeMermaid makes observed text safe inside a quoted Mermaid label. Every
+// label - including the raw service ID used when a service has no name -
+// goes through here. Quotes would end the string, and a line break ends the
+// statement, letting a crafted name or ID inject directives such as
+// `click ... "https://..."`; both are neutralised, as are other control and
+// invisible characters.
 func escapeMermaid(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n', r == '\r', r == '\u2028', r == '\u2029', unicode.IsControl(r):
+			return ' '
+		case unicode.Is(unicode.Cf, r):
+			return -1
+		}
+		return r
+	}, s)
 	return strings.ReplaceAll(s, "\"", "#quot;")
 }
 

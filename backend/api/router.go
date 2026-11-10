@@ -40,6 +40,9 @@ type Server struct {
 	stopBackground context.CancelFunc
 	background     context.Context
 	driftOnce      sync.Once
+
+	// mcp is the /mcp endpoint, nil when MCP_ENABLED=false. See mcp.go.
+	mcp http.Handler
 }
 
 // NewServer creates a new API server.
@@ -209,6 +212,11 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/auth/login", authHandler.HandleLogin).Methods("POST")
 	api.HandleFunc("/auth/logout", authHandler.HandleLogout).Methods("POST")
 	api.HandleFunc("/auth/status", authHandler.HandleStatus).Methods("GET")
+	// MCP endpoint for AI assistants. Not routed here: it is served ahead of
+	// the global middleware with its own auth and CORS - see mcp.go.
+	if s.config.MCP.Enabled {
+		s.mcp = s.newMCPEndpoint()
+	}
 
 	// Health/Ready endpoints
 	s.router.HandleFunc("/health", healthHandler.HandleHealth).Methods("GET")
@@ -237,7 +245,7 @@ func (s *Server) Handler() http.Handler {
 		middleware.UIAuth(s.config.Auth, s.sessions),
 	)(s.router)
 
-	return handler
+	return s.withMCP(handler)
 }
 
 // EventBus returns the event bus for external access.

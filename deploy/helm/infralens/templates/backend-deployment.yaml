@@ -140,6 +140,21 @@ spec:
             # Architecture drift detection / Changes feed.
             - name: DRIFT_ENABLED
               value: {{ .Values.backend.drift.enabled | quote }}
+            # MCP endpoint (/mcp) for AI assistants.
+            - name: MCP_ENABLED
+              value: {{ .Values.backend.mcp.enabled | quote }}
+            {{- if .Values.backend.mcp.allowedOrigins }}
+            - name: MCP_ALLOWED_ORIGINS
+              value: {{ .Values.backend.mcp.allowedOrigins | quote }}
+            {{- end }}
+            {{- if .Values.backend.mcp.apiKey }}
+            # Read-only key accepted on /mcp only.
+            - name: MCP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "infralens.fullname" . }}-secrets
+                  key: mcp-api-key
+            {{- end }}
             {{- if .Values.backend.drift.webhookUrl }}
             # Architecture drift notifications.
             - name: DRIFT_WEBHOOK_URL
