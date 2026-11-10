@@ -14,8 +14,6 @@ type SessionRevocationRepo struct {
 	db *sql.DB
 }
 
-var _ storage.SessionRevocationStore = (*Store)(nil)
-
 // SessionRevocations returns the UI session revocation repository.
 func (s *Store) SessionRevocations() storage.SessionRevocationRepository {
 	return &SessionRevocationRepo{db: s.db}
@@ -53,8 +51,8 @@ func (r *SessionRevocationRepo) List(ctx context.Context, createdSince, activeAt
 		}
 		out = append(out, storage.SessionRevocation{
 			SessionID: id,
-			ExpiresAt: time.Unix(exp, 0),
-			CreatedAt: time.Unix(created, 0),
+			ExpiresAt: time.Unix(exp, 0).UTC(),
+			CreatedAt: time.Unix(created, 0).UTC(),
 		})
 	}
 	return out, rows.Err()

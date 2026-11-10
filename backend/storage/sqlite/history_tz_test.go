@@ -16,7 +16,7 @@ import (
 func TestHistoryQueriesAreZoneIndependent(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
-	h := store.History()
+	h := store.History().(*HistoryRepo)
 
 	seen := time.Now().Add(-time.Hour)
 	if err := h.RecordService(ctx, &storage.Service{ID: "svc"}, seen, 5*time.Minute); err != nil {
@@ -45,6 +45,14 @@ func TestHistoryQueriesAreZoneIndependent(t *testing.T) {
 	}
 	if got, _ := h.StaleServices(ctx, seen.Add(time.Minute).In(elsewhere), 0); len(got) != 1 {
 		t.Errorf("StaleServices in another zone: got %d, want 1", len(got))
+	}
+	if got, _ := h.LatestConnectionIntervals(ctx, from, to); len(got) != 1 {
+		t.Errorf("LatestConnectionIntervals in another zone: got %d, want 1", len(got))
+	}
+	var streamed int
+	_ = h.EachConnectionBetween(ctx, from, to, func(storage.ConnectionInterval) error { streamed++; return nil })
+	if streamed != 1 {
+		t.Errorf("EachConnectionBetween in another zone: got %d, want 1", streamed)
 	}
 	if n, _ := h.DeleteStale(ctx, seen.Add(-time.Minute).In(elsewhere)); n != 0 {
 		t.Errorf("DeleteStale before the interval deleted %d rows", n)

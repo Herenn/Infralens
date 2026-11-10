@@ -271,3 +271,69 @@ func TestTimestamps_NormalizeLargeDatabase(t *testing.T) {
 	t.Logf("normalized %d rows in %s (%.0f rows/s); re-check of a normalized database: %d rows in %s",
 		n, took, float64(n)/took.Seconds(), again, time.Since(start))
 }
+
+// TestTimestamps_EveryDatetimeColumnIsNormalized: the startup normalisation
+// pass rewrites exactly the columns listed in timestampColumns. A DATETIME
+// column added by a later migration but missing from that list would keep
+// v3.0-style local-zone text and compare wrongly; integer unix-seconds columns
+// (ui_session_revocations) and text columns (the hostnames "name|unixSeconds"
+// lists) are zone-independent and correctly left alone.
+func TestTimestamps_EveryDatetimeColumnIsNormalized(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	listed := map[string]bool{}
+	for _, tc := range timestampColumns {
+		for _, c := range tc.columns {
+			listed[tc.table+"."+c] = true
+		}
+	}
+
+	rows, err := store.db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		tables = append(tables, n)
+	}
+	_ = rows.Close()
+
+	found := map[string]bool{}
+	for _, table := range tables {
+		cols, err := store.db.QueryContext(ctx, `SELECT name, type FROM pragma_table_info(?)`, table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for cols.Next() {
+			var name, typ string
+			if err := cols.Scan(&name, &typ); err != nil {
+				t.Fatal(err)
+			}
+			switch strings.ToUpper(typ) {
+			case "DATETIME", "TIMESTAMP", "DATE":
+				found[table+"."+name] = true
+				if !listed[table+"."+name] {
+					t.Errorf("%s.%s is %s but not in timestampColumns: v3.0-format values in it would never be normalised", table, name, typ)
+				}
+			}
+		}
+		_ = cols.Close()
+	}
+	for col := range listed {
+		if !found[col] {
+			t.Errorf("timestampColumns lists %s, which is not a DATETIME column of the migrated schema", col)
+		}
+	}
+	for _, table := range []string{"ui_session_revocations"} {
+		for col := range found {
+			if strings.HasPrefix(col, table+".") {
+				t.Errorf("%s: expected unix-seconds INTEGER columns only, found DATETIME %s", table, col)
+			}
+		}
+	}
+}

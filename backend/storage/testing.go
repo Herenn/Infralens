@@ -44,6 +44,83 @@ func StoreSuite(t *testing.T, store Store) {
 	t.Run("Hostnames", func(t *testing.T) {
 		HostnamesSuite(t, store)
 	})
+
+	t.Run("OptionalInterfaces", func(t *testing.T) {
+		OptionalInterfacesSuite(t, store)
+	})
+}
+
+// OptionalInterfacesSuite checks the optional extensions features discover by
+// type assertion at runtime - persisted UI logouts (SessionRevocationStore)
+// and idle-spend's per-edge aggregation (LatestConnectionIntervaler on
+// History()) - are really there, and that the aggregation returns the newest
+// interval of each edge with inclusive window bounds.
+func OptionalInterfacesSuite(t *testing.T, store Store) {
+	if _, ok := store.(SessionRevocationStore); !ok {
+		t.Errorf("%T does not implement SessionRevocationStore: UI logouts would not persist", store)
+	}
+	latest, ok := store.History().(LatestConnectionIntervaler)
+	if !ok {
+		t.Fatalf("%T.History() (%T) does not implement LatestConnectionIntervaler", store, store.History())
+	}
+
+	ctx := context.Background()
+	h := store.History()
+	const gap = 5 * time.Minute
+	base := time.Now().Add(-3 * time.Hour).UTC().Truncate(time.Second)
+	conn := &Connection{ID: "optional-a->optional-b:80", SourceID: "optional-a", TargetID: "optional-b", Port: 80}
+	// Two intervals, an hour apart: newest is [base+2h, base+2h+1m].
+	for _, at := range []time.Time{base, base.Add(time.Minute), base.Add(2 * time.Hour), base.Add(2*time.Hour + time.Minute)} {
+		if err := h.RecordConnection(ctx, conn, at, gap); err != nil {
+			t.Fatalf("RecordConnection: %v", err)
+		}
+	}
+	got, err := latest.LatestConnectionIntervals(ctx, base, base.Add(3*time.Hour))
+	if err != nil {
+		t.Fatalf("LatestConnectionIntervals: %v", err)
+	}
+	var mine []ConnectionInterval
+	for _, ci := range got {
+		if ci.ConnectionID == conn.ID {
+			mine = append(mine, ci)
+		}
+	}
+	if len(mine) != 1 {
+		t.Fatalf("LatestConnectionIntervals returned %d intervals for one edge, want 1: %+v", len(mine), mine)
+	}
+	if !mine[0].FirstSeen.Equal(base.Add(2*time.Hour)) || !mine[0].LastSeen.Equal(base.Add(2*time.Hour+time.Minute)) {
+		t.Errorf("newest interval = [%s, %s], want [%s, %s]", mine[0].FirstSeen, mine[0].LastSeen,
+			base.Add(2*time.Hour), base.Add(2*time.Hour+time.Minute))
+	}
+	// The window is applied before the newest is picked: a past window sees
+	// the interval that was newest then.
+	got, err = latest.LatestConnectionIntervals(ctx, base, base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("LatestConnectionIntervals over a past window: %v", err)
+	}
+	mine = mine[:0]
+	for _, ci := range got {
+		if ci.ConnectionID == conn.ID {
+			mine = append(mine, ci)
+		}
+	}
+	if len(mine) != 1 || !mine[0].FirstSeen.Equal(base) {
+		t.Errorf("past window: got %+v, want the first interval only", mine)
+	}
+
+	// Bounds are inclusive: a window ending exactly at the newest interval's
+	// first sighting still finds it.
+	got, err = latest.LatestConnectionIntervals(ctx, base.Add(2*time.Hour), base.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("LatestConnectionIntervals at an exact instant: %v", err)
+	}
+	found := false
+	for _, ci := range got {
+		found = found || ci.ConnectionID == conn.ID
+	}
+	if !found {
+		t.Error("LatestConnectionIntervals at the interval's exact first_seen found nothing")
+	}
 }
 
 // =============================================================================

@@ -8,8 +8,6 @@ import (
 	"github.com/Herenn/Infralens/backend/storage"
 )
 
-var _ storage.LatestConnectionIntervaler = (*HistoryRepo)(nil)
-
 // LatestConnectionIntervals returns the newest interval of each connection
 // overlapping [from, to]. DISTINCT ON walks idx_connection_intervals_lookup
 // (connection_id, last_seen) instead of returning every interval.
