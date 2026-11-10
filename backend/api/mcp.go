@@ -60,7 +60,7 @@ func (s *Server) newMCPEndpoint() http.Handler {
 	}
 
 	h := mcp.NewHandler(
-		mcp.Deps{Topology: s.topology, Inspections: s.store.Services()},
+		mcp.Deps{Topology: s.topology, Inspections: s.store.Services(), DriftFeed: s.config.Drift.DetectionEnabled},
 		mcp.Options{
 			Version:             handlers.Version,
 			Auth:                mcp.KeyAuthenticator(keys, allowOpen, s.config.Auth.HeaderName),

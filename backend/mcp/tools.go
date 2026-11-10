@@ -27,13 +27,13 @@ func BuiltinTools(deps Deps) []Tool {
 		findOrphansTool(),
 		findStaleServicesTool(),
 		exportMermaidTool(),
+		getIdleSpendTool(),
 	}
-	// Optional, dependency-gated tools go here, e.g.:
-	//
-	//	if deps.IdleCost != nil {
-	//		tools = append(tools, idleCostTool())
-	//	}
-	_ = deps
+	// Optional, dependency-gated tools: registered only when the feature is
+	// on, so the model is never shown a tool that can only fail.
+	if deps.DriftFeed {
+		tools = append(tools, listDriftEventsTool())
+	}
 	return tools
 }
 

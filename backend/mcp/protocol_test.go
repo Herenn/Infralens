@@ -75,7 +75,7 @@ func newTestEndpoint(t *testing.T, opts Options) (*fixture, *httptest.Server) {
 	if opts.Auth == nil {
 		opts.Auth = KeyAuthenticator(nil, true) // open, as with ALLOW_NO_AUTH
 	}
-	f.handler = NewHandler(Deps{Topology: f.topology, Inspections: f.store.Services()}, opts)
+	f.handler = NewHandler(Deps{Topology: f.topology, Inspections: f.store.Services(), DriftFeed: true}, opts)
 	srv := httptest.NewServer(f.handler)
 	t.Cleanup(srv.Close)
 	return f, srv
@@ -122,7 +122,7 @@ func TestLegacyLifecycle(t *testing.T) {
 
 	list := c.post(`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`, h)
 	tools := list.body["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 11 {
+	if len(tools) != 13 {
 		t.Fatalf("tools/list returned %d tools", len(tools))
 	}
 	first := tools[0].(map[string]any)

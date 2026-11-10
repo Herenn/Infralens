@@ -34,6 +34,11 @@ type Deps struct {
 	// name, listen ports, detected DB/HTTP server) to get_service. It is the
 	// store's ServiceRepository in production.
 	Inspections InspectionReader
+
+	// DriftFeed registers list_drift_events: true when drift detection is
+	// on (DRIFT_ENABLED, the default). When it is off the REST feed answers
+	// 404 and the tool is not offered either.
+	DriftFeed bool
 }
 
 // InspectionReader reads a service's deep-inspection record.
@@ -234,6 +239,34 @@ func asToolError(err error) (*ToolError, bool) {
 // from flooding the model's context (Claude Code, for one, warns above ~10k
 // tokens of tool output).
 const maxResultBytes = 48 << 10
+
+// resultBudget is what a list tool aims to stay under, leaving headroom
+// below maxResultBytes for escaping and the surrounding envelope.
+const resultBudget = maxResultBytes - 4<<10
+
+// fitList trims out[key] (a list) from the end until out encodes within
+// resultBudget, and returns how many entries were kept. Tools whose entries
+// can be large (observed names, notes) use it to answer with fewer entries
+// and a continuation instead of failing with result_too_large.
+func fitList(out map[string]any, key string, items []map[string]any) int {
+	n := len(items)
+	for n > 0 {
+		out[key] = items[:n]
+		data, err := json.Marshal(out)
+		if err != nil || len(data) <= resultBudget {
+			break
+		}
+		// Shrink proportionally, at least by one.
+		over := float64(len(data)-resultBudget) / float64(len(data))
+		drop := int(over*float64(n)) + 1
+		n -= drop
+		if n < 0 {
+			n = 0
+		}
+	}
+	out[key] = items[:n]
+	return n
+}
 
 type callParams struct {
 	Name      string          `json:"name"`

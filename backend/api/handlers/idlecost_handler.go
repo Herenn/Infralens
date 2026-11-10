@@ -24,8 +24,9 @@ const maxAssumedNodeMonthly = 1_000_000
 //	                              totals always cover everything
 //	format=json|markdown|csv      default json
 //
-// Deliberately not on the auth skip list: unlike the other graph reads it
-// discloses (configured) spend figures, so it is protected whenever auth is.
+// Auth: a public read like /graph/orphans when no UI_PASSWORD is set (it is
+// on the v3.0 auth skip list, so the bundled UI works with only API_KEY set);
+// with UI_PASSWORD it needs a session or the API key, like every route.
 func (h *TopologyHandler) HandleGetIdleCost(w http.ResponseWriter, r *http.Request) {
 	q := service.IdleSpendQuery{}
 
