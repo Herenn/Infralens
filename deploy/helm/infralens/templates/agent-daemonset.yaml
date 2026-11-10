@@ -35,6 +35,17 @@ spec:
             - --inspect
             {{- if eq (toString .Values.agent.dnsNames) "true" }}
             - --dns-names=true
+            {{- with .Values.agent.dns }}
+            {{- if .maxPPS }}
+            - --dns-max-pps={{ .maxPPS }}
+            {{- end }}
+            {{- if .cacheSize }}
+            - --dns-cache-size={{ .cacheSize }}
+            {{- end }}
+            {{- if .statsInterval }}
+            - --dns-stats-interval={{ .statsInterval }}
+            {{- end }}
+            {{- end }}
             {{- end }}
           env:
             - name: NODE_NAME

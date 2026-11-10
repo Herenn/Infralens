@@ -26,25 +26,28 @@ backend:
     retention: 720h
     maxGap: 5m
 
-  # Architecture drift notifications (v3): POST to a webhook when a dependency
-  # appears that has never been seen before (flagging ones that reach the
-  # public internet) or an established one stops being observed. Works with
-  # Slack/Mattermost incoming webhooks as-is. Off unless webhookUrl is set;
-  # needs history.enabled. The URL is stored in the chart's Secret, since
-  # Slack-style webhook URLs embed their credential.
+  # Architecture drift: a dependency appears that has never been seen before
+  # (flagging ones that reach the public internet) or an established one
+  # stops being observed. Since v3.1 detection runs whenever history is
+  # enabled and records every change in the UI's Changes feed; the timings
+  # below apply to it with or without a webhook. Optionally it also POSTs to
+  # webhookUrl (Slack/Mattermost incoming webhooks work as-is); the URL is
+  # stored in the chart's Secret, since such URLs embed their credential.
   drift:
-    # Drift detection and the in-UI Changes feed (v3.1). Runs whenever
-    # history is enabled; the webhook below is optional. false switches the
-    # feature off entirely.
+    # false switches drift detection (feed and webhook) off entirely.
     enabled: true
     webhookUrl: ""
-    checkInterval: 5m
-    # How long a dependency must go unobserved before it is reported gone.
-    # Long on purpose: this is drift, not outage alerting.
-    goneAfter: 24h
+    # Timings; empty uses the backend default shown (demo mode uses 15s / 5m
+    # / no warmup unless these are set).
+    # How often history is checked for changes (default 5m).
+    checkInterval: ""
+    # How long a dependency must go unobserved before it is reported gone
+    # (default 24h). Long on purpose: this is drift, not outage alerting.
+    goneAfter: ""
     # Suppresses "new dependency" reports for the first hour of history, so
-    # a fresh install does not announce the whole cluster.
-    warmup: 1h
+    # a fresh install does not announce the whole cluster (default 1h; "0s"
+    # disables).
+    warmup: ""
 
   # Idle spend (v3.1, beta): cleanup candidates - services nothing talks to -
   # with network evidence and an approximate share of their node's price.
@@ -77,7 +80,9 @@ backend:
   # MCP (Model Context Protocol) endpoint at /mcp, so AI assistants (Claude
   # Code, Claude Desktop, Cursor, ...) can query the topology: read-only tools,
   # Streamable HTTP. When any key is set (auth.apiKey or mcp.apiKey) /mcp
-  # requires one; with neither it is open only if auth.allowNoAuth is true.
+  # requires one. With neither: if auth.uiPassword is set /mcp refuses every
+  # request (it never bypasses the UI login); otherwise it is open only if
+  # auth.allowNoAuth is true. The UI session cookie never authenticates /mcp.
   mcp:
     enabled: true
     # Read-only key accepted on /mcp only - give this to AI clients instead of
@@ -248,6 +253,16 @@ agent:
   # not verified facts: whoever controls a workload's resolver controls its
   # labels. If capture cannot start, the agent logs once and reports IPs.
   dnsNames: false
+  # Tuning for DNS name capture, used only with dnsNames: true. Empty keeps
+  # the agent's defaults.
+  dns:
+    # Max captured DNS packets processed per second (agent default 5000);
+    # the excess is dropped by the kernel.
+    maxPPS: ""
+    # Max (client, IP) pairs kept in the name cache.
+    cacheSize: ""
+    # How often to log capture counters, e.g. "5m"; "0" disables.
+    statsInterval: ""
 
   # Agent runs with elevated privileges for eBPF
   securityContext:

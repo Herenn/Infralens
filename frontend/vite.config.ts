@@ -20,6 +20,12 @@ export default defineConfig({
         changeOrigin: false,
         ws: true,
       },
+      // The MCP endpoint, so AI clients can be pointed at the dev server
+      // too. Exactly /mcp and /mcp/, as in nginx.conf.
+      '^/mcp/?$': {
+        target: 'http://localhost:8080',
+        changeOrigin: false,
+      },
     },
   },
 })

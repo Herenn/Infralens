@@ -27,6 +27,9 @@ spec:
           args:
             - --backend=infralens-backend.infralens.svc.cluster.local:8080
             - --poll-interval=1s
+            # EXPERIMENTAL (v3.1): label external destinations with DNS names
+            # learned from DNS answers on the node. Off by default.
+            # - --dns-names=true
           env:
             - name: NODE_NAME
               valueFrom:

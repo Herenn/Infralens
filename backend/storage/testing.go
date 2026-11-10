@@ -68,7 +68,10 @@ func OptionalInterfacesSuite(t *testing.T, store Store) {
 	h := store.History()
 	const gap = 5 * time.Minute
 	base := time.Now().Add(-3 * time.Hour).UTC().Truncate(time.Second)
-	conn := &Connection{ID: "optional-a->optional-b:80", SourceID: "optional-a", TargetID: "optional-b", Port: 80}
+	// Unique per run: a shared database (Postgres in CI) keeps earlier runs'
+	// history.
+	edge := fmt.Sprintf("optional-%d", time.Now().UnixNano())
+	conn := &Connection{ID: edge + "-a->" + edge + "-b:80", SourceID: edge + "-a", TargetID: edge + "-b", Port: 80}
 	// Two intervals, an hour apart: newest is [base+2h, base+2h+1m].
 	for _, at := range []time.Time{base, base.Add(time.Minute), base.Add(2 * time.Hour), base.Add(2*time.Hour + time.Minute)} {
 		if err := h.RecordConnection(ctx, conn, at, gap); err != nil {

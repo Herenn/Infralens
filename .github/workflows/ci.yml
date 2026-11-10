@@ -52,6 +52,16 @@ jobs:
           cd backend
           go test -v ./...
 
+      # Stored times must not depend on the host's zone (v3.0's SQLite store
+      # compared local-zone text). Runners are UTC, which would hide that, so
+      # the time-sensitive packages also run in a zone with DST and one with
+      # a non-whole-hour history.
+      - name: Test Backend (non-UTC time zones)
+        run: |
+          cd backend
+          TZ=America/New_York go test ./storage/... ./service/... ./mcp/... ./api/...
+          TZ=Europe/Istanbul go test ./storage/... ./service/... ./mcp/... ./api/...
+
   backend-postgres:
     name: Backend (PostgreSQL)
     runs-on: ubuntu-latest
@@ -85,12 +95,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      # The shared storage suites (history, drift feed, hostnames, session
+      # revocations, optional interfaces) run against Postgres here.
       - name: Test Backend (PostgreSQL)
         env:
           TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/infralens_test?sslmode=disable
         run: |
           cd backend
-          go test -race ./storage/postgres/...
+          go test -race -count=1 ./storage/postgres/...
 
   frontend:
     name: Frontend

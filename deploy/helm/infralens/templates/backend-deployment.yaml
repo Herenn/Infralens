@@ -137,9 +137,24 @@ spec:
               value: {{ .Values.backend.history.retention | quote }}
             - name: HISTORY_MAX_GAP
               value: {{ .Values.backend.history.maxGap | quote }}
-            # Architecture drift detection / Changes feed.
+            # Architecture drift detection / Changes feed. The timings apply
+            # whether or not a webhook is configured: detection always runs
+            # (with history) and feeds the UI. Unset ones use the backend's
+            # defaults (demo mode has its own, much faster ones).
             - name: DRIFT_ENABLED
               value: {{ .Values.backend.drift.enabled | quote }}
+            {{- with .Values.backend.drift.checkInterval }}
+            - name: DRIFT_CHECK_INTERVAL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.backend.drift.goneAfter }}
+            - name: DRIFT_GONE_AFTER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if ne (toString .Values.backend.drift.warmup) "" }}
+            - name: DRIFT_WARMUP
+              value: {{ .Values.backend.drift.warmup | quote }}
+            {{- end }}
             # MCP endpoint (/mcp) for AI assistants.
             - name: MCP_ENABLED
               value: {{ .Values.backend.mcp.enabled | quote }}
@@ -156,18 +171,12 @@ spec:
                   key: mcp-api-key
             {{- end }}
             {{- if .Values.backend.drift.webhookUrl }}
-            # Architecture drift notifications.
+            # Optional drift webhook (Slack/Mattermost-compatible).
             - name: DRIFT_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ include "infralens.fullname" . }}-secrets
                   key: drift-webhook-url
-            - name: DRIFT_CHECK_INTERVAL
-              value: {{ .Values.backend.drift.checkInterval | quote }}
-            - name: DRIFT_GONE_AFTER
-              value: {{ .Values.backend.drift.goneAfter | quote }}
-            - name: DRIFT_WARMUP
-              value: {{ .Values.backend.drift.warmup | quote }}
             {{- end }}
             # Idle spend estimation. Empty values mean "unset".
             - name: IDLE_COST_NODE_MONTHLY

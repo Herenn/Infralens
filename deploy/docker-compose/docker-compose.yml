@@ -54,7 +54,8 @@ services:
       - HISTORY_MAX_GAP=${HISTORY_MAX_GAP:-5m}
       # Architecture drift detection (the Changes feed) - false switches it off
       - DRIFT_ENABLED=${DRIFT_ENABLED:-true}
-      # Architecture drift notifications - off unless a webhook URL is set
+      # Drift timings (apply to the feed with or without a webhook) and the
+      # optional webhook
       - DRIFT_WEBHOOK_URL=${DRIFT_WEBHOOK_URL:-}
       - DRIFT_CHECK_INTERVAL=${DRIFT_CHECK_INTERVAL:-5m}
       - DRIFT_GONE_AFTER=${DRIFT_GONE_AFTER:-24h}
@@ -70,6 +71,7 @@ services:
       - IDLE_COST_WARMUP=${IDLE_COST_WARMUP:-24h}
       # MCP endpoint (/mcp) for AI assistants - read-only. MCP_API_KEY is a
       # key valid on /mcp only; give it to AI clients instead of API_KEY.
+      # With UI_PASSWORD set and no key, /mcp refuses every request.
       - MCP_ENABLED=${MCP_ENABLED:-true}
       - MCP_API_KEY=${MCP_API_KEY:-}
       - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-}
@@ -126,6 +128,8 @@ services:
       - --inspect
     environment:
       - INFRALENS_API_KEY=${API_KEY:-}
+      # EXPERIMENTAL DNS names for external destinations (off by default)
+      - INFRALENS_DNS_NAMES=${INFRALENS_DNS_NAMES:-false}
     volumes:
       - /proc:/proc:ro
       - /sys:/sys:rw

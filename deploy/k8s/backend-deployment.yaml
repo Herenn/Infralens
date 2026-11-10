@@ -101,6 +101,26 @@ spec:
               value: "720h"
             - name: HISTORY_MAX_GAP
               value: "5m"
+            # Architecture drift detection - the UI's Changes feed (v3.1).
+            # Optional webhook: DRIFT_WEBHOOK_URL.
+            - name: DRIFT_ENABLED
+              value: "true"
+            # MCP endpoint (/mcp) for AI assistants (v3.1). Give AI clients a
+            # read-only key valid on /mcp only (with UI_PASSWORD set and no
+            # key, /mcp refuses every request):
+            #      kubectl -n infralens create secret generic infralens-mcp \
+            #        --from-literal=mcp-api-key="$(openssl rand -hex 32)"
+            - name: MCP_ENABLED
+              value: "true"
+            # - name: MCP_API_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: infralens-mcp
+            #       key: mcp-api-key
+            # Idle spend (v3.1, beta): no prices are built in; set a node
+            # price to see costs. See deploy/docker-compose/env.example.
+            # - name: IDLE_COST_NODE_MONTHLY
+            #   value: "140"
           volumeMounts:
             # The backend's SQLite database lives in the image WORKDIR (/data).
             # Without this the container root is not writable by the nonroot
