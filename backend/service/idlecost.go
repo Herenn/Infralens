@@ -549,6 +549,9 @@ func (ts *TopologyService) computeIdleSpend(ctx context.Context, assume float64)
 	if err != nil {
 		return nil, fmt.Errorf("getting topology: %w", err)
 	}
+	// External endpoints are named in evidence ("called only by ...",
+	// exclusions) by their DNS name, like everywhere else.
+	annotateTopology(topo)
 
 	in := idleInputs{
 		now:            now,

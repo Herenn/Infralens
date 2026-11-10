@@ -179,7 +179,7 @@ func (d *DriftDetector) eventsFor(ctx context.Context, report *DriftReport) []st
 			SourceID:     e.SourceID,
 			SourceName:   names[e.SourceID],
 			TargetID:     e.TargetID,
-			TargetName:   names[e.TargetID],
+			TargetName:   driftTargetName(e, names),
 			Port:         e.Port,
 			Protocol:     e.Protocol,
 			External:     e.External,
@@ -206,12 +206,15 @@ func IsExternalServiceID(id string) bool {
 
 // DriftDisplayName is the name the drift feed records for a service: the
 // most human-readable thing known about it, or "" if nothing beats its ID.
-//
-// The single place to extend when better names exist - e.g. a resolved
-// hostname for an external IP.
+// An external endpoint reached by a DNS name is named by it (ServiceHostname)
+// rather than by its bare address; svc.Hostnames must be annotated for that,
+// which is why eventsFor also passes the edge's own name (driftTargetName).
 func DriftDisplayName(svc *storage.Service) string {
 	if svc == nil {
 		return ""
+	}
+	if h := ServiceHostname(svc); h != "" {
+		return h
 	}
 	for _, name := range []string{svc.DisplayName, svc.Name} {
 		if name != "" && name != svc.ID {
@@ -219,6 +222,16 @@ func DriftDisplayName(svc *storage.Service) string {
 		}
 	}
 	return ""
+}
+
+// driftTargetName is the recorded name of an event's target: the DNS name
+// the source resolved it from when one was observed on the edge (the same
+// name the webhook text and the topology show), else the service's name.
+func driftTargetName(e DriftEdge, names map[string]string) string {
+	if e.TargetHostname != "" {
+		return e.TargetHostname
+	}
+	return names[e.TargetID]
 }
 
 // driftNames resolves display names for service IDs: from current state

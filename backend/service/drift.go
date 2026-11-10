@@ -531,13 +531,13 @@ func (d *DriftDetector) observe(ci storage.ConnectionInterval) (*driftEdgeState,
 			LastSeen:     ci.LastSeen,
 			External:     isPublicServiceID(ci.TargetID),
 
-			TargetHostname: primaryHostname(ci.Hostnames),
+			TargetHostname: edgeHostname(ci.TargetID, ci.Hostnames),
 		}}
 		d.known[ci.ConnectionID] = st
 		return st, true
 	}
 	// A name can arrive after the edge was first recorded.
-	if h := primaryHostname(ci.Hostnames); h != "" {
+	if h := edgeHostname(ci.TargetID, ci.Hostnames); h != "" {
 		st.edge.TargetHostname = h
 	}
 	if ci.FirstSeen.Before(st.edge.FirstSeen) {

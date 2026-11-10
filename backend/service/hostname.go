@@ -177,6 +177,31 @@ func annotateHostnamesAt(services []storage.Service, conns []storage.Connection,
 	}
 }
 
+// ServiceHostname is the one DNS name InfraLens labels a service with, or ""
+// when it has none. It is the single rule behind every human-facing name for
+// an external endpoint - the topology API's "hostname", the Changes feed and
+// webhook (DriftDisplayName, edgeHostname), Idle-spend evidence, MCP output
+// and the Mermaid/DOT exports - so they all say "api.stripe.com" for the
+// same address. Hostnames is only ever filled for address-keyed services
+// (see AnnotateHostnames), most relevant first, so Kubernetes-resolved
+// services keep their own names.
+func ServiceHostname(svc *storage.Service) string {
+	if svc == nil || len(svc.Hostnames) == 0 || !isAddressKeyedID(svc.ID) {
+		return ""
+	}
+	return svc.Hostnames[0]
+}
+
+// edgeHostname is ServiceHostname for the target of one connection (or
+// history interval): the name its source most recently resolved the target
+// from, when the target is address-keyed.
+func edgeHostname(targetID string, hs []storage.Hostname) string {
+	if !isAddressKeyedID(targetID) {
+		return ""
+	}
+	return primaryHostname(hs)
+}
+
 // primaryHostname is the name to show when only one fits: the most recently
 // observed. "" when there is none.
 func primaryHostname(hs []storage.Hostname) string {

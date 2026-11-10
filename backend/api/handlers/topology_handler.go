@@ -550,17 +550,9 @@ func convertServiceToResponse(svc storage.Service, healthKnown bool) ServiceResp
 		Labels:       svc.Labels,
 		LastSeen:     svc.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
 		Healthy:      healthy,
-		Hostname:     primaryServiceHostname(svc),
+		Hostname:     service.ServiceHostname(&svc),
 		Hostnames:    svc.Hostnames,
 	}
-}
-
-// primaryServiceHostname is the single DNS name to show for a service.
-func primaryServiceHostname(svc storage.Service) string {
-	if len(svc.Hostnames) == 0 {
-		return ""
-	}
-	return svc.Hostnames[0]
 }
 
 func convertConnectionToResponse(conn storage.Connection) ConnectionResponse {

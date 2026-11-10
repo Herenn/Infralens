@@ -1114,6 +1114,9 @@ func metaOr(meta map[string]storage.Service, id string) storage.Service {
 }
 
 func displayName(s storage.Service) string {
+	if h := ServiceHostname(&s); h != "" {
+		return h
+	}
 	if s.Name != "" {
 		return s.Name
 	}

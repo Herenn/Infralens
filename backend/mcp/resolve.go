@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
 )
 
@@ -77,6 +78,9 @@ func sortServices(list []*storage.Service) {
 }
 
 func displayName(svc *storage.Service) string {
+	if h := service.ServiceHostname(svc); h != "" {
+		return h
+	}
 	if svc.DisplayName != "" {
 		return svc.DisplayName
 	}

@@ -97,8 +97,7 @@ func nodeLabel(svc storage.Service) string {
 	if label == "" {
 		label = svc.ID
 	}
-	if len(svc.Hostnames) > 0 {
-		host := svc.Hostnames[0]
+	if host := service.ServiceHostname(&svc); host != "" {
 		if more := len(svc.Hostnames) - 1; more > 0 {
 			host = fmt.Sprintf("%s +%d", host, more)
 		}
