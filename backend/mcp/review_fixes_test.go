@@ -56,9 +56,10 @@ func TestServiceIDsRoundTrip(t *testing.T) {
 }
 
 // TestPastTimeQueryOnNonUTCHost forces a non-UTC time.Local, so the SQLite
-// store writes timestamps in +03:00 while the model asks in UTC ("...Z").
-// It covers toServerZone (or, once that workaround is deleted, the storage
-// fix that replaces it); under TZ=UTC in CI it would otherwise pass vacuously.
+// host is in +03:00 while the model asks in UTC ("...Z").
+// The SQLite store now writes and compares every time as UTC (see dbTime in
+// storage/sqlite/timestamps.go), so the UTC instant is passed through as is;
+// under TZ=UTC in CI this would otherwise pass vacuously.
 func TestPastTimeQueryOnNonUTCHost(t *testing.T) {
 	saved := time.Local
 	time.Local = time.FixedZone("+03", 3*60*60) // named like a real zone abbreviation; the SQLite driver parses it back

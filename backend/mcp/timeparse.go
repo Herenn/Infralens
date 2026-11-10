@@ -30,7 +30,7 @@ func parseTimeArg(arg, raw string, now time.Time) (time.Time, error) {
 			if t.After(now.Add(futureSlack)) {
 				return time.Time{}, invalidArgs("%s %q is in the future (server time is %s)", arg, s, now.UTC().Format(time.RFC3339))
 			}
-			return toServerZone(t), nil
+			return t, nil
 		}
 	}
 
@@ -48,23 +48,6 @@ func parseTimeArg(arg, raw string, now time.Time) (time.Time, error) {
 		return time.Time{}, invalidArgs("%s %q is too far in the past: %v", arg, s, err)
 	}
 	return time.Time{}, invalidArgs("%s %q is not a recognised time; expected %s", arg, s, timeArgHelp)
-}
-
-// toServerZone is a TEMPORARY workaround for a storage bug, isolated here so
-// it can be deleted in one place.
-//
-// The SQLite store persists timestamps as text in the zone they were written
-// in (time.Now(), i.e. time.Local) and compares them as text, so a UTC
-// "...Z" instant on a non-UTC host matches the wrong rows (the REST ?at=
-// parameter is affected the same way). Re-expressing the instant in the
-// server's zone - the same instant, so this is harmless once storage is
-// fixed - makes the comparison line up.
-//
-// DELETE when the storage-layer fix (query instants converted on SQLite read
-// paths) is merged: replace the call in parseTimeArg with plain `t`.
-// TestPastTimeQueryOnNonUTCHost covers the behaviour either way.
-func toServerZone(t time.Time) time.Time {
-	return t.In(time.Local)
 }
 
 // maxRelativeDuration bounds relative time arguments. Anything older than
