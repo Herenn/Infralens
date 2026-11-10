@@ -85,6 +85,9 @@ type TopologyService struct {
 
 	// Serializes read-merge-write of a connection's names. See connLocks.
 	connLocks connLocks
+
+	// idle holds the idle-spend feature's state (idlecost.go, liveness.go).
+	idle idleState
 }
 
 // NewTopologyService creates a new topology service.
@@ -498,6 +501,7 @@ func (ts *TopologyService) UpdateConnectionStats(ctx context.Context, connID str
 	// Get updated connection for event
 	conn, _ := ts.store.Connections().Get(ctx, connID)
 	if conn != nil {
+		ts.refreshEndpointsFromStats(ctx, conn)
 		ts.refreshHistoryFromStats(ctx, conn)
 		ts.eventBus.PublishConnectionUpdated(ConnectionEvent{
 			ConnectionID:  conn.ID,

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Herenn/Infralens/backend/api/middleware"
+	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
 )
 
@@ -32,6 +33,9 @@ type Config struct {
 
 	// Architecture drift notifications
 	Drift DriftConfig
+
+	// Idle spend estimation (see idlecost.go)
+	IdleCost service.IdleCostConfig
 }
 
 // DriftConfig configures architecture drift detection: a dependency appears
@@ -190,6 +194,8 @@ func Load() *Config {
 
 			DetectionEnabled: getBoolEnv("DRIFT_ENABLED", true),
 		},
+
+		IdleCost: loadIdleCost(),
 	}
 
 	// The demo writes three days of synthetic history and drift events. With

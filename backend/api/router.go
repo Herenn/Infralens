@@ -58,6 +58,11 @@ func NewServer(
 		topologySvc.EnableHistory(cfg.Storage.HistoryMaxGap, cfg.Storage.HistoryRetention)
 	}
 
+	topologySvc.ConfigureIdleCost(cfg.IdleCost)
+	for _, w := range cfg.IdleCost.Warnings {
+		log.Warn(w)
+	}
+
 	// Create event processor
 	processor := service.NewEventProcessor(topologySvc, k8sWatcher)
 
@@ -180,6 +185,7 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
 	api.HandleFunc("/graph/criticality", topologyHandler.HandleGetCriticality).Methods("GET")
 	api.HandleFunc("/graph/orphans", topologyHandler.HandleGetOrphans).Methods("GET")
+	api.HandleFunc("/graph/idle-cost", topologyHandler.HandleGetIdleCost).Methods("GET")
 
 	// Architecture drift feed. Not registered at all when switched off, so
 	// it answers 404 and the UI hides it.

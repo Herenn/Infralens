@@ -114,6 +114,7 @@ func DefaultAuthConfig() AuthConfig {
 			"/api/v1/graph/stats",
 			"/api/v1/graph/criticality",
 			"/api/v1/graph/orphans",
+			"/api/v1/graph/idle-cost", // public read like orphans; cached server-side (TopologyService.GetIdleSpend)
 			"/api/v1/graph/impact",
 			// The drift feed is topology history in another shape, already
 			// pushed over the (public) WebSocket - same rule as the reads above.

@@ -83,6 +83,11 @@ type Simulator struct {
 
 	ready     chan struct{}
 	readyOnce sync.Once
+
+	// pastConnections and pastServices exist only in backfilled history:
+	// traffic that stopped, and a service that went quiet. See idle.go.
+	pastConnections []demoPastConnection
+	pastServices    []demoPastService
 }
 
 // NewSimulator creates a demo simulator backed by the given topology service.
@@ -93,6 +98,7 @@ func NewSimulator(topology *service.TopologyService) *Simulator {
 		ready:    make(chan struct{}),
 	}
 	s.buildScenario()
+	s.configureIdleCost()
 	return s
 }
 
@@ -208,6 +214,7 @@ func (s *Simulator) buildScenario() {
 		c.hostnames = hostnames
 		return c
 	}
+	s.services = append(s.services, idleDemoServices(svc)...)
 
 	conn := func(src, dst string, port uint16, sentKBps, recvKBps float64) *demoConnection {
 		return &demoConnection{
@@ -252,13 +259,16 @@ func (s *Simulator) buildScenario() {
 		named(conn("10.0.2.10/api-gateway", "198.51.100.50:443", 443, 3, 1), "o450123.ingest.sentry.io"),
 		named(conn("10.0.1.11/node", "198.51.100.60:443", 443, 2, 1), "api.segment.io", "cdn.segment.com"),
 	}
+	s.connections = append(s.connections, idleDemoConnections(conn)...)
 
 	gib := func(n uint64) uint64 { return n * 1024 * 1024 * 1024 }
 	s.nodes = []*demoNode{
 		{name: "demo-edge-1", memTotal: gib(8), cpuPercent: 22, memPercent: 38},
 		{name: "demo-app-1", memTotal: gib(16), cpuPercent: 45, memPercent: 55},
 		{name: "demo-data-1", memTotal: gib(32), cpuPercent: 30, memPercent: 68},
+		{name: nodeLegacy, memTotal: gib(8), cpuPercent: 6, memPercent: 31},
 	}
+	s.pastConnections, s.pastServices = idleDemoHistory()
 
 	s.buildTimeline(svc, conn)
 }
@@ -280,6 +290,9 @@ func external(ip string) storage.Service {
 
 // seed creates the initial services, connections, and node metrics.
 func (s *Simulator) seed(ctx context.Context) error {
+	// History first: it has to exist before the live writes below extend it.
+	s.backfillHistory(ctx)
+
 	s.refreshServices(ctx)
 
 	for _, c := range s.connections {

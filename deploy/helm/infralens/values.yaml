@@ -46,6 +46,34 @@ backend:
     # a fresh install does not announce the whole cluster.
     warmup: 1h
 
+  # Idle spend (v3.1, beta): cleanup candidates - services nothing talks to -
+  # with network evidence and an approximate share of their node's price.
+  # Candidates to verify, not recommendations to delete. No prices are built
+  # in: with nodeMonthly and the rules empty the panel shows evidence only.
+  # Prices are monthly amounts in `currency` (a label; no conversion).
+  # Per-node pricing needs per-node agents: with agent.clusterName set (the
+  # default "Kubernetes") every node reports under one group, and only a
+  # low-confidence cluster-wide split is possible - set it to "" for per-node
+  # attribution. Node rules match the real agent node names either way.
+  # Durations accept a day suffix ("7d").
+  idleCost:
+    # Default monthly cost of one node, e.g. "140".
+    nodeMonthly: ""
+    # Per-node overrides, glob=price, ";"-separated: "gpu-*=1800;db-1=420".
+    nodePrices: ""
+    # Per-service prices (name/ID glob=price), used instead of a node share -
+    # also the only way to price a node-less endpoint such as a managed DB.
+    servicePrices: ""
+    currency: USD
+    # Globs never flagged (known cron jobs, DR standbys): "nightly-*;dr-*".
+    exclude: ""
+    # History consulted (clamped to history.retention), how long without
+    # inbound traffic before a service is flagged, and how long a service
+    # (and history itself) must exist before anything is flagged.
+    window: 720h
+    quietAfter: 72h
+    warmup: 24h
+
   # Persistence for the backend's SQLite database. Disabled by default keeps
   # the quick-start single-command, but history does NOT survive a restart
   # without it - unlike current state, it cannot be re-derived by the agents.

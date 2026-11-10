@@ -364,6 +364,8 @@ func (p *EventProcessor) ProcessHostMetrics(ctx context.Context, metrics HostMet
 	nodeName := metrics.NodeName
 	if metrics.ClusterName != "" {
 		nodeName = metrics.ClusterName
+		// Remember the real node behind the group (idle-spend pricing).
+		p.topology.NoteAgentNode(metrics.ClusterName, metrics.NodeName)
 	}
 
 	m := &storage.NodeMetrics{

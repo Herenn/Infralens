@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image, Search, X, FileCode, Share2 } from 'lucide-react'
+import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image, Search, X, FileCode, Share2, PiggyBank } from 'lucide-react'
 import { Stats } from '../types'
 import ChangesButton from './ChangesButton'
 import { LogOut } from 'lucide-react'
@@ -27,9 +27,11 @@ interface HeaderProps {
   onExportDot?: () => void
   // Architecture drift feed button; omitted when the feed is unavailable.
   changes?: { open: boolean; unread: number; onToggle: () => void }
+  idleSpendOpen?: boolean
+  onToggleIdleSpend?: () => void
 }
 
-export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot, changes }: HeaderProps) {
+export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot, changes, idleSpendOpen, onToggleIdleSpend }: HeaderProps) {
   const [filterDropdownOpen, setFilterDropdownOpen] = useState(false)
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false)
   const filterButtonRef = useRef<HTMLButtonElement>(null)
@@ -231,6 +233,24 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           <span>🗂️</span>
           <span>Collapse</span>
         </button>
+
+        {/* Idle spend panel toggle */}
+        {onToggleIdleSpend && (
+          <button
+            onClick={onToggleIdleSpend}
+            className={`
+              flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+              ${idleSpendOpen
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
+              }
+            `}
+            title="Idle spend: what services nothing talks to are costing"
+          >
+            <PiggyBank size={14} />
+            <span>Idle spend</span>
+          </button>
+        )}
 
         {/* Export Button with Dropdown */}
         <button

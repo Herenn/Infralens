@@ -29,6 +29,7 @@ import OrphansPanel from './components/OrphansPanel'
 import CriticalityPanel from './components/CriticalityPanel'
 import DiffPanel from './components/DiffPanel'
 import ChangesPanel from './components/ChangesPanel'
+import IdleSpendPanel from './components/IdleSpendPanel'
 import { Service, Topology } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDriftFeed } from './hooks/useDriftFeed'
@@ -408,7 +409,15 @@ function App() {
   const driftFocus = useDriftFocus(nodes, changesOpen)
   const { decorateEdges: decorateDriftEdges, clear: clearDriftFocus } = driftFocus
 
-  const highlightIds = impactIds || driftFocus.highlightIds || searchMatchIds
+
+  // Idle spend panel: open state, and the service it last focused.
+  const [idleSpendOpen, setIdleSpendOpen] = useState(false)
+  const [idleFocusId, setIdleFocusId] = useState<string | null>(null)
+  const idleFocusIds = useMemo(() => (idleFocusId ? new Set([idleFocusId]) : null), [idleFocusId])
+
+  // A service picked in the idle-spend panel is the most recent, explicit
+  // intent, so it wins over impact, drift focus and search; it is cleared on pane click or close.
+  const highlightIds = idleFocusIds || impactIds || driftFocus.highlightIds || searchMatchIds
 
   // Apply highlighting: dim everything outside the active impact view or
   // search match, whichever is active.
@@ -644,6 +653,7 @@ function App() {
     // highlighting (see highlightIds), search would appear broken too.
     setImpactRoot(null)
     clearDriftFocus()
+    setIdleFocusId(null)
   }, [clearDriftFocus])
 
   // Update edge highlighting when selection changes
@@ -798,6 +808,8 @@ function App() {
         onExportMermaid={() => handleExportGraph('mermaid')}
         onExportDot={() => handleExportGraph('dot')}
         changes={driftFeed.available ? { open: changesOpen, unread: driftFeed.unread, onToggle: () => setChangesOpen(o => !o) } : undefined}
+        idleSpendOpen={idleSpendOpen}
+        onToggleIdleSpend={() => { setIdleSpendOpen(o => !o); setIdleFocusId(null) }}
       />
       
       <div className="flex-1 flex overflow-hidden">
@@ -890,6 +902,18 @@ function App() {
                 setTimelineAt(at)
                 if (ev && at) driftFocus.setFocus(ev)
               }}
+            />
+          )}
+
+          {idleSpendOpen && (
+            <IdleSpendPanel
+              onClose={() => {
+                setIdleSpendOpen(false)
+                setSelectedServiceId(cur => (cur === idleFocusId ? null : cur))
+                setIdleFocusId(null)
+              }}
+              onFocusService={id => { setIdleFocusId(id); setSelectedServiceId(id) }}
+              focusedId={idleFocusId}
             />
           )}
 

@@ -154,6 +154,23 @@ spec:
             - name: DRIFT_WARMUP
               value: {{ .Values.backend.drift.warmup | quote }}
             {{- end }}
+            # Idle spend estimation. Empty values mean "unset".
+            - name: IDLE_COST_NODE_MONTHLY
+              value: {{ .Values.backend.idleCost.nodeMonthly | quote }}
+            - name: IDLE_COST_NODE_PRICES
+              value: {{ .Values.backend.idleCost.nodePrices | quote }}
+            - name: IDLE_COST_SERVICE_PRICES
+              value: {{ .Values.backend.idleCost.servicePrices | quote }}
+            - name: IDLE_COST_CURRENCY
+              value: {{ .Values.backend.idleCost.currency | quote }}
+            - name: IDLE_COST_EXCLUDE
+              value: {{ .Values.backend.idleCost.exclude | quote }}
+            - name: IDLE_COST_WINDOW
+              value: {{ .Values.backend.idleCost.window | quote }}
+            - name: IDLE_COST_QUIET_AFTER
+              value: {{ .Values.backend.idleCost.quietAfter | quote }}
+            - name: IDLE_COST_WARMUP
+              value: {{ .Values.backend.idleCost.warmup | quote }}
             {{- with .Values.backend.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
