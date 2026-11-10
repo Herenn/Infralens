@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"runtime"
+	"sync"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -17,6 +18,7 @@ import (
 	"github.com/Herenn/Infralens/backend/pkg/llm"
 	"github.com/Herenn/Infralens/backend/pkg/metrics"
 	"github.com/Herenn/Infralens/backend/service"
+	"github.com/Herenn/Infralens/backend/service/demo"
 	"github.com/Herenn/Infralens/backend/storage"
 )
 
@@ -33,6 +35,8 @@ type Server struct {
 
 	// stopBackground cancels goroutines the server owns (drift detection).
 	stopBackground context.CancelFunc
+	background     context.Context
+	driftOnce      sync.Once
 }
 
 // NewServer creates a new API server.
@@ -70,29 +74,56 @@ func NewServer(
 
 	bgCtx, cancel := context.WithCancel(context.Background())
 	s.stopBackground = cancel
-	s.startDriftDetection(bgCtx)
+	s.background = bgCtx
+	// In demo mode the simulator writes a synthetic past at startup; the
+	// detector must seed after it, so main starts it once that is done.
+	if !cfg.Server.DemoMode {
+		s.StartDriftDetection()
+	}
 
 	s.setupRoutes()
 	return s
 }
 
-// startDriftDetection starts architecture drift notifications if a webhook is
-// configured. Drift is computed from topology history, so it needs history on.
+// StartDriftDetection starts drift detection, if configured. NewServer does
+// this itself except in demo mode, where it must wait until the simulator
+// has written its past (see main). Calling it again is a no-op.
+func (s *Server) StartDriftDetection() {
+	s.driftOnce.Do(func() { s.startDriftDetection(s.background) })
+}
+
+// startDriftDetection starts architecture drift detection. It runs whenever
+// topology history is on (drift is computed from it), recording changes in
+// the drift feed and pushing them to open UIs; a configured webhook is also
+// notified.
 func (s *Server) startDriftDetection(ctx context.Context) {
-	if !s.config.Drift.Enabled() {
+	if !s.config.Drift.DetectionEnabled {
+		if s.config.Drift.Enabled() {
+			log.Warn("DRIFT_WEBHOOK_URL is set but DRIFT_ENABLED=false - no drift notifications will be sent")
+		}
 		return
 	}
-	detector, err := s.topology.NewDriftDetector(service.DriftConfig{
+	cfg := service.DriftConfig{
 		Interval:  s.config.Drift.Interval,
 		GoneAfter: s.config.Drift.GoneAfter,
 		Warmup:    s.config.Drift.Warmup,
-	}, service.NewWebhookDriftNotifier(s.config.Drift.WebhookURL))
+	}
+	if s.config.Server.DemoMode {
+		cfg = demo.TuneDriftConfig(cfg)
+	}
+	var notifier service.DriftNotifier
+	if s.config.Drift.Enabled() {
+		notifier = service.NewWebhookDriftNotifier(s.config.Drift.WebhookURL)
+	}
+	detector, err := s.topology.NewDriftDetector(cfg, notifier)
 	if err != nil {
-		log.WithError(err).Warn("DRIFT_WEBHOOK_URL is set but drift detection could not start " +
-			"(it requires HISTORY_ENABLED=true) - no drift notifications will be sent")
+		if s.config.Drift.Enabled() {
+			log.WithError(err).Warn("DRIFT_WEBHOOK_URL is set but drift detection could not start " +
+				"(it requires HISTORY_ENABLED=true) - no drift notifications will be sent")
+		}
 		return
 	}
-	log.Info("Architecture drift notifications enabled")
+	log.WithField("webhook", notifier != nil).Info("Architecture drift detection enabled")
 	go detector.Run(ctx)
 }
 
@@ -105,6 +136,7 @@ func (s *Server) setupRoutes() {
 	wsHandler := handlers.NewWebSocketHandler(s.topology, s.eventBus)
 	healthHandler := handlers.NewHealthHandler(s.store, s.k8sWatcher)
 	aiHandler := handlers.NewAIHandler(s.topology, s.llmManager)
+	driftHandler := handlers.NewDriftHandler(s.topology)
 
 	// API v1 subrouter
 	api := s.router.PathPrefix("/api/v1").Subrouter()
@@ -137,6 +169,13 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
 	api.HandleFunc("/graph/criticality", topologyHandler.HandleGetCriticality).Methods("GET")
 	api.HandleFunc("/graph/orphans", topologyHandler.HandleGetOrphans).Methods("GET")
+
+	// Architecture drift feed. Not registered at all when switched off, so
+	// it answers 404 and the UI hides it.
+	if s.config.Drift.DetectionEnabled {
+		api.HandleFunc("/drift/events", driftHandler.HandleListEvents).Methods("GET")
+		api.HandleFunc("/drift/summary", driftHandler.HandleSummary).Methods("GET")
+	}
 
 	// WebSocket endpoint
 	api.HandleFunc("/ws", wsHandler.HandleWebSocket)

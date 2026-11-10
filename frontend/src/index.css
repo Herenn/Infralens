@@ -79,6 +79,31 @@ body {
   }
 }
 
+/* Changes feed: a live drift event slides in and briefly glows */
+.drift-enter {
+  animation: drift-enter 0.45s ease-out, drift-glow 2.4s ease-out;
+}
+
+@keyframes drift-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes drift-glow {
+  0% {
+    background: rgba(34, 197, 94, 0.14);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
 /* Glow effects */
 .glow-green {
   filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.4));

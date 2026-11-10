@@ -33,6 +33,10 @@ backend:
   # needs history.enabled. The URL is stored in the chart's Secret, since
   # Slack-style webhook URLs embed their credential.
   drift:
+    # Drift detection and the in-UI Changes feed (v3.1). Runs whenever
+    # history is enabled; the webhook below is optional. false switches the
+    # feature off entirely.
+    enabled: true
     webhookUrl: ""
     checkInterval: 5m
     # How long a dependency must go unobserved before it is reported gone.

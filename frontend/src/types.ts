@@ -85,6 +85,41 @@ export interface CriticalityEntry {
   blast_radius: number
 }
 
+// One architecture change from the drift feed: an edge that appeared (never
+// seen before) or disappeared (no longer observed). Names are snapshots taken
+// at detection time; empty means nothing better than the ID was known.
+export interface DriftEvent {
+  id: number
+  detected_at: string
+  kind: 'appeared' | 'disappeared'
+  connection_id: string
+  source_id: string
+  source_name?: string
+  target_id: string
+  target_name?: string
+  port: number
+  protocol: string
+  external: boolean
+  first_seen: string
+  last_seen: string
+}
+
+export interface DriftSummary {
+  since: string | null
+  total: number
+  appeared: number
+  disappeared: number
+  external: number
+  latest: string | null
+  detector: {
+    running: boolean
+    warmup_until: string | null
+    last_check: string | null
+    check_interval_seconds?: number
+    gone_after_seconds?: number
+  }
+}
+
 // Service type constants
 export const ServiceTypes = {
   DATABASE: 'database',

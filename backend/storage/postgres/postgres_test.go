@@ -59,6 +59,8 @@ func cleanupTestData(t *testing.T, store *Store) {
 	_, _ = store.db.ExecContext(ctx, "DELETE FROM services WHERE id LIKE 'suite-%' OR id LIKE 'conc-%' OR id LIKE 'list-%' OR id LIKE 'topo-%' OR id LIKE 'prune-%' OR id LIKE 'tx-%' OR id LIKE 'rw-%'")
 	_, _ = store.db.ExecContext(ctx, "DELETE FROM connections WHERE id LIKE 'conn-%' OR id LIKE 'conc-conn-%' OR id LIKE 'topo-%'")
 	_, _ = store.db.ExecContext(ctx, "DELETE FROM node_metrics WHERE node_name LIKE 'node-%'")
+	_, _ = store.db.ExecContext(ctx, "DELETE FROM drift_events WHERE fingerprint LIKE 'suite-drift-%'")
+	_, _ = store.db.ExecContext(ctx, "DELETE FROM drift_checkpoint")
 }
 
 // TestPostgresStoreSuite runs the shared storage test suite against PostgreSQL.

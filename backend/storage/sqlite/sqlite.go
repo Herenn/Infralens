@@ -41,6 +41,7 @@ type Store struct {
 	connections *ConnectionRepo
 	metrics     *MetricsRepo
 	history     *HistoryRepo
+	drift       *DriftRepo
 	pruneStop   chan struct{}
 	pruneWg     sync.WaitGroup
 }
@@ -101,12 +102,20 @@ func New(cfg storage.Config) (*Store, error) {
 	store.connections = &ConnectionRepo{db: db}
 	store.metrics = &MetricsRepo{db: db}
 	store.history = &HistoryRepo{db: db}
+	store.drift = &DriftRepo{db: db}
 
 	// Run migrations if enabled
 	if cfg.AutoMigrate {
 		if err := store.migrate(ctx); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("running migrations: %w", err)
+		}
+		// Rows written before v3.1 store local-zone text; see dbTime. Not
+		// bounded by the 5s connect timeout above - a large database takes
+		// longer - and not fatal: an unconverted row only mis-compares, and
+		// the next start resumes where this one stopped.
+		if _, err := store.NormalizeTimestamps(context.Background()); err != nil {
+			log.WithError(err).Warn("Could not normalize stored timestamps to UTC; will retry on next start")
 		}
 	}
 
@@ -231,6 +240,11 @@ func (s *Store) History() storage.HistoryRepository {
 	return s.history
 }
 
+// Drift returns the architecture drift feed repository.
+func (s *Store) Drift() storage.DriftRepository {
+	return s.drift
+}
+
 // GetTopology returns the complete topology snapshot.
 func (s *Store) GetTopology(ctx context.Context) (*storage.Topology, error) {
 	services, err := s.services.List(ctx, storage.ServiceFilter{})
@@ -347,11 +361,18 @@ func (s *Store) pruneHistory(ctx context.Context) (int64, error) {
 	if retention <= 0 {
 		retention = storage.DefaultHistoryRetention
 	}
-	n, err := s.history.DeleteStale(ctx, time.Now().Add(-retention))
+	cutoff := time.Now().Add(-retention)
+	n, err := s.history.DeleteStale(ctx, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("pruning history: %w", err)
 	}
-	return n, nil
+	// The drift feed shares history's window: an event is only worth keeping
+	// while the topology it refers to can still be reconstructed.
+	events, err := s.drift.DeleteBefore(ctx, cutoff)
+	if err != nil {
+		return n, err
+	}
+	return n + events, nil
 }
 
 // Close closes the store and releases resources.
@@ -389,7 +410,7 @@ func (r *ServiceRepo) executor(ctx context.Context) interface {
 }
 
 func (r *ServiceRepo) Upsert(ctx context.Context, svc *storage.Service) error {
-	now := time.Now()
+	now := dbTime(time.Now())
 	labelsJSON, _ := json.Marshal(svc.Labels)
 
 	query := `
@@ -463,7 +484,7 @@ func (r *ServiceRepo) List(ctx context.Context, filter storage.ServiceFilter) ([
 	}
 	if filter.LastSeenAfter != nil {
 		query += " AND last_seen > ?"
-		args = append(args, *filter.LastSeenAfter)
+		args = append(args, dbTime(*filter.LastSeenAfter))
 	}
 
 	query += " ORDER BY name"
@@ -505,7 +526,7 @@ func (r *ServiceRepo) Delete(ctx context.Context, id string) error {
 }
 
 func (r *ServiceRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
-	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM services WHERE last_seen < ?", before)
+	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM services WHERE last_seen < ?", dbTime(before))
 	if err != nil {
 		return 0, err
 	}
@@ -542,7 +563,7 @@ func (r *ServiceRepo) UpsertInspection(ctx context.Context, insp *storage.Servic
 	_, err := r.executor(ctx).ExecContext(ctx, query,
 		insp.ServiceID, insp.PID, insp.ProcessName, insp.CommandLine, insp.WorkingDir,
 		insp.EnvVarNames, insp.ListenPorts, insp.ConfigFiles, insp.Dependencies,
-		insp.HTTPInfo, insp.DBInfo, insp.K8sMetadata, insp.CodeContext, insp.InspectedAt)
+		insp.HTTPInfo, insp.DBInfo, insp.K8sMetadata, insp.CodeContext, dbTime(insp.InspectedAt))
 	return err
 }
 
@@ -584,7 +605,7 @@ func (r *ConnectionRepo) executor(ctx context.Context) interface {
 }
 
 func (r *ConnectionRepo) Upsert(ctx context.Context, conn *storage.Connection) error {
-	now := time.Now()
+	now := dbTime(time.Now())
 	if conn.Protocol == "" {
 		conn.Protocol = "tcp"
 	}
@@ -650,7 +671,7 @@ func (r *ConnectionRepo) List(ctx context.Context, filter storage.ConnectionFilt
 	}
 	if filter.LastSeenAfter != nil {
 		query += " AND last_seen > ?"
-		args = append(args, *filter.LastSeenAfter)
+		args = append(args, dbTime(*filter.LastSeenAfter))
 	}
 
 	if filter.Limit > 0 {
@@ -687,7 +708,7 @@ func (r *ConnectionRepo) Delete(ctx context.Context, id string) error {
 }
 
 func (r *ConnectionRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
-	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM connections WHERE last_seen < ?", before)
+	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM connections WHERE last_seen < ?", dbTime(before))
 	if err != nil {
 		return 0, err
 	}
@@ -703,13 +724,13 @@ func (r *ConnectionRepo) Count(ctx context.Context) (int64, error) {
 func (r *ConnectionRepo) IncrementCount(ctx context.Context, id string) error {
 	_, err := r.executor(ctx).ExecContext(ctx,
 		"UPDATE connections SET count = count + 1, last_seen = ?, updated_at = ? WHERE id = ?",
-		time.Now(), time.Now(), id)
+		dbTime(time.Now()), dbTime(time.Now()), id)
 	return err
 }
 
 func (r *ConnectionRepo) UpdateStats(ctx context.Context, id string, bytesSent, bytesRecv uint64,
 	bytesSentRate, bytesRecvRate float64, packetsSent, packetsRecv uint64) error {
-	now := time.Now()
+	now := dbTime(time.Now())
 	_, err := r.executor(ctx).ExecContext(ctx,
 		`UPDATE connections SET 
 			bytes_sent = ?, bytes_recv = ?, 
@@ -742,7 +763,7 @@ func (r *MetricsRepo) executor(ctx context.Context) interface {
 }
 
 func (r *MetricsRepo) Upsert(ctx context.Context, metrics *storage.NodeMetrics) error {
-	now := time.Now()
+	now := dbTime(time.Now())
 	query := `
 		INSERT INTO node_metrics (node_name, cpu_percent, mem_percent, mem_used, mem_total, last_seen, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -798,7 +819,7 @@ func (r *MetricsRepo) Delete(ctx context.Context, nodeName string) error {
 }
 
 func (r *MetricsRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
-	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM node_metrics WHERE last_seen < ?", before)
+	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM node_metrics WHERE last_seen < ?", dbTime(before))
 	if err != nil {
 		return 0, err
 	}

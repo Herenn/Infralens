@@ -74,7 +74,9 @@ func (r *DriftReport) Empty() bool {
 	return len(r.Appeared) == 0 && len(r.Disappeared) == 0
 }
 
-// DriftNotifier delivers a drift report somewhere a person will see it.
+// DriftNotifier delivers a drift report somewhere a person will see it, in
+// addition to the persisted feed. Optional: without one, drift is still
+// recorded and pushed to open UIs.
 type DriftNotifier interface {
 	NotifyDrift(ctx context.Context, report *DriftReport) error
 }
@@ -89,21 +91,32 @@ type driftEdgeState struct {
 }
 
 // DriftDetector turns recorded topology history into "something changed"
-// notifications: a dependency never seen before appeared, or an established
-// one stopped being observed.
+// events: a dependency never seen before appeared, or an established one
+// stopped being observed. Each change is persisted to the drift feed (one
+// event per edge), pushed to open UIs over the event bus, and - if a
+// notifier is configured - sent on as a report.
 //
 // It keeps the set of known dependencies in memory and seeds it from history
-// at startup, so a restart neither re-announces the whole graph nor needs any
-// state of its own persisted - history already is that state. Only
-// connections are tracked: a new service with no new edges changes nothing
-// about what depends on what, and services without a stable identity (an
-// unresolved pod IP, say) would otherwise announce every reschedule.
+// at startup, so a restart does not re-announce the whole graph - history
+// already is that state. The only state of its own it persists is a
+// checkpoint of the last completed pass, so a restart resumes from there
+// instead of silently absorbing changes that happened between that pass and
+// shutdown into its baseline (see seed). Re-detecting a change is harmless:
+// events are deduplicated by fingerprint on insert, and only what was
+// actually new is published or notified.
+//
+// Only connections are tracked: a new service with no new edges changes
+// nothing about what depends on what, and services without a stable
+// identity (an unresolved pod IP, say) would otherwise announce every
+// reschedule.
 type DriftDetector struct {
+	ts        *TopologyService
 	history   storage.HistoryRepository
+	events    storage.DriftRepository
 	retention time.Duration
 	maxGap    time.Duration
 	cfg       DriftConfig
-	notifier  DriftNotifier
+	notifier  DriftNotifier // nil: feed and live push only
 	now       func() time.Time
 
 	known         map[string]*driftEdgeState
@@ -116,16 +129,23 @@ type DriftDetector struct {
 	// the whole graph is not announced as gone because of an outage on the
 	// collection side.
 	latestObserved time.Time
+
+	// silences are the stretches (within retention) in which nothing at all
+	// was observed. They are subtracted when measuring how long an edge has
+	// been gone, so recovering from an outage longer than GoneAfter does not
+	// announce every edge that has not happened to be seen again yet.
+	silences []driftSilence
+
+	// pending holds events that could not be written to the feed yet.
+	pending []storage.DriftEvent
 }
 
 // NewDriftDetector creates a detector over this service's history. History
-// must be enabled - drift is computed from it.
+// must be enabled - drift is computed from it. notifier may be nil: changes
+// are then only recorded in the feed and pushed to open UIs.
 func (ts *TopologyService) NewDriftDetector(cfg DriftConfig, notifier DriftNotifier) (*DriftDetector, error) {
 	if !ts.historyEnabled {
 		return nil, ErrHistoryDisabled
-	}
-	if notifier == nil {
-		return nil, fmt.Errorf("drift detector needs a notifier")
 	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = DefaultDriftCheckInterval
@@ -142,7 +162,9 @@ func (ts *TopologyService) NewDriftDetector(cfg DriftConfig, notifier DriftNotif
 		cfg.Warmup = DefaultDriftWarmup
 	}
 	return &DriftDetector{
+		ts:        ts,
 		history:   ts.store.History(),
+		events:    ts.store.Drift(),
 		retention: ts.historyRetention,
 		maxGap:    ts.historyMaxGap,
 		cfg:       cfg,
@@ -170,6 +192,8 @@ func (d *DriftDetector) Run(ctx context.Context) {
 		}
 	}
 
+	d.publishStatus()
+
 	ticker := time.NewTicker(d.cfg.Interval)
 	defer ticker.Stop()
 	for {
@@ -177,34 +201,216 @@ func (d *DriftDetector) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			report, err := d.check(ctx)
-			if err != nil {
-				log.WithError(err).Warn("Drift detection check failed")
-				continue
-			}
-			if report.Empty() {
-				continue
-			}
-			if err := d.notifier.NotifyDrift(ctx, report); err != nil {
-				// Not retried: a report is a summary of one window, and
-				// replaying a stale one after the endpoint recovers would
-				// be more confusing than the gap. The change is still
-				// visible in the diff view.
-				log.WithError(err).WithFields(log.Fields{
-					"appeared":    len(report.Appeared),
-					"disappeared": len(report.Disappeared),
-				}).Warn("Drift detection: failed to deliver notification")
-				continue
-			}
-			log.WithFields(log.Fields{
-				"appeared":    len(report.Appeared),
-				"disappeared": len(report.Disappeared),
-			}).Info("Drift detection: notification sent")
+			d.step(ctx)
 		}
 	}
 }
 
-// seed loads every dependency still within retention as already known.
+// step runs one detection pass and delivers what it found: persisted to the
+// feed, pushed to open UIs, and sent to the notifier if there is one.
+func (d *DriftDetector) step(ctx context.Context) {
+	report, err := d.check(ctx)
+	if err != nil {
+		log.WithError(err).Warn("Drift detection check failed")
+		return
+	}
+	report = d.persist(ctx, report)
+	d.publishStatus()
+
+	if report.Empty() || d.notifier == nil {
+		return
+	}
+	if err := d.notifier.NotifyDrift(ctx, report); err != nil {
+		// Not retried: a report is a summary of one window, and replaying a
+		// stale one after the endpoint recovers would be more confusing than
+		// the gap. The change is still in the feed and the diff view.
+		log.WithError(err).WithFields(log.Fields{
+			"appeared":    len(report.Appeared),
+			"disappeared": len(report.Disappeared),
+		}).Warn("Drift detection: failed to deliver notification")
+		return
+	}
+	log.WithFields(log.Fields{
+		"appeared":    len(report.Appeared),
+		"disappeared": len(report.Disappeared),
+	}).Info("Drift detection: notification sent")
+}
+
+// maxPendingDriftEvents bounds the events kept for retry while the feed
+// cannot be written. Beyond it the oldest are dropped from memory - but not
+// lost for good: the checkpoint does not advance while anything is pending,
+// so a restart resumes from before them and records them then.
+const maxPendingDriftEvents = 10000
+
+// persist records a pass's changes in the drift feed, publishes the newly
+// recorded ones, advances the checkpoint, and returns the part of the report
+// that is actually news.
+//
+// A change already in the feed - re-detected because a restart resumed from
+// an earlier checkpoint, or because another replica got there first - is
+// dropped from the returned report, so it is neither pushed nor notified a
+// second time.
+//
+// If the feed cannot be written, the pass's events are kept pending and
+// retried on every later pass, the checkpoint stays where it was until they
+// are recorded, and the full report is returned so the notifier hears about
+// it now (once: a later successful retry publishes the events to open UIs
+// but does not notify again).
+func (d *DriftDetector) persist(ctx context.Context, report *DriftReport) *DriftReport {
+	if d.events == nil {
+		return report
+	}
+
+	fresh := d.eventsFor(ctx, report)
+	batch := fresh
+	if len(d.pending) > 0 {
+		batch = append(append([]storage.DriftEvent(nil), d.pending...), fresh...)
+	}
+	inserted, err := d.events.InsertEvents(ctx, batch)
+	if err != nil {
+		d.keepPending(fresh)
+		log.WithError(err).WithFields(log.Fields{
+			"appeared":    len(report.Appeared),
+			"disappeared": len(report.Disappeared),
+			"pending":     len(d.pending),
+		}).Warn("Drift detection: failed to record changes in the feed, will retry")
+		return report
+	}
+	d.pending = nil
+	if err := d.events.SetCheckpoint(ctx, report.DetectedAt); err != nil {
+		log.WithError(err).Warn("Drift detection: failed to record checkpoint")
+	}
+	if len(inserted) > 0 {
+		d.ts.publishDriftEvents(inserted)
+	}
+
+	news := make(map[string]bool, len(inserted))
+	for _, ev := range inserted {
+		news[ev.Fingerprint] = true
+	}
+	out := &DriftReport{DetectedAt: report.DetectedAt}
+	for _, e := range report.Appeared {
+		if news[driftFingerprint(storage.DriftAppeared, e)] {
+			out.Appeared = append(out.Appeared, e)
+		}
+	}
+	for _, e := range report.Disappeared {
+		if news[driftFingerprint(storage.DriftDisappeared, e)] {
+			out.Disappeared = append(out.Disappeared, e)
+		}
+	}
+	return out
+}
+
+// keepPending queues events for retry, dropping the oldest beyond the bound.
+func (d *DriftDetector) keepPending(events []storage.DriftEvent) {
+	d.pending = append(d.pending, events...)
+	if over := len(d.pending) - maxPendingDriftEvents; over > 0 {
+		log.WithField("dropped", over).Warn("Drift detection: too many unrecorded changes; " +
+			"dropping the oldest from memory (a restart will re-detect them)")
+		d.pending = append([]storage.DriftEvent(nil), d.pending[over:]...)
+	}
+}
+
+// driftSilence is a stretch with no observation at all - every agent quiet,
+// or the backend down. Time inside one does not count towards GoneAfter:
+// "not observed for 24h" means 24 hours in which we were observing.
+type driftSilence struct {
+	from, to time.Time
+}
+
+// maxSilenceThreshold caps how long nothing at all may be observed before
+// the stretch counts as a collection outage. A cluster with anything running
+// produces observations every few minutes (throughput reports refresh every
+// live connection's history), so an hour of total silence is an outage, not
+// a quiet spell.
+const maxSilenceThreshold = time.Hour
+
+// silenceThreshold is how long a stretch with no observation at all must be
+// to count as a silence: half of GoneAfter, but at least the history max gap
+// (shorter gaps are ordinary cadence) and at most maxSilenceThreshold.
+// Crediting a silence only ever errs towards reporting "gone" later, never
+// falsely.
+func (d *DriftDetector) silenceThreshold() time.Duration {
+	t := d.cfg.GoneAfter / 2
+	if t > maxSilenceThreshold {
+		t = maxSilenceThreshold
+	}
+	if t < d.maxGap {
+		t = d.maxGap
+	}
+	return t
+}
+
+// see accounts for one interval in the global observation timeline. It must
+// be called in first_seen order. An interval starting more than the silence
+// threshold after everything seen so far had ended opens a silence - nothing
+// was observed in between, or that stretch would be covered.
+func (d *DriftDetector) see(ci storage.ConnectionInterval) {
+	if !d.latestObserved.IsZero() && ci.FirstSeen.Sub(d.latestObserved) > d.silenceThreshold() {
+		d.silences = append(d.silences, driftSilence{from: d.latestObserved, to: ci.FirstSeen})
+	}
+	if ci.LastSeen.After(d.latestObserved) {
+		d.latestObserved = ci.LastSeen
+	}
+}
+
+// observedSince is how much observed time lies between lastSeen and ref:
+// the wall-clock span minus any silences within it.
+func (d *DriftDetector) observedSince(lastSeen, ref time.Time) time.Duration {
+	span := ref.Sub(lastSeen)
+	for _, s := range d.silences {
+		from, to := s.from, s.to
+		if from.Before(lastSeen) {
+			from = lastSeen
+		}
+		if to.After(ref) {
+			to = ref
+		}
+		if to.After(from) {
+			span -= to.Sub(from)
+		}
+	}
+	return span
+}
+
+// gone reports whether an edge has gone unobserved for GoneAfter of observed
+// time, as of ref.
+func (d *DriftDetector) gone(st *driftEdgeState, ref time.Time) bool {
+	return d.observedSince(st.edge.LastSeen, ref) > d.cfg.GoneAfter
+}
+
+// seed loads the detector's baseline from history.
+//
+// Without a checkpoint (first start, or upgrading from a version without a
+// feed) every dependency still within retention is loaded as already known:
+// nothing that predates detection is announced.
+//
+// With one, the detector resumes: it rebuilds the state it would have had at
+// the checkpoint and lets the first pass cover everything since. Seeding
+// "everything is known" at every start would swallow any change that
+// happened between the last pass and shutdown - an edge that appeared in the
+// final minutes before a restart would never be reported, and on a backend
+// that is redeployed often that is not a rare window.
+//
+// History is streamed in first_seen order rather than loaded: the window is
+// the whole retention period. That order is also what lets one pass find the
+// silences, and tell an edge's first sighting apart from its later ones.
+//
+// Edges that can never be reported - inbound connections from public
+// internet clients, one per visitor - are not kept at all.
+//
+// Resuming: edges first seen within maxGap before the checkpoint are left
+// unknown. The pass at the checkpoint may not have seen them - history is
+// written with the observation's own timestamp, which can trail when it
+// becomes visible (the same reason check overlaps its windows) - so the first
+// pass re-evaluates them, and the feed's fingerprint deduplication absorbs
+// the ones that were in fact already reported. Edges already gone at the
+// checkpoint are marked reported, judged against the newest observation as
+// of the checkpoint. That is reconstructed approximately (intervals are
+// extended in place) and deliberately underestimated by maxGap, so an edge on
+// the boundary is re-evaluated and deduplicated rather than wrongly assumed
+// announced.
 func (d *DriftDetector) seed(ctx context.Context) error {
 	now := d.now()
 
@@ -218,36 +424,99 @@ func (d *DriftDetector) seed(ctx context.Context) error {
 	}
 	d.baselineUntil = earliest.Add(d.cfg.Warmup)
 
-	intervals, err := d.history.ConnectionsBetween(ctx, now.Add(-d.retention), now)
+	checkpoint, resuming := d.resumePoint(ctx, now)
+	pendingAfter := checkpoint.Add(-d.maxGap)
+	var observedAtCheckpoint time.Time
+
+	d.known = make(map[string]*driftEdgeState)
+	d.silences = nil
+	d.latestObserved = time.Time{}
+	err = d.history.EachConnectionBetween(ctx, now.Add(-d.retention), now, func(ci storage.ConnectionInterval) error {
+		d.see(ci)
+		if resuming {
+			if !ci.FirstSeen.After(checkpoint) {
+				seen := ci.LastSeen
+				if seen.After(checkpoint) {
+					seen = checkpoint
+				}
+				if seen.After(observedAtCheckpoint) {
+					observedAtCheckpoint = seen
+				}
+			}
+			// First sighting (first_seen order) after the cutoff: left for
+			// the first pass, and so are its later intervals.
+			if _, known := d.known[ci.ConnectionID]; !known && ci.FirstSeen.After(pendingAfter) {
+				return nil
+			}
+		}
+		d.observe(ci)
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("loading known connections: %w", err)
 	}
-	for _, ci := range intervals {
-		d.observe(ci)
-	}
 
-	// Anything that had already gone quiet before startup is not news -
-	// either it was announced by the previous process or it went away
-	// before detection was turned on.
-	for _, st := range d.known {
-		if st.edge.LastSeen.Before(d.latestObserved.Add(-d.cfg.GoneAfter)) {
-			st.goneReported = true
+	// Anything that had already gone quiet is not news - either it was
+	// announced by the previous process or it went away before detection
+	// was turned on.
+	ref := d.latestObserved
+	if resuming {
+		ref = observedAtCheckpoint.Add(-d.maxGap)
+	}
+	if !ref.IsZero() {
+		for _, st := range d.known {
+			if d.gone(st, ref) {
+				st.goneReported = true
+			}
 		}
 	}
 
 	d.lastCheck = now
+	if resuming {
+		d.lastCheck = checkpoint
+	}
 	return nil
 }
 
-// observe folds one history interval into the known set, returning the
-// state and whether the edge was previously unknown.
-func (d *DriftDetector) observe(ci storage.ConnectionInterval) (*driftEdgeState, bool) {
-	if ci.LastSeen.After(d.latestObserved) {
-		d.latestObserved = ci.LastSeen
+// resumePoint returns the checkpoint to resume from, if there is a usable
+// one. One older than retention is ignored: history no longer holds what
+// happened since, and resuming from it would announce everything first seen
+// in the window as new. One in the future - left by a clock that jumped
+// forward and back - is reset to now; otherwise it would silently disable
+// resuming until real time caught up with it.
+func (d *DriftDetector) resumePoint(ctx context.Context, now time.Time) (time.Time, bool) {
+	if d.events == nil {
+		return time.Time{}, false
 	}
+	at, ok, err := d.events.Checkpoint(ctx)
+	if err != nil {
+		// Fall back to the conservative baseline rather than failing startup:
+		// at worst a change from just before the restart goes unreported.
+		log.WithError(err).Warn("Drift detection: could not read checkpoint, starting from current history")
+		return time.Time{}, false
+	}
+	if !ok || at.Before(now.Add(-d.retention)) {
+		return time.Time{}, false
+	}
+	if at.After(now) {
+		log.WithField("checkpoint", at).Warn("Drift detection: checkpoint is in the future (clock change?), resetting it to now")
+		if err := d.events.ResetCheckpoint(ctx, now); err != nil {
+			log.WithError(err).Warn("Drift detection: could not reset checkpoint")
+		}
+		at = now
+	}
+	return at, true
+}
 
+// observe folds one history interval into the known set, returning the
+// state and whether the edge was previously unknown. Edges that can never be
+// reported are not kept: the result is nil.
+func (d *DriftDetector) observe(ci storage.ConnectionInterval) (*driftEdgeState, bool) {
 	st, ok := d.known[ci.ConnectionID]
 	if !ok {
+		if isPublicServiceID(ci.SourceID) {
+			return nil, false // see reportable
+		}
 		st = &driftEdgeState{edge: DriftEdge{
 			ConnectionID: ci.ConnectionID,
 			SourceID:     ci.SourceID,
@@ -278,29 +547,37 @@ func (d *DriftDetector) check(ctx context.Context) (*DriftReport, error) {
 	// observation's own timestamp, which can trail the moment it becomes
 	// visible to this query. Re-reading a little is free - known edges are
 	// deduplicated - while missing a write would lose a new edge for good.
-	intervals, err := d.history.ConnectionsBetween(ctx, d.lastCheck.Add(-d.maxGap), now)
+	var intervals []storage.ConnectionInterval
+	err := d.history.EachConnectionBetween(ctx, d.lastCheck.Add(-d.maxGap), now, func(ci storage.ConnectionInterval) error {
+		intervals = append(intervals, ci)
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("loading recent connections: %w", err)
 	}
 
 	report := &DriftReport{DetectedAt: now}
 
+	// In first_seen order, as see requires.
 	for _, ci := range intervals {
+		d.see(ci)
 		st, isNew := d.observe(ci)
+		if st == nil {
+			continue
+		}
 		if isNew {
-			if d.reportable(st.edge) && !st.edge.FirstSeen.Before(d.baselineUntil) {
+			if !st.edge.FirstSeen.Before(d.baselineUntil) {
 				report.Appeared = append(report.Appeared, st.edge)
 			}
 			continue
 		}
 		// Seen again after being announced as gone: re-arm it so a later
 		// disappearance is announced too.
-		if st.goneReported && !st.edge.LastSeen.Before(d.latestObserved.Add(-d.cfg.GoneAfter)) {
+		if st.goneReported && !d.gone(st, d.latestObserved) {
 			st.goneReported = false
 		}
 	}
 
-	goneBefore := d.latestObserved.Add(-d.cfg.GoneAfter)
 	evictBefore := now.Add(-d.retention)
 	for id, st := range d.known {
 		if st.edge.LastSeen.Before(evictBefore) {
@@ -309,19 +586,32 @@ func (d *DriftDetector) check(ctx context.Context) (*DriftReport, error) {
 			delete(d.known, id)
 			continue
 		}
-		if !st.goneReported && st.edge.LastSeen.Before(goneBefore) {
+		if !st.goneReported && d.gone(st, d.latestObserved) {
 			st.goneReported = true
 			if d.reportable(st.edge) {
 				report.Disappeared = append(report.Disappeared, st.edge)
 			}
 		}
 	}
+	d.pruneSilences(evictBefore)
 
 	sortDriftEdges(report.Appeared)
 	sortDriftEdges(report.Disappeared)
 
 	d.lastCheck = now
 	return report, nil
+}
+
+// pruneSilences forgets silences that ended before the cutoff: no edge still
+// known can have been last seen before them.
+func (d *DriftDetector) pruneSilences(before time.Time) {
+	keep := d.silences[:0]
+	for _, s := range d.silences {
+		if !s.to.Before(before) {
+			keep = append(keep, s)
+		}
+	}
+	d.silences = keep
 }
 
 // reportable filters out edges whose churn is not architecture drift: inbound

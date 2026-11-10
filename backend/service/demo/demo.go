@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/Herenn/Infralens/backend/service"
@@ -69,6 +70,15 @@ type Simulator struct {
 	services    []storage.Service
 	connections []*demoConnection
 	nodes       []*demoNode
+
+	// The simulated past and the scripted changes after start - see drift.go
+	// in this package.
+	past    []pastSpan
+	script  []scriptStep
+	started time.Time
+
+	ready     chan struct{}
+	readyOnce sync.Once
 }
 
 // NewSimulator creates a demo simulator backed by the given topology service.
@@ -76,16 +86,36 @@ func NewSimulator(topology *service.TopologyService) *Simulator {
 	s := &Simulator{
 		topology: topology,
 		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		ready:    make(chan struct{}),
 	}
 	s.buildScenario()
 	return s
 }
 
+// Ready is closed once the simulator has written its past and its starting
+// topology (or given up trying). Drift detection must seed after that: a
+// detector that loads its baseline while the backfill is still being written
+// sees half a past.
+func (s *Simulator) Ready() <-chan struct{} {
+	return s.ready
+}
+
+func (s *Simulator) markReady() {
+	s.readyOnce.Do(func() { close(s.ready) })
+}
+
 // Run seeds the demo topology and emits updates until ctx is cancelled.
 func (s *Simulator) Run(ctx context.Context) {
 	log.Info("Demo mode enabled - simulating topology (no agent required)")
+	defer s.markReady() // whatever happens below, never hold detection back
 
-	if err := s.seed(ctx); err != nil {
+	s.started = time.Now()
+	if kept := s.seedPast(ctx); kept {
+		s.fastForwardScript(ctx)
+	}
+	err := s.seed(ctx)
+	s.markReady()
+	if err != nil {
 		log.WithError(err).Error("Demo simulator failed to seed topology")
 		return
 	}
@@ -102,6 +132,7 @@ func (s *Simulator) Run(ctx context.Context) {
 			log.Info("Demo simulator stopped")
 			return
 		case <-ticker.C:
+			s.advanceScript(ctx)
 			s.tick(ctx)
 		case <-refreshTicker.C:
 			s.refreshServices(ctx)
@@ -152,6 +183,12 @@ func (s *Simulator) buildScenario() {
 		svc("10.0.3.12:9092", "kafka", "message_queue", "Kafka", "kafka", nodeData, "10.0.3.12"),
 		svc("10.0.3.13:9090", "prometheus", "monitoring", "Prometheus", "prometheus", nodeData, "10.0.3.13"),
 		svc("10.0.3.14:53", "dns", "application", "DNS", "dns", nodeData, "10.0.3.14"),
+
+		// Newer arrivals - see the drift timeline in drift.go.
+		svc("10.0.2.14/recommendations", "recommendations", "application", "Python", "python", nodeApp, "10.0.2.14"),
+		svc("10.0.3.15:9200", "search", "database", "Elasticsearch 8.13", "elasticsearch", nodeData, "10.0.3.15"),
+		svc("198.51.100.20:443", "api.stripe.com", "unknown", "HTTPS", "https", "", "198.51.100.20"),
+		svc("198.51.100.61:443", "oauth2.googleapis.com", "unknown", "HTTPS", "https", "", "198.51.100.61"),
 	}
 
 	conn := func(src, dst string, port uint16, sentKBps, recvKBps float64) *demoConnection {
@@ -188,6 +225,11 @@ func (s *Simulator) buildScenario() {
 		conn("10.0.3.13:9090", "10.0.2.10/api-gateway", 8080, 3, 40),
 		udpConn("10.0.2.10/api-gateway", "10.0.3.14:53", 53, 1, 2),
 		udpConn("10.0.2.12/orders-service", "10.0.3.14:53", 53, 1, 2),
+
+		conn("10.0.2.10/api-gateway", "10.0.2.14/recommendations", 7000, 6, 18),
+		conn("10.0.2.12/orders-service", "10.0.3.15:9200", 9200, 12, 48),
+		conn("10.0.2.13/payment-worker", "198.51.100.20:443", 443, 4, 6),
+		conn("10.0.2.11/auth-service", "198.51.100.61:443", 443, 2, 5),
 	}
 
 	gib := func(n uint64) uint64 { return n * 1024 * 1024 * 1024 }
@@ -196,6 +238,8 @@ func (s *Simulator) buildScenario() {
 		{name: "demo-app-1", memTotal: gib(16), cpuPercent: 45, memPercent: 55},
 		{name: "demo-data-1", memTotal: gib(32), cpuPercent: 30, memPercent: 68},
 	}
+
+	s.buildTimeline(svc, conn)
 }
 
 // seed creates the initial services, connections, and node metrics.

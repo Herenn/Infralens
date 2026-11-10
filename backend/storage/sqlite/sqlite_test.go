@@ -273,7 +273,7 @@ func TestServiceRepo_DeleteStale(t *testing.T) {
 	// Manually update last_seen for stale service
 	_, err := store.db.ExecContext(ctx,
 		"UPDATE services SET last_seen = ? WHERE id = ?",
-		now.Add(-1*time.Hour), "stale-1")
+		dbTime(now.Add(-1*time.Hour)), "stale-1") // the form the store writes
 	if err != nil {
 		t.Fatalf("Failed to update last_seen: %v", err)
 	}
@@ -558,9 +558,9 @@ func TestStore_Prune(t *testing.T) {
 	// Make some data stale
 	now := time.Now()
 	oldTime := now.Add(-1 * time.Hour)
-	store.db.ExecContext(ctx, "UPDATE services SET last_seen = ? WHERE id = ?", oldTime, "stale")
-	store.db.ExecContext(ctx, "UPDATE connections SET last_seen = ? WHERE id = ?", oldTime, "c-stale")
-	store.db.ExecContext(ctx, "UPDATE node_metrics SET last_seen = ? WHERE node_name = ?", oldTime, "stale-node")
+	store.db.ExecContext(ctx, "UPDATE services SET last_seen = ? WHERE id = ?", dbTime(oldTime), "stale")
+	store.db.ExecContext(ctx, "UPDATE connections SET last_seen = ? WHERE id = ?", dbTime(oldTime), "c-stale")
+	store.db.ExecContext(ctx, "UPDATE node_metrics SET last_seen = ? WHERE node_name = ?", dbTime(oldTime), "stale-node")
 
 	// Prune
 	pruned, err := store.Prune(ctx, 30*time.Minute)

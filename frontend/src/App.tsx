@@ -28,8 +28,11 @@ import DecommissionPanel from './components/DecommissionPanel'
 import OrphansPanel from './components/OrphansPanel'
 import CriticalityPanel from './components/CriticalityPanel'
 import DiffPanel from './components/DiffPanel'
+import ChangesPanel from './components/ChangesPanel'
 import { Service, Topology } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
+import { useDriftFeed } from './hooks/useDriftFeed'
+import { useDriftFocus } from './hooks/useDriftFocus'
 import { apiUrl } from './lib/api'
 import { layoutGraph, updateNodeData, updateEdgeData } from './utils/layout'
 
@@ -394,7 +397,14 @@ function App() {
     setImpactRoot(null)
   }, [])
 
-  const highlightIds = impactIds || searchMatchIds
+  // Architecture drift feed ("Changes"): unread badge, and focusing a change
+  // on the graph. A focused change ranks between impact view and search.
+  const [changesOpen, setChangesOpen] = useState(false)
+  const driftFeed = useDriftFeed(changesOpen)
+  const driftFocus = useDriftFocus(nodes, changesOpen)
+  const { decorateEdges: decorateDriftEdges, clear: clearDriftFocus } = driftFocus
+
+  const highlightIds = impactIds || driftFocus.highlightIds || searchMatchIds
 
   // Apply highlighting: dim everything outside the active impact view or
   // search match, whichever is active.
@@ -421,6 +431,8 @@ function App() {
     })
   }, [edges, highlightIds])
 
+  const focusedEdges = useMemo(() => decorateDriftEdges(displayEdges), [decorateDriftEdges, displayEdges])
+
   // Zoom to the active highlight set (impact view or search match)
   useEffect(() => {
     if (!highlightIds || highlightIds.size === 0) return
@@ -431,12 +443,14 @@ function App() {
       instance.fitView({
         nodes: [...highlightIds].map(id => ({ id })),
         duration: 400,
-        padding: 0.4,
+        // While the Changes panel is docked on the left, frame the result
+        // in the space beside it rather than behind it.
+        padding: changesOpen ? { top: 0.3, right: 0.3, bottom: 0.3, left: '440px' } : 0.4,
         maxZoom: 1.2,
       })
     }, 250) // debounce while typing
     return () => window.clearTimeout(timeout)
-  }, [highlightIds])
+  }, [highlightIds, changesOpen])
 
   // Update graph when topology changes - ONLY re-layout on structural changes
   useEffect(() => {
@@ -625,7 +639,8 @@ function App() {
     // no visible way back - and because impact takes priority over search
     // highlighting (see highlightIds), search would appear broken too.
     setImpactRoot(null)
-  }, [])
+    clearDriftFocus()
+  }, [clearDriftFocus])
 
   // Update edge highlighting when selection changes
   useEffect(() => {
@@ -778,13 +793,14 @@ function App() {
         onExportJson={handleExportJson}
         onExportMermaid={() => handleExportGraph('mermaid')}
         onExportDot={() => handleExportGraph('dot')}
+        changes={driftFeed.available ? { open: changesOpen, unread: driftFeed.unread, onToggle: () => setChangesOpen(o => !o) } : undefined}
       />
       
       <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 relative">
           <ReactFlow
             nodes={displayNodes}
-            edges={displayEdges}
+            edges={focusedEdges}
             onInit={(instance) => { reactFlowInstanceRef.current = instance }}
             onNodesChange={handleNodesChange}
             onEdgesChange={onEdgesChange}
@@ -857,6 +873,21 @@ function App() {
             onChange={setTimelineAt}
             loading={historyLoading}
           />
+
+          {changesOpen && driftFeed.available && (
+            <ChangesPanel
+              onClose={() => setChangesOpen(false)}
+              seenAtOpen={driftFeed.seenAtOpen}
+              selectedId={driftFocus.focus?.id ?? null}
+              onSelect={driftFocus.setFocus}
+              isOnGraph={driftFocus.isOnGraph}
+              viewingAt={timelineAt}
+              onViewAt={(ev, at) => {
+                setTimelineAt(at)
+                if (ev && at) driftFocus.setFocus(ev)
+              }}
+            />
+          )}
 
           <div className="absolute top-4 right-4 z-10 flex flex-col items-end gap-2">
             <CriticalityPanel />

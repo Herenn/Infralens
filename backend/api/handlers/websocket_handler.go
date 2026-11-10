@@ -45,6 +45,9 @@ const (
 //   - "connection"         data is a ConnectionResponse (created or updated)
 //   - "connection.deleted" data is {"connection_id": "..."}
 //   - "metrics"            data is a MetricsResponse
+//   - "drift"              data is a DriftEventsMessage: architecture drift
+//     events just recorded, at most MaxWSDriftEvents of them (added in v3.1;
+//     clients that predate it ignore unknown types)
 type WSMessage struct {
 	Type string      `json:"type"`
 	Data interface{} `json:"data"`
@@ -268,6 +271,13 @@ func (h *WebSocketHandler) eventToMessage(ctx context.Context, event service.Eve
 			return WSMessage{Type: "snapshot", Data: convertTopologyToResponse(t, true)}, true
 		}
 		return WSMessage{Type: "snapshot", Data: event.Data}, true
+
+	case service.EventDriftDetected:
+		events, ok := event.Data.([]storage.DriftEvent)
+		if !ok || len(events) == 0 {
+			return WSMessage{}, false
+		}
+		return WSMessage{Type: "drift", Data: driftEventsMessage(events)}, true
 
 	default:
 		return WSMessage{}, false

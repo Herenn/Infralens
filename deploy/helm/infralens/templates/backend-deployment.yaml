@@ -102,6 +102,9 @@ spec:
               value: {{ .Values.backend.history.retention | quote }}
             - name: HISTORY_MAX_GAP
               value: {{ .Values.backend.history.maxGap | quote }}
+            # Architecture drift detection / Changes feed.
+            - name: DRIFT_ENABLED
+              value: {{ .Values.backend.drift.enabled | quote }}
             {{- if .Values.backend.drift.webhookUrl }}
             # Architecture drift notifications.
             - name: DRIFT_WEBHOOK_URL

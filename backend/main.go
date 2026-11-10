@@ -121,8 +121,15 @@ func main() {
 	demoCtx, demoCancel := context.WithCancel(context.Background())
 	defer demoCancel()
 	if cfg.Server.DemoMode {
+		log.WithField("db", storage.RedactDSN(cfg.Storage.DSN)).
+			Info("Demo mode: simulated topology, history and drift go to this database (set DB_DSN to change it)")
 		simulator := demo.NewSimulator(apiServer.TopologyService())
 		go simulator.Run(demoCtx)
+		// Drift detection seeds only once the simulator's past is written.
+		go func() {
+			<-simulator.Ready()
+			apiServer.StartDriftDetection()
+		}()
 	}
 
 	// Create HTTP server

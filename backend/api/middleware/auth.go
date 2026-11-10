@@ -67,6 +67,10 @@ func DefaultAuthConfig() AuthConfig {
 			"/api/v1/graph/criticality",
 			"/api/v1/graph/orphans",
 			"/api/v1/graph/impact",
+			// The drift feed is topology history in another shape, already
+			// pushed over the (public) WebSocket - same rule as the reads above.
+			"/api/v1/drift/events",
+			"/api/v1/drift/summary",
 			"/api/v1/k8s/status",
 			"/api/v1/ai/status",
 			"/api/v1/ai/providers",

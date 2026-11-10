@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image, Search, X, FileCode, Share2 } from 'lucide-react'
 import { Stats } from '../types'
+import ChangesButton from './ChangesButton'
 
 interface FilterState {
   hideLocalhost: boolean
@@ -22,9 +23,11 @@ interface HeaderProps {
   onExportJson?: () => void
   onExportMermaid?: () => void
   onExportDot?: () => void
+  // Architecture drift feed button; omitted when the feed is unavailable.
+  changes?: { open: boolean; unread: number; onToggle: () => void }
 }
 
-export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot }: HeaderProps) {
+export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot, changes }: HeaderProps) {
   const [filterDropdownOpen, setFilterDropdownOpen] = useState(false)
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false)
   const filterButtonRef = useRef<HTMLButtonElement>(null)
@@ -310,6 +313,8 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
 
       {/* Stats */}
       <div className="flex items-center gap-6">
+        {changes && <ChangesButton {...changes} />}
+
         <div className="flex items-center gap-2 text-sm">
           <Server size={16} className="text-dark-400" />
           <span className="text-dark-300">{displayStats.services}</span>

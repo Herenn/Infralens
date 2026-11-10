@@ -206,6 +206,9 @@ type Store interface {
 	// services and edges existed rather than only their current state.
 	History() HistoryRepository
 
+	// Drift returns the architecture drift feed repository.
+	Drift() DriftRepository
+
 	// GetTopology returns the complete topology snapshot.
 	GetTopology(ctx context.Context) (*Topology, error)
 

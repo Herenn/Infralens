@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { History, X } from 'lucide-react'
 
 export interface HistoryRange {
@@ -27,6 +27,12 @@ function formatTimestamp(iso: string): string {
 
 export default function TimelineScrubber({ range, value, onChange, loading }: TimelineScrubberProps) {
   const [open, setOpen] = useState(false)
+
+  // Jumping to an instant from elsewhere (e.g. the Changes feed) should show
+  // where you are and the way back to live, not just a dot on a button.
+  useEffect(() => {
+    if (value) setOpen(true)
+  }, [value])
 
   if (!range) return null
 

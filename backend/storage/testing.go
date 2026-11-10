@@ -29,6 +29,10 @@ func StoreSuite(t *testing.T, store Store) {
 		HistoryRepoSuite(t, store)
 	})
 
+	t.Run("DriftRepository", func(t *testing.T) {
+		DriftRepoSuite(t, store)
+	})
+
 	t.Run("Store", func(t *testing.T) {
 		StoreFunctionsSuite(t, store)
 	})

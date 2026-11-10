@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Herenn/Infralens/backend/storage"
@@ -73,6 +74,10 @@ type TopologyService struct {
 	historyRefreshMu    sync.Mutex
 	historyRefreshed    map[string]time.Time
 	historyRefreshSwept time.Time
+
+	// driftStatus is published by the running drift detector. See
+	// GetDriftStatus.
+	driftStatus atomic.Pointer[DriftStatus]
 }
 
 // NewTopologyService creates a new topology service.

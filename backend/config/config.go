@@ -34,17 +34,22 @@ type Config struct {
 	Drift DriftConfig
 }
 
-// DriftConfig configures architecture drift notifications: a webhook called
-// when a dependency appears that has never been seen before, or an
-// established one stops being observed. Disabled unless WebhookURL is set.
+// DriftConfig configures architecture drift detection: a dependency appears
+// that has never been seen before, or an established one stops being
+// observed. Detection runs whenever history is enabled and records changes in
+// the in-UI feed; the webhook is optional, off unless WebhookURL is set.
 type DriftConfig struct {
 	WebhookURL string
 	Interval   time.Duration
 	GoneAfter  time.Duration
 	Warmup     time.Duration
+
+	// DetectionEnabled switches drift detection (feed and webhook) off
+	// entirely when false. Default true.
+	DetectionEnabled bool
 }
 
-// Enabled reports whether drift notifications are configured.
+// Enabled reports whether drift webhook notifications are configured.
 func (c DriftConfig) Enabled() bool {
 	return c.WebhookURL != ""
 }
@@ -175,10 +180,27 @@ func Load() *Config {
 			Interval:   getDurationEnv("DRIFT_CHECK_INTERVAL", 0),
 			GoneAfter:  getDurationEnv("DRIFT_GONE_AFTER", 0),
 			Warmup:     getDurationEnv("DRIFT_WARMUP", -1),
+
+			DetectionEnabled: getBoolEnv("DRIFT_ENABLED", true),
 		},
 	}
 
+	// The demo writes three days of synthetic history and drift events. With
+	// the default SQLite file shared, trying the demo and then running for
+	// real would leave that fake past in the real database for the whole
+	// retention window - so the demo gets its own file unless told otherwise.
+	if cfg.Server.DemoMode && os.Getenv("DB_DSN") == "" && isSQLiteDriver(cfg.Storage.Driver) {
+		cfg.Storage.DSN = DefaultDemoDSN
+	}
+
 	return cfg
+}
+
+// DefaultDemoDSN is the SQLite database demo mode uses when DB_DSN is unset.
+const DefaultDemoDSN = "infralens-demo.db"
+
+func isSQLiteDriver(driver string) bool {
+	return driver == "" || driver == "sqlite" || driver == "sqlite3"
 }
 
 // Helper functions

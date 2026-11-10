@@ -100,6 +100,14 @@ type HistoryRepository interface {
 	// reads each check window through it.
 	ConnectionsBetween(ctx context.Context, from, to time.Time) ([]ConnectionInterval, error)
 
+	// EachConnectionBetween is ConnectionsBetween streamed: fn is called for
+	// every interval overlapping [from, to], in first_seen order, without
+	// materializing them all - drift detection seeds from the whole
+	// retention window. fn must not use the store: with SQLite's single
+	// connection the query holds it until iteration ends. A non-nil error
+	// from fn stops iteration and is returned.
+	EachConnectionBetween(ctx context.Context, from, to time.Time, fn func(ConnectionInterval) error) error
+
 	// DeleteStale removes intervals that ended before the cutoff. Unlike
 	// pruning current state, this is the retention boundary for history.
 	DeleteStale(ctx context.Context, before time.Time) (int64, error)

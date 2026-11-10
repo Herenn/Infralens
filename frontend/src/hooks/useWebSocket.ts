@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Topology, Service, Connection, NodeMetrics } from '../types'
+import { Topology, Service, Connection, NodeMetrics, DriftEvent } from '../types'
 import { wsUrl } from '../lib/api'
+import { emitDriftEvents, emitDriftResync } from '../lib/drift'
 
 const RECONNECT_DELAY = 3000
 
@@ -10,7 +11,7 @@ const FLUSH_INTERVAL = 1000
 
 // Message envelope sent by the backend (v2 delta protocol)
 interface WSMessage {
-  type: 'snapshot' | 'service' | 'service.deleted' | 'connection' | 'connection.deleted' | 'metrics'
+  type: 'snapshot' | 'service' | 'service.deleted' | 'connection' | 'connection.deleted' | 'metrics' | 'drift'
   data: unknown
 }
 
@@ -55,6 +56,7 @@ export function useWebSocket() {
   // Set on unmount so the close handler doesn't schedule a reconnect for a
   // socket we deliberately tore down.
   const closedRef = useRef(false)
+  const everConnectedRef = useRef(false)
   const storeRef = useRef<TopologyStore>(emptyStore())
   const dirtyRef = useRef(false)
   const flushTimeoutRef = useRef<number | null>(null)
@@ -137,6 +139,16 @@ export function useWebSocket() {
           break
         }
 
+        // Architecture drift just recorded - not topology state, so it is
+        // handed to the Changes feed rather than the store.
+        case 'drift': {
+          const { events, truncated } = msg.data as { events: DriftEvent[]; truncated?: boolean }
+          // A capped message (a large rollout) is a hint, not the data.
+          if (truncated) emitDriftResync()
+          else if (events?.length) emitDriftEvents(events)
+          break
+        }
+
         default:
           console.warn('Unknown WebSocket message type:', msg.type)
       }
@@ -155,6 +167,9 @@ export function useWebSocket() {
     ws.onopen = () => {
       console.log('WebSocket connected')
       setIsConnected(true)
+      // Live drift sent while we were away is gone; tell the feed to refetch.
+      if (everConnectedRef.current) emitDriftResync()
+      everConnectedRef.current = true
     }
 
     ws.onmessage = (event) => {

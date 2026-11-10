@@ -45,6 +45,8 @@ services:
       - HISTORY_ENABLED=${HISTORY_ENABLED:-true}
       - HISTORY_RETENTION=${HISTORY_RETENTION:-720h}
       - HISTORY_MAX_GAP=${HISTORY_MAX_GAP:-5m}
+      # Architecture drift detection (the Changes feed) - false switches it off
+      - DRIFT_ENABLED=${DRIFT_ENABLED:-true}
       # Architecture drift notifications - off unless a webhook URL is set
       - DRIFT_WEBHOOK_URL=${DRIFT_WEBHOOK_URL:-}
       - DRIFT_CHECK_INTERVAL=${DRIFT_CHECK_INTERVAL:-5m}

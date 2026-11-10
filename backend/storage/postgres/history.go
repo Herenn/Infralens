@@ -261,6 +261,31 @@ func (r *HistoryRepo) ConnectionsBetween(ctx context.Context, from, to time.Time
 	return r.scanConnectionIntervals(rows)
 }
 
+// EachConnectionBetween streams connection intervals overlapping the window,
+// in first_seen order.
+func (r *HistoryRepo) EachConnectionBetween(ctx context.Context, from, to time.Time, fn func(storage.ConnectionInterval) error) error {
+	rows, err := r.executor(ctx).QueryContext(ctx, `
+		SELECT `+connectionIntervalColumns+`
+		FROM connection_intervals
+		WHERE first_seen <= $1 AND last_seen >= $2
+		ORDER BY first_seen, id`, to, from)
+	if err != nil {
+		return fmt.Errorf("querying connections between: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var ci storage.ConnectionInterval
+		if err := rows.Scan(&ci.ID, &ci.ConnectionID, &ci.SourceID, &ci.TargetID,
+			&ci.Port, &ci.Protocol, &ci.FirstSeen, &ci.LastSeen); err != nil {
+			return err
+		}
+		if err := fn(ci); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // Bounds returns the earliest and latest instants covered by recorded
 // history, across both services and connections.
 func (r *HistoryRepo) Bounds(ctx context.Context) (storage.HistoryBounds, bool, error) {

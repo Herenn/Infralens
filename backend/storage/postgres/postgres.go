@@ -29,6 +29,7 @@ type Store struct {
 	connections *ConnectionRepo
 	metrics     *MetricsRepo
 	history     *HistoryRepo
+	drift       *DriftRepo
 	pruneStop   chan struct{}
 	pruneWg     sync.WaitGroup
 }
@@ -80,6 +81,7 @@ func New(cfg storage.Config) (*Store, error) {
 	store.connections = &ConnectionRepo{db: db}
 	store.metrics = &MetricsRepo{db: db}
 	store.history = &HistoryRepo{db: db}
+	store.drift = &DriftRepo{db: db}
 
 	// Run migrations if enabled
 	if cfg.AutoMigrate {
@@ -209,6 +211,11 @@ func (s *Store) History() storage.HistoryRepository {
 	return s.history
 }
 
+// Drift returns the architecture drift feed repository.
+func (s *Store) Drift() storage.DriftRepository {
+	return s.drift
+}
+
 // GetTopology returns the complete topology snapshot.
 func (s *Store) GetTopology(ctx context.Context) (*storage.Topology, error) {
 	services, err := s.services.List(ctx, storage.ServiceFilter{})
@@ -321,11 +328,18 @@ func (s *Store) pruneHistory(ctx context.Context) (int64, error) {
 	if retention <= 0 {
 		retention = storage.DefaultHistoryRetention
 	}
-	n, err := s.history.DeleteStale(ctx, time.Now().Add(-retention))
+	cutoff := time.Now().Add(-retention)
+	n, err := s.history.DeleteStale(ctx, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("pruning history: %w", err)
 	}
-	return n, nil
+	// The drift feed shares history's window: an event is only worth keeping
+	// while the topology it refers to can still be reconstructed.
+	events, err := s.drift.DeleteBefore(ctx, cutoff)
+	if err != nil {
+		return n, err
+	}
+	return n + events, nil
 }
 
 // Close closes the store and releases resources.
