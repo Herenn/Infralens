@@ -26,7 +26,7 @@ func TestDemoPopulatesIdleSpend(t *testing.T) {
 	ts.ConfigureIdleCost(service.IdleCostConfig{Warmup: -1}) // what config.Load yields with nothing set
 
 	sim := NewSimulator(ts)
-	if err := sim.seed(context.Background()); err != nil {
+	if err := sim.start(context.Background(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -110,12 +110,12 @@ func TestDemoBackfillIsStableAcrossRestarts(t *testing.T) {
 		return out
 	}
 
-	if err := NewSimulator(ts).seed(ctx); err != nil {
+	if err := NewSimulator(ts).start(ctx, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	first := pastEnds()
 	time.Sleep(20 * time.Millisecond)
-	if err := NewSimulator(ts).seed(ctx); err != nil { // restart
+	if err := NewSimulator(ts).start(ctx, time.Now()); err != nil { // restart
 		t.Fatal(err)
 	}
 	second := pastEnds()

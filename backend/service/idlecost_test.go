@@ -659,12 +659,12 @@ func TestGetIdleSpendEndToEnd(t *testing.T) {
 	old := &storage.Service{ID: "10.0.0.3/reports", Name: "reports", Type: "web_server", Node: "n1"}
 	db := &storage.Service{ID: "10.0.0.2:5432", Name: "postgres", Type: "database", Node: "n1"}
 	for _, s := range []*storage.Service{gw, ext, old, db} {
-		if err := ts.BackfillServiceHistory(ctx, s, now.Add(-14*day), now); err != nil {
+		if err := ts.ImportHistory(ctx, []HistorySpan{{Service: s, From: now.Add(-14 * day), To: now}}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	oldInbound := &storage.Connection{ID: "10.0.0.1/gw->10.0.0.3/reports:8080", SourceID: gw.ID, TargetID: old.ID, Port: 8080}
-	if err := ts.BackfillConnectionHistory(ctx, oldInbound, now.Add(-14*day), now.Add(-9*day)); err != nil {
+	if err := ts.ImportHistory(ctx, []HistorySpan{{Connection: oldInbound, From: now.Add(-14 * day), To: now.Add(-9 * day)}}); err != nil {
 		t.Fatal(err)
 	}
 

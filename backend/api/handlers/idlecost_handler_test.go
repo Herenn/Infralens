@@ -45,7 +45,7 @@ func newIdleCostServer(t *testing.T, cfg *service.IdleCostConfig) (*mux.Router, 
 		{ID: "10.0.0.3/reports", Name: "reports", Type: "web_server", Node: "n1"},
 	}
 	for i := range services {
-		if err := ts.BackfillServiceHistory(ctx, &services[i], now.Add(-14*24*time.Hour), now); err != nil {
+		if err := ts.ImportHistory(ctx, []service.HistorySpan{{Service: &services[i], From: now.Add(-14 * 24 * time.Hour), To: now}}); err != nil {
 			t.Fatal(err)
 		}
 		svc := services[i]
@@ -60,7 +60,7 @@ func newIdleCostServer(t *testing.T, cfg *service.IdleCostConfig) (*mux.Router, 
 	} {
 		c := c
 		c.LastSeen = now
-		if err := ts.BackfillConnectionHistory(ctx, &c, now.Add(-14*24*time.Hour), now); err != nil {
+		if err := ts.ImportHistory(ctx, []service.HistorySpan{{Connection: &c, From: now.Add(-14 * 24 * time.Hour), To: now}}); err != nil {
 			t.Fatal(err)
 		}
 		if err := ts.AddConnection(ctx, &c); err != nil {

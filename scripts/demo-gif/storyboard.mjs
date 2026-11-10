@@ -40,7 +40,7 @@ export const settings = {
  */
 export const scenario = {
   node: 'demo-app-1',
-  ip: '10.0.2.14',
+  ip: '10.0.2.18', // unused by the demo cast (10.0.2.14 is recommendations)
   comm: 'inventory-sync',
   calls: [
     { ip: '10.0.3.10', port: 5432, sentKBps: 20, recvKBps: 140 }, // postgres

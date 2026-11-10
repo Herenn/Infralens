@@ -5,6 +5,12 @@
 // topology through the regular TopologyService, then continuously emits
 // throughput and host-metric updates. The frontend renders it exactly like
 // real agent data, including live rate changes on edges.
+//
+// The demo tells one story across every feature (see story.go): two weeks
+// of backfilled history in which dependencies come and go, the drift feed
+// a detector would have written over them, a short live script of new
+// dependencies, idle services the Idle-spend panel finds (idle.go), and DNS
+// names on every external destination.
 package demo
 
 import (
@@ -19,6 +25,9 @@ import (
 	"github.com/Herenn/Infralens/backend/storage"
 	log "github.com/sirupsen/logrus"
 )
+
+// demoRandSeed seeds the throughput random walk.
+const demoRandSeed = 310
 
 // tickInterval controls how often the simulator emits updates.
 const tickInterval = 2 * time.Second
@@ -75,27 +84,24 @@ type Simulator struct {
 	connections []*demoConnection
 	nodes       []*demoNode
 
-	// The simulated past and the scripted changes after start - see drift.go
-	// in this package.
+	// The simulated past and the scripted changes after start - see
+	// story.go in this package.
 	past    []pastSpan
 	script  []scriptStep
 	started time.Time
 
 	ready     chan struct{}
 	readyOnce sync.Once
-
-	// pastConnections and pastServices exist only in backfilled history:
-	// traffic that stopped, and a service that went quiet. See idle.go.
-	pastConnections []demoPastConnection
-	pastServices    []demoPastService
 }
 
 // NewSimulator creates a demo simulator backed by the given topology service.
 func NewSimulator(topology *service.TopologyService) *Simulator {
 	s := &Simulator{
 		topology: topology,
-		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		ready:    make(chan struct{}),
+		// A fixed seed: throughput wanders the same way on every run, so a
+		// recording (scripts/demo-gif) is reproducible.
+		rng:   rand.New(rand.NewSource(demoRandSeed)),
+		ready: make(chan struct{}),
 	}
 	s.buildScenario()
 	s.configureIdleCost()
@@ -119,11 +125,7 @@ func (s *Simulator) Run(ctx context.Context) {
 	log.Info("Demo mode enabled - simulating topology (no agent required)")
 	defer s.markReady() // whatever happens below, never hold detection back
 
-	s.started = time.Now()
-	if kept := s.seedPast(ctx); kept {
-		s.fastForwardScript(ctx)
-	}
-	err := s.seed(ctx)
+	err := s.start(ctx, time.Now())
 	s.markReady()
 	if err != nil {
 		log.WithError(err).Error("Demo simulator failed to seed topology")
@@ -186,6 +188,8 @@ func (s *Simulator) buildScenario() {
 		svc("10.0.2.11/auth-service", "auth-service", "application", "Go", "go", nodeApp, "10.0.2.11"),
 		svc("10.0.2.12/orders-service", "orders-service", "application", "Python/Uvicorn", "python", nodeApp, "10.0.2.12"),
 		svc("10.0.2.13/payment-worker", "payment-worker", "application", "Python", "python", nodeApp, "10.0.2.13"),
+		// Retired by the live script (story.go).
+		svc("10.0.2.14/recommendations", "recommendations", "application", "Python", "python", nodeApp, "10.0.2.14"),
 
 		// Data node
 		svc("10.0.3.10:5432", "postgres", "database", "PostgreSQL 16.2", "postgresql", nodeData, "10.0.3.10"),
@@ -193,9 +197,7 @@ func (s *Simulator) buildScenario() {
 		svc("10.0.3.12:9092", "kafka", "message_queue", "Kafka", "kafka", nodeData, "10.0.3.12"),
 		svc("10.0.3.13:9090", "prometheus", "monitoring", "Prometheus", "prometheus", nodeData, "10.0.3.13"),
 		svc("10.0.3.14:53", "dns", "application", "DNS", "dns", nodeData, "10.0.3.14"),
-
-		// Newer arrivals - see the drift timeline in drift.go.
-		svc("10.0.2.14/recommendations", "recommendations", "application", "Python", "python", nodeApp, "10.0.2.14"),
+		// Adopted 5 hours ago (story.go) - the replacement for search-v1.
 		svc("10.0.3.15:9200", "search", "database", "Elasticsearch 8.13", "elasticsearch", nodeData, "10.0.3.15"),
 
 		// External SaaS dependencies, shaped exactly like what the processor
@@ -203,17 +205,13 @@ func (s *Simulator) buildScenario() {
 		// IP:port, no node. The DNS names on their connections are what an
 		// agent learns from the answers those workloads received.
 		// Documentation-range addresses (RFC 5737), not the real services'.
-		external("198.51.100.20"), // api.stripe.com
-		external("198.51.100.61"), // oauth2.googleapis.com
+		external("198.51.100.20"), // api.stripe.com - adopted 30h ago
 		external("198.51.100.42"), // s3.us-east-1.amazonaws.com
 		external("198.51.100.50"), // o450123.ingest.sentry.io
 		external("198.51.100.60"), // shared CDN address: two names
+		external("198.51.100.61"), // oauth2.googleapis.com - adopted 50m ago
 	}
-
-	named := func(c *demoConnection, hostnames ...string) *demoConnection {
-		c.hostnames = hostnames
-		return c
-	}
+	// The idle-spend part of the cast (idle.go).
 	s.services = append(s.services, idleDemoServices(svc)...)
 
 	conn := func(src, dst string, port uint16, sentKBps, recvKBps float64) *demoConnection {
@@ -268,9 +266,14 @@ func (s *Simulator) buildScenario() {
 		{name: "demo-data-1", memTotal: gib(32), cpuPercent: 30, memPercent: 68},
 		{name: nodeLegacy, memTotal: gib(8), cpuPercent: 6, memPercent: 31},
 	}
-	s.pastConnections, s.pastServices = idleDemoHistory()
 
 	s.buildTimeline(svc, conn)
+}
+
+// named attaches the DNS names the source resolved the target from.
+func named(c *demoConnection, hostnames ...string) *demoConnection {
+	c.hostnames = hostnames
+	return c
 }
 
 // external describes an outbound HTTPS destination the way the event
@@ -288,11 +291,21 @@ func external(ip string) storage.Service {
 	}
 }
 
-// seed creates the initial services, connections, and node metrics.
-func (s *Simulator) seed(ctx context.Context) error {
-	// History first: it has to exist before the live writes below extend it.
-	s.backfillHistory(ctx)
+// start writes the demo's past (or, on a kept database, fast-forwards the
+// script past what the previous run already played) and then its current
+// topology, as of now.
+func (s *Simulator) start(ctx context.Context, now time.Time) error {
+	s.started = now
+	if kept := s.seedPast(ctx); kept {
+		s.fastForwardScript(ctx)
+	}
+	return s.seed(ctx)
+}
 
+// seed creates the initial services, connections, and node metrics. The
+// past (seedPast) is written before this, so the live writes below extend
+// the backfilled intervals rather than opening new ones.
+func (s *Simulator) seed(ctx context.Context) error {
 	s.refreshServices(ctx)
 
 	for _, c := range s.connections {

@@ -67,6 +67,9 @@ func TestSeededPastIsConsistent(t *testing.T) {
 		}
 	}
 	want := map[string]storage.DriftEventKind{
+		"10.0.2.16/batch-exporter->10.0.3.12:9092:9092":         storage.DriftDisappeared,
+		"10.0.1.10/nginx->10.0.4.10/reports-v1:8080":            storage.DriftDisappeared,
+		"10.0.2.10/api-gateway->10.0.2.17/admin-panel:3000":     storage.DriftDisappeared,
 		"10.0.2.12/orders-service->10.0.2.20/inventory-v1:8081": storage.DriftDisappeared,
 		"10.0.2.13/payment-worker->10.0.3.16:5672:5672":         storage.DriftDisappeared,
 		"10.0.2.13/payment-worker->198.51.100.20:443:443":       storage.DriftAppeared,

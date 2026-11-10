@@ -62,15 +62,19 @@ frame 1 (which GitHub shows before the GIF loads) is already fully composed.
 | `lib/capture.mjs` | Chrome DevTools screencast: full device-pixel frames with timestamps (~55 fps), written asynchronously |
 | `lib/encode.mjs` | timestamps -> constant-fps lossless master (+ loop crossfade) -> H.264 MP4 and gifski GIF |
 
-Why the scenario: the v3.0 simulator's topology never changes shape, so time
-travel and "Compare to now" would have nothing to show. 40 s into warm-up an
-`inventory-sync` job appears on `demo-app-1` and starts talking to postgres
-and kafka; the time-travel and diff scenes scrub back to before that.
+Why the scenario: it was written for the v3.0 simulator, whose topology never
+changed shape, so time travel and "Compare to now" had nothing to show. 40 s
+into warm-up an `inventory-sync` job appears on `demo-app-1` (10.0.2.18, an
+address the demo cast does not use) and starts talking to postgres and kafka;
+the time-travel and diff scenes scrub back to before that. Since v3.1 the
+demo itself has two weeks of history, a drift feed and a live script
+(`backend/service/demo/story.go`), so the scenario is optional
+(`--no-scenario`) and the storyboard can show those instead.
 
-Why `TZ=UTC`: v3.0's SQLite history store compares timestamps as text in the
-process's local zone, so on a non-UTC machine time travel renders an empty
-graph and the diff always reports 0 changes. The Docker images run in UTC,
-which is why the shipped demo is unaffected.
+Why `TZ=UTC`: v3.0's SQLite history store compared timestamps as text in the
+process's local zone, so on a non-UTC machine time travel rendered an empty
+graph. v3.1 stores every time as UTC and no longer needs it; it is kept so
+captions and clock labels in the recording are the same on every machine.
 
 ## Size / quality trade-off (1200 px, ~32 s)
 
