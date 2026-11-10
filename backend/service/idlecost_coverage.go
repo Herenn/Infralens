@@ -26,6 +26,14 @@ import (
 // Known limit: a node where genuinely nothing happens for a while also shows a
 // gap. That errs in the safe direction - silence is under-counted, so a
 // service is held back rather than flagged.
+//
+// Relation to drift: the drift detector subtracts only *global* silences (no
+// observation anywhere - a backend or collection outage), because "gone" is a
+// statement about one edge, not about a node. So if a single node's agent is
+// down for longer than DRIFT_GONE_AFTER, the Changes feed reports that node's
+// edges as gone while this report holds the node's services back as "not
+// quiet long enough". Both are consistent with what was observed; neither
+// ever counts a backend outage as silence.
 
 type span struct{ from, to time.Time }
 

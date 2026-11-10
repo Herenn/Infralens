@@ -642,8 +642,8 @@ func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, dire
 	services := make([]storage.Service, 0, len(visited))
 	for id := range visited {
 		// A connection can reference an endpoint that is not in the services
-		// table - see realReachedCount for why that is routine rather than
-		// exceptional. Skip rather than emit a zero-value Service for it.
+		// table - see realReachedCount for when that still happens. Skip
+		// rather than emit a zero-value Service for it.
 		if svc, ok := svcByID[id]; ok {
 			services = append(services, svc)
 		}
@@ -673,13 +673,16 @@ func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, dire
 // one goes down."
 //
 // Counting the raw visited set instead would count endpoints that no longer
-// exist. That is not a rare edge case: ConnectionRepo.UpdateStats refreshes a
-// connection's last_seen from throughput reports, while only a connect/accept
-// event refreshes a *service's*. So a long-lived connection carrying steady
-// traffic keeps itself alive while its endpoints age out at PruneMaxAge and are
-// deleted - exactly the persistent connections (DB pools, gRPC channels) whose
-// blast radius matters most. Counting those phantoms inflates the ranking, and
-// can report a blast radius larger than the total number of services.
+// exist. Up to v3.0 that was routine: throughput reports refreshed only the
+// connection's last_seen, so the endpoints of a long-lived connection (DB
+// pools, gRPC channels) aged out at PruneMaxAge while the edge stayed. Since
+// v3.1 UpdateConnectionStats also refreshes both endpoints
+// (refreshEndpointsFromStats, liveness.go), so that no longer happens while
+// traffic flows - but an edge can still outlive an endpoint: a service
+// deleted (RemoveService, demo retirements) or pruned while its connection is
+// still inside its own prune window, or a connection reported for a peer that
+// was never upserted. Counting those phantoms would inflate the ranking, and
+// could report a blast radius larger than the total number of services.
 func realReachedCount(visited map[string]bool, known map[string]bool, seed string) int {
 	n := 0
 	for id := range visited {
@@ -893,9 +896,9 @@ func (ts *TopologyService) GetOrphanServices(ctx context.Context) ([]storage.Ser
 	// and is exactly the "leftover" this panel is meant to surface. Counting it
 	// as connected made the panel disagree with the picture beside it.
 	//
-	// Reachable in normal operation: throughput reports refresh a connection's
-	// last_seen while only connect/accept refreshes a service's, so a peer can
-	// be pruned out from under a still-live edge (see realReachedCount).
+	// Rarer since v3.1 (throughput now keeps both endpoints alive), but still
+	// reachable: a peer deleted or pruned while the edge is inside its own
+	// prune window (see realReachedCount).
 	connected := make(map[string]bool, len(topo.Connections)*2)
 	for _, conn := range topo.Connections {
 		if !known[conn.SourceID] || !known[conn.TargetID] {
