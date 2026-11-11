@@ -143,7 +143,8 @@ destinations (experimental, off by default).
     counts only while every member agent is reporting; a member silent for
     more than an hour (scale-in, a replaced or crashed node) stops holding
     the group back, and if any member was out like that (or flapping) at
-    any time within the evidence window, even if it is reporting again, the
+    any time within the evidence window, even if it is reporting again (a
+    backend outage, which silences every agent at once, does not count), the
     group's candidates are low confidence, left out of the total
     (`not_in_total_reason: "silent_agent"`) and listed under a note naming
     those agents (`silent_agents`).
@@ -162,6 +163,9 @@ destinations (experimental, off by default).
   workload then connected to. The backend keeps up to 8 names per
   connection, drops names unseen for 7 days, and uses them in the map,
   search, exports, AI context, Changes feed, webhook, MCP and Idle spend.
+  An address reached under several names shows the most recently seen one,
+  judged at the 10-minute refresh granularity (then the one more callers
+  used), so a label can take 10–20 minutes to follow a name that reappears.
   Service IDs do not change. See *Known limitations*.
 - Demo mode tells one story across the new features: 14 days of history, a
   seeded Changes feed, scripted live changes, idle candidates and named SaaS
@@ -282,10 +286,8 @@ destinations (experimental, off by default).
   replica's node uses a dependency and that node's agent stops, the absence
   is measured against the other node, and the Changes feed can report the
   dependency gone after `DRIFT_GONE_AFTER`.
-- A `--cluster` member that reports only part of the time (between half and
-  almost all of it) is still counted as current: its gaps slow Idle spend
-  and drift detection in its group without the agent being listed as
-  silent.
+- A `--cluster` agent that reports most but not all of the time slows Idle
+  spend and drift detection in its group and may not be listed as silent.
 - The PostgreSQL code added in 3.1 runs in the CI PostgreSQL job but was not
   exercised against PostgreSQL during local development. Likewise the
   frontend image's new nginx template was reviewed and its Helm rendering
