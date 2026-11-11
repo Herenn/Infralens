@@ -85,7 +85,8 @@ func TestHandleDriftEvents_NewestFirstWithPagination(t *testing.T) {
 		first.Protocol != "tcp" || !first.External || first.Port != 443 {
 		t.Errorf("unexpected newest event: %+v", first)
 	}
-	if at, err := time.Parse(time.RFC3339Nano, first.DetectedAt); err != nil || !at.Equal(newest.Truncate(0)) {
+	// Stored times have microsecond precision; the clock may be finer (Linux).
+	if at, err := time.Parse(time.RFC3339Nano, first.DetectedAt); err != nil || !at.Equal(newest.Truncate(time.Microsecond)) {
 		t.Errorf("detected_at %q does not round-trip to %s (err %v)", first.DetectedAt, newest, err)
 	}
 
