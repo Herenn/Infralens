@@ -26,9 +26,11 @@ interface HeaderProps {
   onExportDot?: () => void
   // Set while time travel shows a past instant.
   viewingPast?: boolean
+  // Before the first live connection: neither "Live" nor "Disconnected".
+  connecting?: boolean
 }
 
-export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot, viewingPast }: HeaderProps) {
+export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot, viewingPast, connecting }: HeaderProps) {
   const [filterDropdownOpen, setFilterDropdownOpen] = useState(false)
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false)
   const filterButtonRef = useRef<HTMLButtonElement>(null)
@@ -341,6 +343,8 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap
           ${viewingPast
             ? 'bg-amber-500/10 text-amber-300 border border-amber-500/25'
+            : connecting && !isConnected
+            ? 'bg-dark-800 text-dark-400 border border-dark-700'
             : isConnected
             ? 'bg-lens-500/10 text-lens-400 border border-lens-500/20' 
             : 'bg-red-500/10 text-red-400 border border-red-500/20'
@@ -350,6 +354,11 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             <>
               <History size={14} />
               <span>History</span>
+            </>
+          ) : connecting && !isConnected ? (
+            <>
+              <Wifi size={14} />
+              <span>Connecting</span>
             </>
           ) : isConnected ? (
             <>

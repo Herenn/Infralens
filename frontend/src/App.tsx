@@ -1042,6 +1042,7 @@ function App() {
         onExportMermaid={() => handleExportGraph('mermaid')}
         onExportDot={() => handleExportGraph('dot')}
         viewingPast={!!timelineAt}
+        connecting={topology === null}
       />
 
       <div className="flex-1 flex overflow-hidden">
