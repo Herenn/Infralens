@@ -430,7 +430,9 @@ func (ts *TopologyService) UpdateServiceInspection(ctx context.Context, serviceI
 		svc, _ := ts.store.Services().Get(ctx, serviceID)
 		if svc != nil && svc.Tech == "" {
 			svc.Tech = insp.HTTPInfo.ServerHeader
-			ts.store.Services().Upsert(ctx, svc)
+			if err := ts.store.Services().Upsert(ctx, svc); err != nil {
+				log.WithError(err).WithField("service", serviceID).Warn("Failed to update service tech from inspection")
+			}
 		}
 	}
 	if insp.DBInfo != nil && insp.DBInfo.Type != "" {
@@ -440,7 +442,9 @@ func (ts *TopologyService) UpdateServiceInspection(ctx context.Context, serviceI
 			if insp.DBInfo.Version != "" {
 				svc.Tech = fmt.Sprintf("%s %s", insp.DBInfo.Type, insp.DBInfo.Version)
 			}
-			ts.store.Services().Upsert(ctx, svc)
+			if err := ts.store.Services().Upsert(ctx, svc); err != nil {
+				log.WithError(err).WithField("service", serviceID).Warn("Failed to update service tech from inspection")
+			}
 		}
 	}
 

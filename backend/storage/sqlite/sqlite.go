@@ -561,7 +561,9 @@ func (r *ServiceRepo) Get(ctx context.Context, id string) (*storage.Service, err
 	}
 
 	if labelsJSON != "" {
-		json.Unmarshal([]byte(labelsJSON), &svc.Labels)
+		// Malformed labels are tolerated, as before: a bad labels blob must
+		// not fail the whole read (same leniency as DecodeHostnames).
+		_ = json.Unmarshal([]byte(labelsJSON), &svc.Labels)
 	}
 	return &svc, nil
 }
@@ -615,7 +617,9 @@ func (r *ServiceRepo) List(ctx context.Context, filter storage.ServiceFilter) ([
 			return nil, err
 		}
 		if labelsJSON != "" {
-			json.Unmarshal([]byte(labelsJSON), &svc.Labels)
+			// Malformed labels are tolerated, as before: a bad labels blob must
+			// not fail the whole read (same leniency as DecodeHostnames).
+			_ = json.Unmarshal([]byte(labelsJSON), &svc.Labels)
 		}
 		services = append(services, svc)
 	}

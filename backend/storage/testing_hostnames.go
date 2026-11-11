@@ -20,7 +20,11 @@ func HostnamesSuite(t *testing.T, store Store) {
 		if err := store.Connections().Upsert(ctx, conn); err != nil {
 			t.Fatalf("Upsert: %v", err)
 		}
-		defer store.Connections().Delete(ctx, id)
+		defer func() {
+			if err := store.Connections().Delete(ctx, id); err != nil {
+				t.Errorf("cleanup: Connections().Delete: %v", err)
+			}
+		}()
 
 		got, err := store.Connections().Get(ctx, id)
 		if err != nil || got == nil {
@@ -67,7 +71,11 @@ func HostnamesSuite(t *testing.T, store Store) {
 		if err := store.Connections().Upsert(ctx, &Connection{ID: id, SourceID: "a", TargetID: "b", Port: 443, Count: 1}); err != nil {
 			t.Fatal(err)
 		}
-		defer store.Connections().Delete(ctx, id)
+		defer func() {
+			if err := store.Connections().Delete(ctx, id); err != nil {
+				t.Errorf("cleanup: Connections().Delete: %v", err)
+			}
+		}()
 		before, _ := store.Connections().Get(ctx, id)
 
 		if err := store.Connections().SetHostnames(ctx, id, two[:1]); err != nil {

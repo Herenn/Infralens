@@ -50,7 +50,7 @@ func (h *AIHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 
 	llmManager, _ := h.deps()
 	if llmManager == nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"enabled":   false,
 			"providers": map[string]bool{},
 			"message":   "AI documentation not configured",
@@ -67,7 +67,7 @@ func (h *AIHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"enabled":   hasConfigured,
 		"providers": status,
 	})
@@ -138,14 +138,14 @@ func (h *AIHandler) HandleConfig(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == "GET" {
 		if llmManager == nil {
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"configured": false,
 			})
 			return
 		}
 
 		cfg := llmManager.Config()
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"configured":       true,
 			"providers":        llmManager.Status(),
 			"default_provider": string(cfg.DefaultProvider),
@@ -231,7 +231,7 @@ func (h *AIHandler) HandleConfig(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("AI configuration updated")
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":    "updated",
 		"providers": manager.Status(),
 	})
@@ -299,7 +299,7 @@ func (h *AIHandler) HandleDocs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // AIAskRequest represents a question about a service.
@@ -363,7 +363,7 @@ func (h *AIHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // HandleProviders returns available AI providers and their models.
@@ -419,7 +419,7 @@ func (h *AIHandler) HandleProviders(w http.ResponseWriter, r *http.Request) {
 		providers = append(providers, entry)
 	}
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"providers": providers,
 	})
 }
@@ -436,7 +436,7 @@ func (h *AIHandler) writeModelError(w http.ResponseWriter, r *http.Request, err 
 	if errors.As(err, &re) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error":    re.Error(),
 			"code":     "response_refused",
 			"provider": re.Provider,
@@ -457,7 +457,7 @@ func (h *AIHandler) writeModelError(w http.ResponseWriter, r *http.Request, err 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnprocessableEntity)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"error":       me.Error(),
 		"code":        "model_unavailable",
 		"provider":    me.Provider,

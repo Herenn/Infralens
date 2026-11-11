@@ -143,7 +143,7 @@ func (p *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	// Convert messages
 	messages := make([]ollamaMessage, len(req.Messages))
 	for i, m := range req.Messages {
-		messages[i] = ollamaMessage{Role: m.Role, Content: m.Content}
+		messages[i] = ollamaMessage(m)
 	}
 
 	ollamaReq := ollamaRequest{
@@ -312,7 +312,7 @@ func (p *LMStudioProvider) Complete(ctx context.Context, req CompletionRequest) 
 
 	messages := make([]openAIMessage, len(req.Messages))
 	for i, m := range req.Messages {
-		messages[i] = openAIMessage{Role: m.Role, Content: m.Content}
+		messages[i] = openAIMessage(m)
 	}
 
 	openAIReq := openAIRequest{

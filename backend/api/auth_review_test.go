@@ -103,7 +103,9 @@ func TestReview_LogoutReachesOtherReplica(t *testing.T) {
 	start := time.Now()
 
 	// The WebSocket on B is closed by B's next sync.
-	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	var msg map[string]interface{}
 	for {
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -240,7 +242,9 @@ func TestReview_NoPasswordWebSocketStaysOpen(t *testing.T) {
 		Type string          `json:"type"`
 		Data json.RawMessage `json:"data"`
 	}
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	if err := conn.ReadJSON(&msg); err != nil || msg.Type != "snapshot" {
 		t.Fatalf("first message: %v %q", err, msg.Type)
 	}
@@ -256,7 +260,9 @@ func TestReview_NoPasswordWebSocketStaysOpen(t *testing.T) {
 	}); resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("ingest: %d", resp.StatusCode)
 	}
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	for {
 		if err := conn.ReadJSON(&msg); err != nil {
 			t.Fatalf("stream closed or stalled after the handshake: %v", err)

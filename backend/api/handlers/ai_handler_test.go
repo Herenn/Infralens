@@ -14,6 +14,15 @@ import (
 	"github.com/Herenn/Infralens/backend/pkg/llm"
 )
 
+// writeBody writes a canned response body from an httptest handler. It runs on
+// the server goroutine, so it reports with t.Errorf rather than t.Fatalf.
+func writeBody(t *testing.T, w io.Writer, body string) {
+	t.Helper()
+	if _, err := io.WriteString(w, body); err != nil {
+		t.Errorf("writing test response: %v", err)
+	}
+}
+
 // fakeOllama mimics Ollama: one installed model, and /api/chat answering 404
 // "model not found" for anything else, as Ollama does for a model that was
 // never pulled.
@@ -22,18 +31,20 @@ func fakeOllama(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			io.WriteString(w, `{"models":[{"name":"gemma4:e4b"},{"name":"qwen3.5:4b"}]}`)
+			writeBody(t, w, `{"models":[{"name":"gemma4:e4b"},{"name":"qwen3.5:4b"}]}`)
 		case "/api/chat":
 			var body struct {
 				Model string `json:"model"`
 			}
-			json.NewDecoder(r.Body).Decode(&body)
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decoding chat request: %v", err)
+			}
 			if body.Model != "gemma4:e4b" {
 				w.WriteHeader(http.StatusNotFound)
-				io.WriteString(w, `{"error":"model \"`+body.Model+`\" not found, try pulling it first"}`)
+				writeBody(t, w, `{"error":"model \"`+body.Model+`\" not found, try pulling it first"}`)
 				return
 			}
-			io.WriteString(w, `{"model":"gemma4:e4b","message":{"role":"assistant","content":"# Docs"},"done":true}`)
+			writeBody(t, w, `{"model":"gemma4:e4b","message":{"role":"assistant","content":"# Docs"},"done":true}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -116,10 +127,10 @@ func TestHandleDocs_EmptyAnswerIsAnErrorNotDocs(t *testing.T) {
 	id := seedService(t, ts)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/tags" {
-			io.WriteString(w, `{"models":[{"name":"gemma4:e4b"}]}`)
+			writeBody(t, w, `{"models":[{"name":"gemma4:e4b"}]}`)
 			return
 		}
-		io.WriteString(w, `{"model":"gemma4:e4b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`)
+		writeBody(t, w, `{"model":"gemma4:e4b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`)
 	}))
 	t.Cleanup(srv.Close)
 	h := handlers.NewAIHandler(ts.topology, llm.NewManager(&llm.Config{
@@ -134,7 +145,9 @@ func TestHandleDocs_EmptyAnswerIsAnErrorNotDocs(t *testing.T) {
 	var resp struct {
 		Code string `json:"code"`
 	}
-	json.NewDecoder(rr.Body).Decode(&resp)
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	if resp.Code != "response_refused" {
 		t.Errorf("code = %q", resp.Code)
 	}
@@ -151,7 +164,9 @@ func TestHandleDocs_SucceedsWithFirstInstalledModel(t *testing.T) {
 		t.Fatalf("status = %d; body %s", rr.Code, rr.Body.String())
 	}
 	var resp llm.DocumentationResponse
-	json.NewDecoder(rr.Body).Decode(&resp)
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	if resp.Model != "gemma4:e4b" || resp.Content == "" {
 		t.Errorf("unexpected %+v", resp)
 	}
@@ -231,7 +246,9 @@ func TestHandleConfig_EmptyFieldsKeepExistingValues(t *testing.T) {
 		DefaultProvider string            `json:"default_provider"`
 		Models          map[string]string `json:"models"`
 	}
-	json.NewDecoder(rr.Body).Decode(&got)
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	if got.DefaultProvider != "openai" || got.Models["anthropic"] != "claude-sonnet-5-5" {
 		t.Errorf("unexpected GET body %+v", got)
 	}

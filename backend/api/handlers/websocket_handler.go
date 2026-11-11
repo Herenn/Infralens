@@ -161,7 +161,10 @@ func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 			}
 
 		case <-pingTicker.C:
-			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+				log.WithError(err).Debug("WebSocket ping failed")
+				return
+			}
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				log.WithError(err).Debug("WebSocket ping failed")
 				return
@@ -179,7 +182,8 @@ func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 			// With UI login enabled the request context is bound to the
 			// session, so this is the session expiring or being logged out.
 			log.WithField("subscriber", subID).Info("WebSocket session ended")
-			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			// Best-effort close frame: the connection is being dropped either way.
+			_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
 			_ = conn.WriteMessage(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "session ended"))
 			return
@@ -194,7 +198,9 @@ func (h *WebSocketHandler) readPump(conn *websocket.Conn, done chan<- struct{}) 
 	defer close(done)
 
 	conn.SetReadLimit(maxClientMessageSize)
-	conn.SetReadDeadline(time.Now().Add(pongWait))
+	if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		return
+	}
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(pongWait))
 	})
@@ -205,14 +211,18 @@ func (h *WebSocketHandler) readPump(conn *websocket.Conn, done chan<- struct{}) 
 		}
 		// Clients aren't expected to send data; ignore anything they do send
 		// but treat it as liveness.
-		conn.SetReadDeadline(time.Now().Add(pongWait))
+		if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+			return
+		}
 	}
 }
 
 // writeJSON writes a message with a bounded deadline. Callers must ensure only
 // one goroutine writes to conn at a time.
 func writeJSON(conn *websocket.Conn, msg WSMessage) error {
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	if err := conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+		return err
+	}
 	return conn.WriteJSON(msg)
 }
 

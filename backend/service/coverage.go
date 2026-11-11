@@ -365,19 +365,6 @@ func (c *observationCoverage) setGroups(groups []string) {
 	}
 }
 
-// addHeartbeat adds one ungrouped heartbeat interval (tests, idle inputs
-// built span by span). Prefer setHeartbeats.
-func (c *observationCoverage) addHeartbeat(node string, from, to time.Time) {
-	if node == "" {
-		return
-	}
-	s := span{from: from, to: to.Add(c.heartbeatGrace)}
-	k := agentKey{"", node}
-	c.hb[k] = union(c.hb[k], coverage{s})
-	c.hbAll = union(c.hbAll, coverage{s})
-	c.invalidate()
-}
-
 // addEvidence records a service or edge interval as evidence for the given
 // nodes (those whose agent produced it - see edgeEvidenceNodes). Every
 // interval also counts towards the global coverage. A later call with the

@@ -19,6 +19,15 @@ import (
 // These tests drive every provider against httptest servers that mimic the
 // documented request/response shapes. No real provider API is contacted.
 
+// writeBody writes a canned response body from an httptest handler. It runs on
+// the server goroutine, so it reports with t.Errorf rather than t.Fatalf.
+func writeBody(t *testing.T, w io.Writer, body string) {
+	t.Helper()
+	if _, err := io.WriteString(w, body); err != nil {
+		t.Errorf("writing test response: %v", err)
+	}
+}
+
 func docMessages() []Message {
 	return []Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}}
 }
@@ -83,7 +92,7 @@ func TestOpenAICompleteRequestShape(t *testing.T) {
 		if got := body["reasoning_effort"]; got != "low" {
 			t.Errorf("reasoning_effort = %v, want low", got)
 		}
-		io.WriteString(w, `{"model":"gpt-6-luna","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"total_tokens":7}}`)
+		writeBody(t, w, `{"model":"gpt-6-luna","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"total_tokens":7}}`)
 	}))
 	defer srv.Close()
 
@@ -101,7 +110,7 @@ func TestOpenAICompleteRequestShape(t *testing.T) {
 func TestOpenAIModelNotFoundIsModelError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		io.WriteString(w, `{"error":{"message":"The model `+"`gpt-3.5-turbo`"+` does not exist or you do not have access to it.","type":"invalid_request_error","code":"model_not_found"}}`)
+		writeBody(t, w, `{"error":{"message":"The model `+"`gpt-3.5-turbo`"+` does not exist or you do not have access to it.","type":"invalid_request_error","code":"model_not_found"}}`)
 	}))
 	defer srv.Close()
 
@@ -124,7 +133,7 @@ func TestOpenAIAuthErrorIsRedacted(t *testing.T) {
 	leaked := "sk-" + "abcdefghijklmnopqrstuvwxyz0123456789"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		io.WriteString(w, `{"error":{"message":"Incorrect API key provided: `+leaked+`.","type":"invalid_request_error","code":"invalid_api_key"}}`)
+		writeBody(t, w, `{"error":{"message":"Incorrect API key provided: `+leaked+`.","type":"invalid_request_error","code":"invalid_api_key"}}`)
 	}))
 	defer srv.Close()
 
@@ -148,7 +157,7 @@ func TestOpenAIListModelsFiltersAndSorts(t *testing.T) {
 		if r.URL.Path != "/models" || r.Header.Get("Authorization") != "Bearer sk-test" {
 			t.Errorf("unexpected request %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
 		}
-		io.WriteString(w, `{"object":"list","data":[
+		writeBody(t, w, `{"object":"list","data":[
 			{"id":"gpt-6-luna","created":300},
 			{"id":"text-embedding-3-small","created":400},
 			{"id":"gpt-6.1-sol","created":500},
@@ -204,7 +213,7 @@ func TestAnthropicCompleteRequestShape(t *testing.T) {
 			t.Errorf("max_tokens = %v", got)
 		}
 		// A thinking block precedes the text; only text must be returned.
-		io.WriteString(w, `{"model":"claude-haiku-5-5","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"docs"}],"usage":{"input_tokens":3,"output_tokens":4}}`)
+		writeBody(t, w, `{"model":"claude-haiku-5-5","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"docs"}],"usage":{"input_tokens":3,"output_tokens":4}}`)
 	}))
 	defer srv.Close()
 
@@ -222,7 +231,7 @@ func TestAnthropicCompleteRequestShape(t *testing.T) {
 func TestAnthropicRetiredModelIsModelError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		io.WriteString(w, `{"type":"error","error":{"type":"not_found_error","message":"model: claude-3-haiku-20240307"}}`)
+		writeBody(t, w, `{"type":"error","error":{"type":"not_found_error","message":"model: claude-3-haiku-20240307"}}`)
 	}))
 	defer srv.Close()
 
@@ -237,7 +246,7 @@ func TestAnthropicRetiredModelIsModelError(t *testing.T) {
 
 func TestAnthropicEmptyAnswerAtMaxTokens(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"model":"claude-haiku-5-5","stop_reason":"max_tokens","content":[{"type":"thinking","thinking":"..."}]}`)
+		writeBody(t, w, `{"model":"claude-haiku-5-5","stop_reason":"max_tokens","content":[{"type":"thinking","thinking":"..."}]}`)
 	}))
 	defer srv.Close()
 	p := NewAnthropicProvider(&Config{AnthropicAPIKey: "k"})
@@ -256,13 +265,13 @@ func TestAnthropicListModelsPaginatesAndSkipsDeprecated(t *testing.T) {
 			t.Errorf("missing auth/version headers")
 		}
 		if r.URL.Query().Get("after_id") == "" {
-			io.WriteString(w, `{"data":[{"id":"claude-fable-5-2","lifecycle":"active"},{"id":"claude-sonnet-4-5-20250929","lifecycle":"deprecated"}],"has_more":true,"last_id":"claude-sonnet-4-5-20250929"}`)
+			writeBody(t, w, `{"data":[{"id":"claude-fable-5-2","lifecycle":"active"},{"id":"claude-sonnet-4-5-20250929","lifecycle":"deprecated"}],"has_more":true,"last_id":"claude-sonnet-4-5-20250929"}`)
 			return
 		}
 		if got := r.URL.Query().Get("after_id"); got != "claude-sonnet-4-5-20250929" {
 			t.Errorf("after_id = %q", got)
 		}
-		io.WriteString(w, `{"data":[{"id":"claude-haiku-5-5","lifecycle":"active"}],"has_more":false,"last_id":"claude-haiku-5-5"}`)
+		writeBody(t, w, `{"data":[{"id":"claude-haiku-5-5","lifecycle":"active"}],"has_more":false,"last_id":"claude-haiku-5-5"}`)
 	}))
 	defer srv.Close()
 
@@ -303,7 +312,7 @@ func TestGeminiKeyInHeaderNotURL(t *testing.T) {
 		if _, ok := gc["temperature"]; ok {
 			t.Error("temperature must not be sent to Gemini")
 		}
-		io.WriteString(w, `{"modelVersion":"gemini-3.5-flash-lite","candidates":[{"content":{"parts":[{"text":"thinking...","thought":true},{"text":"answer"}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":9}}`)
+		writeBody(t, w, `{"modelVersion":"gemini-3.5-flash-lite","candidates":[{"content":{"parts":[{"text":"thinking...","thought":true},{"text":"answer"}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":9}}`)
 	}))
 	defer srv.Close()
 
@@ -324,7 +333,7 @@ func TestGeminiModelNameIsPathEscaped(t *testing.T) {
 			t.Errorf("model name injected a query string: %q", r.URL.RawQuery)
 		}
 		w.WriteHeader(http.StatusNotFound)
-		io.WriteString(w, `{"error":{"code":404,"message":"models/gemini-pro?alt=x is not found for API version v1beta","status":"NOT_FOUND"}}`)
+		writeBody(t, w, `{"error":{"code":404,"message":"models/gemini-pro?alt=x is not found for API version v1beta","status":"NOT_FOUND"}}`)
 	}))
 	defer srv.Close()
 
@@ -342,14 +351,14 @@ func TestGeminiListModels(t *testing.T) {
 			t.Errorf("key must be sent as header only")
 		}
 		if r.URL.Query().Get("pageToken") == "" {
-			io.WriteString(w, `{"models":[
+			writeBody(t, w, `{"models":[
 				{"name":"models/gemini-3.8-flash","supportedGenerationMethods":["generateContent","countTokens"]},
 				{"name":"models/gemini-embedding-2","supportedGenerationMethods":["embedContent"]},
 				{"name":"models/gemini-3.1-flash-image","supportedGenerationMethods":["generateContent"]}
 			],"nextPageToken":"p2"}`)
 			return
 		}
-		io.WriteString(w, `{"models":[
+		writeBody(t, w, `{"models":[
 			{"name":"models/gemini-3.5-flash-lite","supportedGenerationMethods":["generateContent"]},
 			{"name":"models/gemini-3.8-flash-tts","supportedGenerationMethods":["generateContent"]},
 			{"name":"models/imagen-4.0-generate","supportedGenerationMethods":["predict"]}
@@ -375,7 +384,7 @@ func newOllamaServer(t *testing.T, tags string, chat http.HandlerFunc) *httptest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			io.WriteString(w, tags)
+			writeBody(t, w, tags)
 		case "/api/chat":
 			chat(w, r)
 		default:
@@ -394,7 +403,7 @@ func TestOllamaUsesFirstInstalledModelWhenUnset(t *testing.T) {
 			if body["model"] != "qwen3.5:4b" {
 				t.Errorf("model = %v, want first non-embedding installed model", body["model"])
 			}
-			io.WriteString(w, `{"model":"qwen3.5:4b","message":{"role":"assistant","content":"hi"},"done":true}`)
+			writeBody(t, w, `{"model":"qwen3.5:4b","message":{"role":"assistant","content":"hi"},"done":true}`)
 		})
 
 	p := NewOllamaProvider(&Config{OllamaURL: srv.URL})
@@ -421,7 +430,7 @@ func TestOllamaNoModelsInstalled(t *testing.T) {
 func TestOllamaModelNotPulledIsModelError(t *testing.T) {
 	srv := newOllamaServer(t, `{"models":[{"name":"gemma4:e4b"}]}`, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		io.WriteString(w, `{"error":"model \"llama2\" not found, try pulling it first"}`)
+		writeBody(t, w, `{"error":"model \"llama2\" not found, try pulling it first"}`)
 	})
 	p := NewOllamaProvider(&Config{OllamaURL: srv.URL, OllamaModel: "llama2"})
 	_, err := p.Complete(context.Background(), CompletionRequest{Messages: docMessages()})
@@ -434,7 +443,7 @@ func TestOllamaModelNotPulledIsModelError(t *testing.T) {
 func TestOllamaListModelsNon200(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		io.WriteString(w, `{"error":"boom"}`)
+		writeBody(t, w, `{"error":"boom"}`)
 	}))
 	defer srv.Close()
 	p := NewOllamaProvider(&Config{OllamaURL: srv.URL})
@@ -445,7 +454,7 @@ func TestOllamaListModelsNon200(t *testing.T) {
 
 func TestLMStudioListModelsFiltersEmbeddings(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"data":[{"id":"text-embedding-nomic-embed-text-v1.5"},{"id":"qwen3.5-9b-instruct"}]}`)
+		writeBody(t, w, `{"data":[{"id":"text-embedding-nomic-embed-text-v1.5"},{"id":"qwen3.5-9b-instruct"}]}`)
 	}))
 	defer srv.Close()
 	p := NewLMStudioProvider(&Config{LMStudioURL: srv.URL})
@@ -471,7 +480,7 @@ func TestManagerModelsLiveAndCached(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		io.WriteString(w, `{"data":[{"id":"gpt-6-luna","created":1}]}`)
+		writeBody(t, w, `{"data":[{"id":"gpt-6-luna","created":1}]}`)
 	}))
 	defer srv.Close()
 
@@ -502,7 +511,7 @@ func TestManagerModelsLiveAndCached(t *testing.T) {
 func TestManagerModelsFallbackOnError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		io.WriteString(w, `{"error":{"message":"upstream exploded"}}`)
+		writeBody(t, w, `{"error":{"message":"upstream exploded"}}`)
 	}))
 	defer srv.Close()
 
@@ -592,7 +601,7 @@ func TestManagerModelsLocalDefaultIsFirstInstalled(t *testing.T) {
 
 func TestUpdateConfigResetsModelCache(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"data":[{"id":"gpt-6-luna"}]}`)
+		writeBody(t, w, `{"data":[{"id":"gpt-6-luna"}]}`)
 	}))
 	defer srv.Close()
 	m := managerWithOpenAI(t, srv.URL)
@@ -625,7 +634,7 @@ func TestCloudClientDoesNotFollowRedirects(t *testing.T) {
 		if r.Header.Get("x-api-key") != "" || r.Header.Get("x-goog-api-key") != "" {
 			atomic.AddInt32(&leaked, 1)
 		}
-		io.WriteString(w, `{}`)
+		writeBody(t, w, `{}`)
 	}))
 	defer other.Close()
 	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -771,7 +780,7 @@ func TestRefusedOrEmptyAnswersAreErrors(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				io.WriteString(w, c.body)
+				writeBody(t, w, c.body)
 			}))
 			defer srv.Close()
 
@@ -838,7 +847,7 @@ func TestOpenAIOmitsReasoningEffortForNonReasoningModel(t *testing.T) {
 		if _, ok := decodeJSONBody(t, r)["reasoning_effort"]; ok {
 			t.Error("reasoning_effort must not be sent to gpt-4o")
 		}
-		io.WriteString(w, `{"model":"gpt-4o","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+		writeBody(t, w, `{"model":"gpt-4o","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
 	}))
 	defer srv.Close()
 	p := NewOpenAIProvider(&Config{OpenAIAPIKey: "k", OpenAIModel: "gpt-4o"})
@@ -858,7 +867,7 @@ func TestGeminiSendsThinkingLevelForFlash(t *testing.T) {
 		if gc["maxOutputTokens"] != float64(2048+geminiReasoningHeadroom) {
 			t.Errorf("maxOutputTokens = %v", gc["maxOutputTokens"])
 		}
-		io.WriteString(w, `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
+		writeBody(t, w, `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
 	}))
 	defer srv.Close()
 	p := NewGeminiProvider(&Config{GeminiAPIKey: "k", GeminiModel: "gemini-3.8-flash"})
@@ -875,7 +884,7 @@ func TestManagerModelsCoalescesConcurrentColdCalls(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		time.Sleep(100 * time.Millisecond) // keep the call in flight while others arrive
-		io.WriteString(w, `{"data":[{"id":"gpt-6-luna"}]}`)
+		writeBody(t, w, `{"data":[{"id":"gpt-6-luna"}]}`)
 	}))
 	defer srv.Close()
 

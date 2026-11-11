@@ -158,7 +158,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	// Completions (newer models treat it as "developer").
 	messages := make([]openAIMessage, len(req.Messages))
 	for i, m := range req.Messages {
-		messages[i] = openAIMessage{Role: m.Role, Content: m.Content}
+		messages[i] = openAIMessage(m)
 	}
 
 	// temperature is deliberately not sent: current reasoning models (GPT-5.x,

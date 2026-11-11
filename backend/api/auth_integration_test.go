@@ -474,7 +474,9 @@ func TestAuthE2E_PasswordSet_WebSocket(t *testing.T) {
 		t.Fatalf("same-origin WebSocket with session: %v", err)
 	}
 	defer conn.Close()
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	var msg struct {
 		Type string `json:"type"`
 	}
@@ -486,7 +488,9 @@ func TestAuthE2E_PasswordSet_WebSocket(t *testing.T) {
 	if resp := e.do(t, c, "POST", "/api/v1/auth/logout", nil, map[string]string{"Sec-Fetch-Site": "same-origin"}); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("logout: got %d", resp.StatusCode)
 	}
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	for {
 		if err := conn.ReadJSON(&msg); err != nil {
 			if !websocket.IsCloseError(err, websocket.ClosePolicyViolation) {
@@ -497,7 +501,9 @@ func TestAuthE2E_PasswordSet_WebSocket(t *testing.T) {
 	}
 
 	// The API-key stream is untouched by the session's logout.
-	keyConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := keyConn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	if err := keyConn.ReadJSON(&msg); err != nil {
 		t.Errorf("API-key WebSocket after session logout: %v", err)
 	}

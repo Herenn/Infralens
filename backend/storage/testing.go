@@ -172,7 +172,9 @@ func ServiceRepoSuite(t *testing.T, store Store) {
 		}
 
 		// Cleanup
-		store.Services().Delete(ctx, svc.ID)
+		if err := store.Services().Delete(ctx, svc.ID); err != nil {
+			t.Errorf("cleanup: Services().Delete: %v", err)
+		}
 	})
 
 	t.Run("Upsert_Update", func(t *testing.T) {
@@ -200,7 +202,9 @@ func ServiceRepoSuite(t *testing.T, store Store) {
 			t.Errorf("Name not updated: got %q", got.Name)
 		}
 
-		store.Services().Delete(ctx, svc.ID)
+		if err := store.Services().Delete(ctx, svc.ID); err != nil {
+			t.Errorf("cleanup: Services().Delete: %v", err)
+		}
 	})
 
 	t.Run("Get_NotFound", func(t *testing.T) {
@@ -237,13 +241,17 @@ func ServiceRepoSuite(t *testing.T, store Store) {
 
 		// Cleanup
 		for _, svc := range services {
-			store.Services().Delete(ctx, svc.ID)
+			if err := store.Services().Delete(ctx, svc.ID); err != nil {
+				t.Errorf("cleanup: Services().Delete: %v", err)
+			}
 		}
 	})
 
 	t.Run("Delete", func(t *testing.T) {
 		svc := &Service{ID: fmt.Sprintf("delete-%d", time.Now().UnixNano()), Name: "to-delete", Healthy: true}
-		store.Services().Upsert(ctx, svc)
+		if err := store.Services().Upsert(ctx, svc); err != nil {
+			t.Fatalf("setup: Services().Upsert: %v", err)
+		}
 
 		if err := store.Services().Delete(ctx, svc.ID); err != nil {
 			t.Fatalf("Delete failed: %v", err)
@@ -261,7 +269,9 @@ func ServiceRepoSuite(t *testing.T, store Store) {
 		prefix := fmt.Sprintf("count-%d", time.Now().UnixNano())
 		for i := 0; i < 3; i++ {
 			svc := &Service{ID: fmt.Sprintf("%s-%d", prefix, i), Name: "test", Healthy: true}
-			store.Services().Upsert(ctx, svc)
+			if err := store.Services().Upsert(ctx, svc); err != nil {
+				t.Fatalf("setup: Services().Upsert: %v", err)
+			}
 		}
 
 		newCount, err := store.Services().Count(ctx)
@@ -274,7 +284,9 @@ func ServiceRepoSuite(t *testing.T, store Store) {
 
 		// Cleanup
 		for i := 0; i < 3; i++ {
-			store.Services().Delete(ctx, fmt.Sprintf("%s-%d", prefix, i))
+			if err := store.Services().Delete(ctx, fmt.Sprintf("%s-%d", prefix, i)); err != nil {
+				t.Errorf("cleanup: Services().Delete: %v", err)
+			}
 		}
 	})
 }
@@ -314,7 +326,9 @@ func ConnectionRepoSuite(t *testing.T, store Store) {
 			t.Errorf("Port mismatch: got %d, want 8080", got.Port)
 		}
 
-		store.Connections().Delete(ctx, conn.ID)
+		if err := store.Connections().Delete(ctx, conn.ID); err != nil {
+			t.Errorf("cleanup: Connections().Delete: %v", err)
+		}
 	})
 
 	t.Run("Upsert_IncrementsCount", func(t *testing.T) {
@@ -326,15 +340,21 @@ func ConnectionRepoSuite(t *testing.T, store Store) {
 			Count:    1,
 		}
 
-		store.Connections().Upsert(ctx, conn)
-		store.Connections().Upsert(ctx, conn)
+		if err := store.Connections().Upsert(ctx, conn); err != nil {
+			t.Fatalf("setup: Connections().Upsert: %v", err)
+		}
+		if err := store.Connections().Upsert(ctx, conn); err != nil {
+			t.Fatalf("setup: Connections().Upsert: %v", err)
+		}
 
 		got, _ := store.Connections().Get(ctx, conn.ID)
 		if got.Count != 2 {
 			t.Errorf("Count = %d, want 2", got.Count)
 		}
 
-		store.Connections().Delete(ctx, conn.ID)
+		if err := store.Connections().Delete(ctx, conn.ID); err != nil {
+			t.Errorf("cleanup: Connections().Delete: %v", err)
+		}
 	})
 
 	t.Run("UpdateStats", func(t *testing.T) {
@@ -344,7 +364,9 @@ func ConnectionRepoSuite(t *testing.T, store Store) {
 			TargetID: "b",
 			Port:     80,
 		}
-		store.Connections().Upsert(ctx, conn)
+		if err := store.Connections().Upsert(ctx, conn); err != nil {
+			t.Fatalf("setup: Connections().Upsert: %v", err)
+		}
 
 		err := store.Connections().UpdateStats(ctx, conn.ID, 5000, 10000, 500.0, 1000.0, 50, 100)
 		if err != nil {
@@ -356,7 +378,9 @@ func ConnectionRepoSuite(t *testing.T, store Store) {
 			t.Errorf("BytesSent = %d, want 5000", got.BytesSent)
 		}
 
-		store.Connections().Delete(ctx, conn.ID)
+		if err := store.Connections().Delete(ctx, conn.ID); err != nil {
+			t.Errorf("cleanup: Connections().Delete: %v", err)
+		}
 	})
 }
 
@@ -389,7 +413,9 @@ func MetricsRepoSuite(t *testing.T, store Store) {
 			t.Errorf("CPUPercent = %f, want 45.5", got.CPUPercent)
 		}
 
-		store.Metrics().Delete(ctx, nodeName)
+		if err := store.Metrics().Delete(ctx, nodeName); err != nil {
+			t.Errorf("cleanup: Metrics().Delete: %v", err)
+		}
 	})
 }
 
@@ -403,9 +429,15 @@ func StoreFunctionsSuite(t *testing.T, store Store) {
 	t.Run("GetTopology", func(t *testing.T) {
 		prefix := fmt.Sprintf("topo-%d", time.Now().UnixNano())
 
-		store.Services().Upsert(ctx, &Service{ID: prefix + "-svc-1", Name: "a", Healthy: true})
-		store.Services().Upsert(ctx, &Service{ID: prefix + "-svc-2", Name: "b", Healthy: true})
-		store.Connections().Upsert(ctx, &Connection{ID: prefix + "-c1", SourceID: prefix + "-svc-1", TargetID: prefix + "-svc-2", Port: 80})
+		if err := store.Services().Upsert(ctx, &Service{ID: prefix + "-svc-1", Name: "a", Healthy: true}); err != nil {
+			t.Fatalf("setup: Services().Upsert: %v", err)
+		}
+		if err := store.Services().Upsert(ctx, &Service{ID: prefix + "-svc-2", Name: "b", Healthy: true}); err != nil {
+			t.Fatalf("setup: Services().Upsert: %v", err)
+		}
+		if err := store.Connections().Upsert(ctx, &Connection{ID: prefix + "-c1", SourceID: prefix + "-svc-1", TargetID: prefix + "-svc-2", Port: 80}); err != nil {
+			t.Fatalf("setup: Connections().Upsert: %v", err)
+		}
 
 		topo, err := store.GetTopology(ctx)
 		if err != nil {
@@ -417,16 +449,26 @@ func StoreFunctionsSuite(t *testing.T, store Store) {
 		}
 
 		// Cleanup
-		store.Services().Delete(ctx, prefix+"-svc-1")
-		store.Services().Delete(ctx, prefix+"-svc-2")
-		store.Connections().Delete(ctx, prefix+"-c1")
+		if err := store.Services().Delete(ctx, prefix+"-svc-1"); err != nil {
+			t.Errorf("cleanup: Services().Delete: %v", err)
+		}
+		if err := store.Services().Delete(ctx, prefix+"-svc-2"); err != nil {
+			t.Errorf("cleanup: Services().Delete: %v", err)
+		}
+		if err := store.Connections().Delete(ctx, prefix+"-c1"); err != nil {
+			t.Errorf("cleanup: Connections().Delete: %v", err)
+		}
 	})
 
 	t.Run("Prune", func(t *testing.T) {
 		prefix := fmt.Sprintf("prune-%d", time.Now().UnixNano())
 
-		store.Services().Upsert(ctx, &Service{ID: prefix + "-fresh", Name: "fresh", Healthy: true})
-		store.Services().Upsert(ctx, &Service{ID: prefix + "-stale", Name: "stale", Healthy: true})
+		if err := store.Services().Upsert(ctx, &Service{ID: prefix + "-fresh", Name: "fresh", Healthy: true}); err != nil {
+			t.Fatalf("setup: Services().Upsert: %v", err)
+		}
+		if err := store.Services().Upsert(ctx, &Service{ID: prefix + "-stale", Name: "stale", Healthy: true}); err != nil {
+			t.Fatalf("setup: Services().Upsert: %v", err)
+		}
 
 		// Note: Actually making data stale requires DB-level access
 		// This test just verifies Prune doesn't error on valid data
@@ -436,8 +478,12 @@ func StoreFunctionsSuite(t *testing.T, store Store) {
 		}
 
 		// Cleanup
-		store.Services().Delete(ctx, prefix+"-fresh")
-		store.Services().Delete(ctx, prefix+"-stale")
+		if err := store.Services().Delete(ctx, prefix+"-fresh"); err != nil {
+			t.Errorf("cleanup: Services().Delete: %v", err)
+		}
+		if err := store.Services().Delete(ctx, prefix+"-stale"); err != nil {
+			t.Errorf("cleanup: Services().Delete: %v", err)
+		}
 	})
 
 	t.Run("Ping", func(t *testing.T) {
@@ -461,7 +507,9 @@ func StoreFunctionsSuite(t *testing.T, store Store) {
 			t.Error("Transaction was not committed")
 		}
 
-		store.Services().Delete(ctx, prefix+"-svc")
+		if err := store.Services().Delete(ctx, prefix+"-svc"); err != nil {
+			t.Errorf("cleanup: Services().Delete: %v", err)
+		}
 	})
 }
 
@@ -477,11 +525,13 @@ func ConcurrencySuite(t *testing.T, store Store) {
 		serviceID := prefix + "-shared-svc"
 
 		// Create initial service
-		store.Services().Upsert(ctx, &Service{
+		if err := store.Services().Upsert(ctx, &Service{
 			ID:      serviceID,
 			Name:    "concurrent-test",
 			Healthy: true,
-		})
+		}); err != nil {
+			t.Fatalf("setup: Services().Upsert: %v", err)
+		}
 
 		// Spawn goroutines doing concurrent upserts
 		const numServiceGoroutines = 20
@@ -521,7 +571,9 @@ func ConcurrencySuite(t *testing.T, store Store) {
 			t.Fatal("Service disappeared after concurrent upserts")
 		}
 
-		store.Services().Delete(ctx, serviceID)
+		if err := store.Services().Delete(ctx, serviceID); err != nil {
+			t.Errorf("cleanup: Services().Delete: %v", err)
+		}
 	})
 
 	t.Run("ConcurrentConnectionUpdates", func(t *testing.T) {
@@ -529,13 +581,15 @@ func ConcurrencySuite(t *testing.T, store Store) {
 		connID := prefix + "-shared-conn"
 
 		// Create initial connection
-		store.Connections().Upsert(ctx, &Connection{
+		if err := store.Connections().Upsert(ctx, &Connection{
 			ID:       connID,
 			SourceID: "src",
 			TargetID: "dst",
 			Port:     8080,
 			Count:    0,
-		})
+		}); err != nil {
+			t.Fatalf("setup: Connections().Upsert: %v", err)
+		}
 
 		// Spawn goroutines doing concurrent updates
 		const numGoroutines = 20
@@ -587,7 +641,9 @@ func ConcurrencySuite(t *testing.T, store Store) {
 
 		t.Logf("Verified atomic counter: %d concurrent upserts resulted in count = %d", numGoroutines, conn.Count)
 
-		store.Connections().Delete(ctx, connID)
+		if err := store.Connections().Delete(ctx, connID); err != nil {
+			t.Errorf("cleanup: Connections().Delete: %v", err)
+		}
 	})
 
 	t.Run("ConcurrentReadsAndWrites", func(t *testing.T) {
@@ -602,11 +658,13 @@ func ConcurrencySuite(t *testing.T, store Store) {
 
 		// Create some initial data
 		for i := 0; i < numServices; i++ {
-			store.Services().Upsert(ctx, &Service{
+			if err := store.Services().Upsert(ctx, &Service{
 				ID:      fmt.Sprintf("%s-svc-%d", prefix, i),
 				Name:    fmt.Sprintf("service-%d", i),
 				Healthy: true,
-			})
+			}); err != nil {
+				t.Fatalf("setup: Services().Upsert: %v", err)
+			}
 		}
 
 		// Mix of readers and writers
@@ -650,7 +708,9 @@ func ConcurrencySuite(t *testing.T, store Store) {
 
 		// Cleanup
 		for i := 0; i < numServices; i++ {
-			store.Services().Delete(ctx, fmt.Sprintf("%s-svc-%d", prefix, i))
+			if err := store.Services().Delete(ctx, fmt.Sprintf("%s-svc-%d", prefix, i)); err != nil {
+				t.Errorf("cleanup: Services().Delete: %v", err)
+			}
 		}
 	})
 }

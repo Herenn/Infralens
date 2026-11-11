@@ -65,7 +65,9 @@ func TestWebSocket_ConcurrentPingAndEventWrites(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for {
-				conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					return
+				}
 				if _, _, err := conn.ReadMessage(); err != nil {
 					return
 				}
@@ -111,7 +113,9 @@ func TestWebSocket_ClientCloseIsDetected(t *testing.T) {
 	conn := dialWS(t, srv)
 
 	// Drain the initial snapshot so the handler is in its select loop.
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	if _, _, err := conn.ReadMessage(); err != nil {
 		t.Fatalf("reading snapshot: %v", err)
 	}
@@ -139,7 +143,9 @@ func TestWebSocket_SnapshotThenDeltas(t *testing.T) {
 	var first struct {
 		Type string `json:"type"`
 	}
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	if err := conn.ReadJSON(&first); err != nil {
 		t.Fatalf("reading snapshot: %v", err)
 	}
@@ -162,7 +168,9 @@ func TestWebSocket_SnapshotThenDeltas(t *testing.T) {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("reading delta: %v", err)
 	}

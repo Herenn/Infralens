@@ -106,7 +106,9 @@ func TestPostgresTransactions(t *testing.T) {
 	svc, _ := store.Services().Get(ctx, "tx-rollback-test")
 	if svc != nil {
 		t.Error("Transaction was not rolled back")
-		store.Services().Delete(ctx, "tx-rollback-test")
+		if err := store.Services().Delete(ctx, "tx-rollback-test"); err != nil {
+			t.Errorf("cleanup: Services().Delete: %v", err)
+		}
 	}
 }
 
@@ -143,7 +145,9 @@ func TestPostgresJSONB(t *testing.T) {
 		t.Errorf("Labels missing 'environment': got %v", got.Labels)
 	}
 
-	store.Services().Delete(ctx, svc.ID)
+	if err := store.Services().Delete(ctx, svc.ID); err != nil {
+		t.Errorf("cleanup: Services().Delete: %v", err)
+	}
 }
 
 // TestPostgresConcurrentConnections tests connection pool under load.

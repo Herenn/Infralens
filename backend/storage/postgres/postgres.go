@@ -534,7 +534,9 @@ func (r *ServiceRepo) Get(ctx context.Context, id string) (*storage.Service, err
 	svc.LastSeen, svc.CreatedAt, svc.UpdatedAt = fromDB(svc.LastSeen), fromDB(svc.CreatedAt), fromDB(svc.UpdatedAt)
 
 	if labelsJSON != "" {
-		json.Unmarshal([]byte(labelsJSON), &svc.Labels)
+		// Malformed labels are tolerated, as before: a bad labels blob must
+		// not fail the whole read (same leniency as DecodeHostnames).
+		_ = json.Unmarshal([]byte(labelsJSON), &svc.Labels)
 	}
 	return &svc, nil
 }
@@ -564,7 +566,6 @@ func (r *ServiceRepo) List(ctx context.Context, filter storage.ServiceFilter) ([
 	if filter.LastSeenAfter != nil {
 		query += fmt.Sprintf(" AND last_seen > $%d", argIdx)
 		args = append(args, *filter.LastSeenAfter)
-		argIdx++
 	}
 
 	query += " ORDER BY name"
@@ -594,7 +595,9 @@ func (r *ServiceRepo) List(ctx context.Context, filter storage.ServiceFilter) ([
 		}
 		svc.LastSeen, svc.CreatedAt, svc.UpdatedAt = fromDB(svc.LastSeen), fromDB(svc.CreatedAt), fromDB(svc.UpdatedAt)
 		if labelsJSON != "" {
-			json.Unmarshal([]byte(labelsJSON), &svc.Labels)
+			// Malformed labels are tolerated, as before: a bad labels blob must
+			// not fail the whole read (same leniency as DecodeHostnames).
+			_ = json.Unmarshal([]byte(labelsJSON), &svc.Labels)
 		}
 		services = append(services, svc)
 	}
@@ -763,7 +766,6 @@ func (r *ConnectionRepo) List(ctx context.Context, filter storage.ConnectionFilt
 	if filter.LastSeenAfter != nil {
 		query += fmt.Sprintf(" AND last_seen > $%d", argIdx)
 		args = append(args, *filter.LastSeenAfter)
-		argIdx++
 	}
 
 	if filter.Limit > 0 {
