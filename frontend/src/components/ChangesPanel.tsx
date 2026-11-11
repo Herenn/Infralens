@@ -1,6 +1,6 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, Crosshair, Globe, History, Loader2, Plus, Radar, RotateCcw, Unplug, X } from 'lucide-react'
-import { DriftEvent, DriftSummary } from '../types'
+import { AlertTriangle, ArrowRight, ChevronDown, Crosshair, Globe, History, Loader2, Plus, Radar, RotateCcw, Unplug, X } from 'lucide-react'
+import { DriftEvent, DriftSilentAgent, DriftSummary } from '../types'
 import { DOCK_CLASS } from './dock'
 import {
   DriftFilter, driftMoment, fetchDriftEvents, fetchDriftSummary, isAfter, matchesFilter, onDriftEvents, onDriftResync,
@@ -311,6 +311,12 @@ export default function ChangesPanel({ onClose, seenAtOpen, selectedId, onSelect
         )}
       </div>
 
+      {/* Agents that stopped reporting: what only they saw is not watched.
+          Nothing is rendered while every agent reports. */}
+      {detector?.silent_agents && detector.silent_agents.length > 0 && (
+        <SilentAgentsLine agents={detector.silent_agents} total={detector.silent_agents_total ?? detector.silent_agents.length} now={now} />
+      )}
+
       {/* Footer: what the detector is doing */}
       {detector && (
         <div className="px-4 py-2 border-t border-dark-700/80 shrink-0 flex items-center gap-2 text-[10px] text-dark-500">
@@ -327,6 +333,45 @@ export default function ChangesPanel({ onClose, seenAtOpen, selectedId, onSelect
         </div>
       )}
     </section>
+  )
+}
+
+// "2 agents stopped reporting (node-a 3 h ago, node-b 1 day ago) - changes
+// only they could see are not being detected", the full list on expand.
+function SilentAgentsLine({ agents, total, now }: { agents: DriftSilentAgent[]; total: number; now: number }) {
+  const [open, setOpen] = useState(false)
+  const named = agents.slice(0, 2).map(a => `${a.node} ${relativeTime(a.last_seen, now)}`).join(', ')
+  const more = total - Math.min(agents.length, 2)
+  return (
+    <div className="border-t border-orange-500/30 bg-orange-500/10 shrink-0" data-testid="changes-silent-agents">
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="w-full flex items-start gap-2 px-4 py-2 text-left text-[11px] leading-snug text-orange-100/90
+          hover:bg-orange-500/10 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-orange-400/50"
+        title={agents.map(a => `${a.node}${a.group ? ` (${a.group})` : ''} - last report ${fullTime(a.last_seen)}`).join('\n')}
+      >
+        <AlertTriangle size={13} className="shrink-0 mt-px text-orange-300" />
+        <span className="flex-1 min-w-0">
+          <span className="font-semibold text-orange-200">
+            {total === 1 ? '1 agent stopped reporting' : `${total} agents stopped reporting`}
+          </span>{' '}
+          ({named}{more > 0 ? `, +${more} more` : ''}) - changes only {total === 1 ? 'it' : 'they'} could see are not being detected
+        </span>
+        <ChevronDown size={13} className={`shrink-0 mt-px text-orange-300/80 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <ul className="px-4 pb-2 pl-[37px] space-y-0.5 max-h-32 overflow-y-auto text-[11px]">
+          {agents.map(a => (
+            <li key={`${a.group ?? ''}/${a.node}`} className="flex justify-between gap-3 text-orange-100/80">
+              <span className="truncate">{a.node}{a.group && <span className="text-orange-200/50"> · {a.group}</span>}</span>
+              <span className="shrink-0 tabular-nums text-orange-200/60" title={fullTime(a.last_seen)}>{relativeTime(a.last_seen, now)}</span>
+            </li>
+          ))}
+          {total > agents.length && <li className="text-orange-200/50">+{total - agents.length} more</li>}
+        </ul>
+      )}
+    </div>
   )
 }
 

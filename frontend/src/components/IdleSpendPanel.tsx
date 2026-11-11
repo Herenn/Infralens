@@ -7,7 +7,7 @@ import { apiUrl } from '../lib/api'
 import { DOCK_CLASS } from './dock'
 import {
   CATEGORY_LABELS, Confidence, EXCLUSION_LABELS, IdleServiceItem, IdleSpendReport,
-  formatDuration, formatMoney,
+  NOT_IN_TOTAL_TEXT, formatDuration, formatMoney, notInTotalReason, splitSilentNotes,
 } from '../lib/idleSpend'
 
 interface IdleSpendPanelProps {
@@ -166,6 +166,9 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
   const priced = (totals?.priced ?? 0) > 0
   const chip = report ? pricingChip(report) : null
   const needsPrice = report && !report.pricing.configured
+  const outOfTotal = report ? NOT_IN_TOTAL_TEXT[notInTotalReason(report)] : NOT_IN_TOTAL_TEXT.current_window
+  const notes = report ? splitSilentNotes(report) : { silent: [], other: [] }
+  const silentAgents = report?.silent_agents ?? []
 
   return (
     <section className={DOCK_CLASS} data-panel="idle" aria-label="Idle spend">
@@ -199,6 +202,30 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
 
       {report && totals && (
         <>
+          {/* Agents that stopped reporting: the list below is unreliable for
+              their groups, so this leads, ahead of the headline. Absent
+              (and nothing rendered) when every agent reports. */}
+          {silentAgents.length > 0 && (
+            <div
+              role="alert"
+              data-testid="idle-silent-agents"
+              className="mx-4 mb-3 rounded-lg border border-orange-500/40 bg-orange-500/10 px-3 py-2.5 shrink-0"
+            >
+              <div className="flex items-start gap-2 text-xs">
+                <AlertTriangle size={14} className="shrink-0 mt-px text-orange-300" />
+                <p className="leading-snug">
+                  <span className="font-semibold text-orange-200">
+                    {silentAgents.length === 1 ? 'An agent stopped reporting' : `${silentAgents.length >= 20 ? '20+' : silentAgents.length} agents stopped reporting`}
+                  </span>{' '}
+                  <span className="text-orange-200/70">- this list may be wrong for {silentAgents.length === 1 ? 'its group' : 'their groups'}</span>
+                </p>
+              </div>
+              {notes.silent.map(n => (
+                <p key={n} className="mt-1.5 text-[11px] leading-snug text-orange-100/85">{n}</p>
+              ))}
+            </div>
+          )}
+
           {/* Headline */}
           <div className="mx-4 mb-3 rounded-lg border border-dark-700 bg-gradient-to-br from-dark-800 to-dark-900 px-4 py-3 shrink-0">
             <div className="flex items-start justify-between gap-2">
@@ -216,7 +243,7 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
                     </div>
                     {totals.not_in_total_monthly > 0 && (
                       <div className="text-[10px] text-dark-500 mt-0.5">
-                        +{formatMoney(sym, totals.not_in_total_monthly)}/mo current-window only, not in total
+                        +{formatMoney(sym, totals.not_in_total_monthly)}/mo {outOfTotal.short}
                       </div>
                     )}
                   </>
@@ -298,14 +325,14 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
           )}
 
           {/* Notes and warnings */}
-          {(report.notes.length > 0 || report.pricing.warnings.length > 0) && (
+          {(notes.other.length > 0 || report.pricing.warnings.length > 0) && (
             <div className="mx-4 mb-2 space-y-1.5 shrink-0">
               {report.pricing.warnings.map(w => (
                 <div key={w} className="flex gap-2 text-[11px] text-red-300 bg-red-500/10 border border-red-500/20 rounded-md px-2.5 py-1.5">
                   <AlertTriangle size={12} className="shrink-0 mt-0.5" />{w}
                 </div>
               ))}
-              {report.notes.map(n => (
+              {notes.other.map(n => (
                 <div key={n} className="flex gap-2 text-[11px] text-amber-200/90 bg-amber-500/5 border border-amber-500/15 rounded-md px-2.5 py-1.5">
                   <Server size={12} className="shrink-0 mt-0.5 text-amber-300" />{n}
                 </div>
@@ -334,6 +361,7 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
                 rank={i + 1}
                 item={item}
                 symbol={sym}
+                outOfTotal={outOfTotal.long}
                 expanded={expanded === item.id}
                 focused={focusedId === item.id}
                 onClick={() => {
@@ -423,10 +451,11 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
   )
 }
 
-function IdleRow({ rank, item, symbol, expanded, focused, onClick }: {
+function IdleRow({ rank, item, symbol, outOfTotal, expanded, focused, onClick }: {
   rank: number
   item: IdleServiceItem
   symbol: string
+  outOfTotal: string
   expanded: boolean
   focused: boolean
   onClick: () => void
@@ -444,7 +473,7 @@ function IdleRow({ rank, item, symbol, expanded, focused, onClick }: {
         <span className="flex-1 min-w-0 text-sm font-medium text-dark-100 truncate" title={item.id}>{item.name}</span>
         {item.cost ? (
           <span className={`text-sm font-semibold tabular-nums ${item.in_total ? 'text-white' : 'text-dark-400'}`}
-            title={item.in_total ? undefined : 'Not in the total: current-window evidence only'}>
+            title={item.in_total ? undefined : outOfTotal}>
             {formatMoney(symbol, item.cost.monthly)}<span className="text-[10px] font-normal text-dark-500">/mo</span>
           </span>
         ) : (

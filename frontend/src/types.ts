@@ -108,6 +108,12 @@ export interface DriftEvent {
   last_seen: string
 }
 
+export interface DriftSilentAgent {
+  node: string
+  group?: string // CLUSTER_NAME, absent for an ungrouped agent
+  last_seen: string
+}
+
 export interface DriftSummary {
   since: string | null
   total: number
@@ -121,6 +127,11 @@ export interface DriftSummary {
     last_check: string | null
     check_interval_seconds?: number
     gone_after_seconds?: number
+    // Agents that stopped reporting recently, newest first, at most 20;
+    // silent_agents_total counts them all. Edges only they could see are
+    // not being detected meanwhile.
+    silent_agents?: DriftSilentAgent[]
+    silent_agents_total?: number
   }
 }
 

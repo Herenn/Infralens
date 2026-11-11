@@ -82,6 +82,15 @@ export interface IdleExclusion {
   detail: string
 }
 
+// A CLUSTER_NAME member that stopped reporting within the evidence window.
+// While a group has one, its candidates are low confidence and left out of
+// the total (and report.notes opens with a sentence per group saying so).
+export interface IdleSilentAgent {
+  group: string
+  node: string
+  last_seen: string
+}
+
 export interface IdleSpendReport {
   generated_at: string
   beta: boolean
@@ -123,6 +132,38 @@ export interface IdleSpendReport {
   excluded: IdleExclusion[]
   excluded_count: number
   notes: string[]
+  // Newest silence first, at most 20. Absent from older backends.
+  silent_agents?: IdleSilentAgent[]
+}
+
+/**
+ * Why an item's cost is shown but kept out of the total. The report has no
+ * per-item reason, so it is inferred: without history every out-of-total
+ * item is current-window evidence only; with history the only cause is a
+ * silent agent in the item's group. Anything else gets neutral wording.
+ */
+export function notInTotalReason(report: IdleSpendReport): 'current_window' | 'silent_agent' | 'unknown' {
+  if (!report.evidence_window.history_enabled) return 'current_window'
+  if ((report.silent_agents?.length ?? 0) > 0) return 'silent_agent'
+  return 'unknown'
+}
+
+export const NOT_IN_TOTAL_TEXT: Record<ReturnType<typeof notInTotalReason>, { short: string; long: string }> = {
+  current_window: { short: 'current-window only, not in total', long: 'Not in the total: current-window evidence only' },
+  silent_agent: {
+    short: 'not in total: an agent in its group stopped reporting',
+    long: 'Not in the total: an agent in this group stopped reporting, so this may be in use',
+  },
+  unknown: { short: 'not in total, see note', long: 'Not in the total: see the note' },
+}
+
+/** The notes about silent agents: report.notes opens with one per group. */
+export function splitSilentNotes(report: IdleSpendReport): { silent: string[]; other: string[] } {
+  const agents = report.silent_agents ?? []
+  if (agents.length === 0) return { silent: [], other: report.notes }
+  const groups = new Set(agents.map(a => a.group)).size
+  const n = Math.min(groups, report.notes.length)
+  return { silent: report.notes.slice(0, n), other: report.notes.slice(n) }
 }
 
 export const CATEGORY_LABELS: Record<IdleCategory, string> = {
