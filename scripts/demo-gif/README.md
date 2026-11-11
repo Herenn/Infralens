@@ -22,7 +22,7 @@ Without `--install` everything stays in `scripts/demo-gif/out/`
 | Option | Default | |
 |---|---|---|
 | `--backend-port` / `--frontend-port` | 18931 / 18932 | also `DEMO_BACKEND_PORT` / `DEMO_FRONTEND_PORT` |
-| `--gif-width`, `--gif-fps`, `--gif-quality` | 1000, 12, 85 | size/quality trade-off, see below |
+| `--gif-width`, `--gif-fps`, `--gif-quality` | 1000, 12, 82 | size/quality trade-off, see below |
 | `--no-captions` | | record without the caption pills |
 | `--flow-dots` | | keep the live-edge flow dots (see *Reduced motion*) |
 | `--encode-only` | | re-encode the last capture in `out/raw` with new GIF settings, no browser |
@@ -72,8 +72,9 @@ Everything about *what* is shown lives in [`storyboard.mjs`](storyboard.mjs):
   `d.type`, `d.press`, `d.wait`, `d.caption(html, position)`)
 
 Keep ~2 s of stillness after each reveal, and make the last scene restore the
-first frame's UI state - the GIF loops, and the encoder crossfades the final
-0.4 s into frame 1. The first scene's `setup()` runs before capture starts, so
+first frame's UI state exactly - the GIF loops with a hard cut back to
+frame 1 (`settings.gif.crossfade` can blend instead, but a blend of two
+different captions leaves a visible ghost in the GIF). The first scene's `setup()` runs before capture starts, so
 frame 1 (which GitHub shows before the GIF loads) is already fully composed.
 
 ## Timing

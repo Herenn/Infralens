@@ -130,7 +130,10 @@ async function predictArrival(backend) {
       const phase = Math.min(...live.map(e => Date.parse(e.detected_at)))
       const applyAt = backend.startedAt + scriptAt * 1000
       let pass = phase
-      while (pass < applyAt + 500) pass += detectorInterval * 1000
+      // The change only becomes visible to the detector after the simulator's
+      // next 2 s tick writes it; a pass that lands within that window misses
+      // it, and the event arrives one interval later. Require a clear margin.
+      while (pass < applyAt + 3000) pass += detectorInterval * 1000
       console.log(`[timing] detector phase ${ts(phase)}, change applied ~${ts(applyAt)}, expected in the feed ~${ts(pass)}`)
       return { applyAt, arrivalAt: pass }
     }

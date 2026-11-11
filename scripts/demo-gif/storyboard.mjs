@@ -27,7 +27,17 @@ export const settings = {
   //   1000 px 12 fps q90  4.9 MB    1000 px 12 fps q85  4.3 MB  <- chosen
   // Below q85 gifski's lossy compression leaves visible ghosts of earlier
   // frames on the dark background; width is the cleaner thing to give up.
-  gif: { width: 1000, fps: 12, quality: 85, crossfade: 0.4 },
+  // crossfade 0: the last scene re-composes frame 1 exactly (caption included),
+  // so a hard cut is seamless and leaves no blended ghost of the old caption.
+  //
+  // motionQuality 100 stops gifski from carrying pixels over from earlier
+  // frames, which on this dark UI left faint ghosts of captions that were
+  // already gone (seen after "Clear" and at the loop seam). Paying for it
+  // with a slightly lower colour quality keeps the size where it was:
+  //   1000 px 12 fps q85              4.3 MB  (ghosts)
+  //   1000 px 12 fps q85 motion 100   4.9 MB
+  //   1000 px 12 fps q82 motion 100   4.3 MB  <- chosen, no ghosts
+  gif: { width: 1000, fps: 12, quality: 82, motionQuality: 100, crossfade: 0 },
   mp4: { width: 1920, fps: 30, crf: 18 },
   captions: true,
   // Record with the browser's prefers-reduced-motion setting on, which the
@@ -82,8 +92,9 @@ export const scenes = [
     name: 'overview',
     // setup() of the first scene runs before capture starts, so frame 1
     // already has its caption fully faded in.
+    openingCaption: '<b>Live service map</b> from eBPF &mdash; zero code changes',
     async setup({ d }) {
-      await d.caption('<b>Live service map</b> from eBPF &mdash; zero code changes')
+      await d.caption(scenes[0].openingCaption)
       await d.wait(500)
     },
     async run({ d }) {
@@ -143,8 +154,12 @@ export const scenes = [
       await d.wait(400)
       await d.click(sel.criticalRow('postgres'), { pauseAfter: 200 })
       await d.caption('One click: <b>everything that breaks</b> lights up', 'right')
-      await d.wait(2700)
-      await d.caption(null) // don't leave the caption over an un-lit map
+      await d.wait(3200)
+      // Fade the caption out completely while the map is still lit, so its
+      // fade never overlaps the big un-light change (that overlap is what
+      // left a faint pill in the GIF).
+      await d.caption(null)
+      await d.wait(450)
       await d.click(sel.impactClear, { pauseAfter: 250 })
     },
   },
@@ -155,6 +170,8 @@ export const scenes = [
       await page.locator(sel.panel('idle')).waitFor()
       await d.caption('<b>Idle spend</b>: what you pay for services nobody calls', 'right')
       await d.wait(2200)
+      await d.caption(null)
+      await d.wait(450)
       await d.click(sel.panelClose('idle'), { pauseAfter: 600 })
     },
   },
@@ -163,9 +180,12 @@ export const scenes = [
     // crossfades the last moments into the first frame).
     name: 'loop back',
     async run({ d }) {
-      await d.caption(null)
       await d.move(settings.cursorRest, { ms: 700 })
-      await d.wait(500)
+      // Re-compose the opening frame exactly (same caption, cursor at rest)
+      // and hold it past the caption's 0.35 s fade-in, so the loop is a hard
+      // cut between two identical frames.
+      await d.caption(scenes[0].openingCaption)
+      await d.wait(900)
     },
   },
 ]
