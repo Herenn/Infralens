@@ -38,7 +38,7 @@ func TestDriftSingleNodeAgentOutageIsNotGone(t *testing.T) {
 			}
 			beat := func(node string) {
 				if heartbeats {
-					if err := h.store.History().RecordNode(ctx, node, h.clock, 5*time.Minute); err != nil {
+					if err := h.store.History().RecordNode(ctx, node, "", h.clock, 5*time.Minute); err != nil {
 						t.Fatal(err)
 					}
 				}

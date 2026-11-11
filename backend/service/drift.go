@@ -340,13 +340,31 @@ func (d *DriftDetector) silenceThreshold() time.Duration {
 	return t
 }
 
-// see accounts for one interval as evidence of its reporting agents'
-// observation (pre-heartbeat history; see coverage.go). Keyed by interval,
-// so an interval read again after being extended replaces its span.
-func (d *DriftDetector) see(ci storage.ConnectionInterval) {
-	if !d.cov.epoch.IsZero() && !ci.FirstSeen.Before(d.cov.epoch) {
-		return // heartbeats decide from the epoch on
+// Retirement (see coverage.go): a node whose own agent has been silent this
+// long while InfraLens keeps observing elsewhere is treated as gone for good
+// - decommissioned, replaced, scaled in - rather than down, so its edges are
+// reported gone (once) instead of never. Three GoneAfters, so an outage has
+// to last well past the point where a disappearance would have been
+// reported before it counts, with a six-hour floor so a short GoneAfter
+// (demo mode, tests, an impatient operator) cannot turn a routine reboot or
+// maintenance window into a retirement. With the default 24h GoneAfter: 72h.
+const (
+	driftRetireMultiple = 3
+	driftRetireFloor    = 6 * time.Hour
+)
+
+func (d *DriftDetector) retireAfter() time.Duration {
+	r := driftRetireMultiple * d.cfg.GoneAfter
+	if r < driftRetireFloor {
+		r = driftRetireFloor
 	}
+	return r
+}
+
+// see accounts for one interval as evidence of its reporting agents'
+// observation (see coverage.go). Keyed by interval, so an interval read
+// again after being extended replaces its span.
+func (d *DriftDetector) see(ci storage.ConnectionInterval) {
 	key := fmt.Sprintf("%d|%s", ci.ID, ci.ConnectionID)
 	if ci.ID == 0 {
 		key = ci.ConnectionID + "|" + ci.FirstSeen.String()
@@ -357,10 +375,13 @@ func (d *DriftDetector) see(ci storage.ConnectionInterval) {
 func (d *DriftDetector) nodeOf(id string) string { return d.nodes[id] }
 
 // loadCoverage refreshes what the coverage needs from the store: every agent
-// heartbeat within retention, and the node of every current service.
-func (d *DriftDetector) loadCoverage(ctx context.Context, now time.Time) error {
+// heartbeat within retention, and the node of every current service. Node
+// mappings of services that left current state are kept only while a known
+// edge still refers to them, so the map is bounded by current state plus
+// the known edges.
+func (d *DriftDetector) loadCoverage(ctx context.Context, now time.Time, prune bool) error {
 	if d.cov == nil {
-		d.cov = newObservationCoverage(d.maxGap, d.silenceThreshold())
+		d.cov = newObservationCoverage(d.maxGap, d.silenceThreshold(), d.retireAfter())
 	}
 	beats, err := d.history.NodesBetween(ctx, now.Add(-d.retention), now)
 	if err != nil {
@@ -371,11 +392,23 @@ func (d *DriftDetector) loadCoverage(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("loading service nodes: %w", err)
 	}
-	for _, svc := range services {
-		if svc.Node != "" {
-			d.nodes[svc.ID] = svc.Node
+	nodes := make(map[string]string, len(services))
+	if !prune { // seeding: the known set is being built from these
+		nodes = d.nodes
+	}
+	for _, st := range d.known {
+		for _, id := range []string{st.edge.SourceID, st.edge.TargetID} {
+			if n, ok := d.nodes[id]; ok {
+				nodes[id] = n
+			}
 		}
 	}
+	for _, svc := range services {
+		if svc.Node != "" {
+			nodes[svc.ID] = svc.Node
+		}
+	}
+	d.nodes = nodes
 	return nil
 }
 
@@ -451,7 +484,7 @@ func (d *DriftDetector) seed(ctx context.Context) error {
 			d.nodes[si.ServiceID] = si.Node
 		}
 	}
-	if err := d.loadCoverage(ctx, now); err != nil {
+	if err := d.loadCoverage(ctx, now, false); err != nil {
 		return err
 	}
 	err = d.history.EachConnectionBetween(ctx, now.Add(-d.retention), now, func(ci storage.ConnectionInterval) error {
@@ -576,7 +609,7 @@ func (d *DriftDetector) check(ctx context.Context) (*DriftReport, error) {
 	// observation's own timestamp, which can trail the moment it becomes
 	// visible to this query. Re-reading a little is free - known edges are
 	// deduplicated - while missing a write would lose a new edge for good.
-	if err := d.loadCoverage(ctx, now); err != nil {
+	if err := d.loadCoverage(ctx, now, true); err != nil {
 		return nil, err
 	}
 	var intervals []storage.ConnectionInterval

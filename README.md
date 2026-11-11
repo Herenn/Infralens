@@ -287,7 +287,7 @@ The **Idle spend** panel lists cleanup candidates — services nothing talks to 
 - **Confidence:** high needs more than 31 observed days of silence, so with the default 30-day history retention the best you will see is medium.
 - **Held back, with the reason shown:** outbound-only workers and cron jobs, monitoring, possible replicas/standbys, UDP services, servers reached by address, services younger than `IDLE_COST_WARMUP`, InfraLens itself, anything in `IDLE_COST_EXCLUDE`, and everything except true orphans when history is off.
 - **Blind spots:** servers reached through a differently named Kubernetes Service, hostPort/NodePort traffic to the node's IP, receive-only UDP, and jobs that run less often than the retention window.
-- **Per-node prices need per-node agents.** Agents started with `--cluster` (the Helm chart's default `agent.clusterName: "Kubernetes"`) report every node under one name, which allows only a low-confidence cluster-wide split; set `agent.clusterName=""` for per-node attribution.
+- **Per-node prices need per-node agents.** Agents started with `--cluster` (the Helm chart's default `agent.clusterName: "Kubernetes"`) report every node under one name, which allows only a low-confidence cluster-wide split, and silence there counts only while every agent in the group is reporting; set `agent.clusterName=""` for per-node attribution.
 - **After upgrading from v3.0**, services on nodes without agent heartbeats yet are held back until about `IDLE_COST_QUIET_AFTER` (72h) of heartbeats exist.
 
 ```bash
@@ -402,7 +402,8 @@ DRIFT_WEBHOOK_URL=             # Also POST changes here (optional; empty = feed 
                                # "appeared"/"disappeared" lists for custom receivers
 DRIFT_CHECK_INTERVAL=5m        # How often history is checked for changes
 DRIFT_GONE_AFTER=24h           # Unobserved this long = reported as gone (time when
-                               # collection was down does not count)
+                               # collection was down does not count; a node silent
+                               # for 3x this, at least 6h, counts as retired)
 DRIFT_WARMUP=1h                # No "new dependency" reports for the first hour of
                                # history, so a fresh install doesn't announce everything
 

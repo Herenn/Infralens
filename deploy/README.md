@@ -162,8 +162,9 @@ incoming webhooks work as-is). `DRIFT_ENABLED=false` turns both off.
 No prices are built in. Set a node price (`IDLE_COST_NODE_MONTHLY` /
 `backend.idleCost.nodeMonthly`) to see costs. Under Helm, the default
 `agent.clusterName: "Kubernetes"` reports all nodes under one name, which only
-allows a low-confidence cluster-wide split; set `agent.clusterName=""` for
-per-node attribution.
+allows a low-confidence cluster-wide split (and silence counts only while every
+agent in the group is reporting); set `agent.clusterName=""` for per-node
+attribution.
 
 ### DNS names for external destinations (experimental)
 

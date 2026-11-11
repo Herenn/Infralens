@@ -25,6 +25,7 @@ type idleInputs struct {
 	historyEdges    []storage.ConnectionInterval // newest interval per connection in the window
 	historyServices []storage.ServiceInterval    // every service interval in the window
 	historyNodes    []storage.NodeInterval       // agent heartbeat intervals (observation coverage)
+	retireAfter     time.Duration                // silence after which a node counts as retired (coverage.go)
 	stale           []storage.ServiceInterval
 	listenPorts     func(id string) []int // TCP listening ports from inspection; may be nil
 	groups          map[string][]string   // CLUSTER_NAME group -> agent node names

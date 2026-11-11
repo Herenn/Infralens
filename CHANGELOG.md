@@ -137,7 +137,8 @@ destinations (experimental, off by default).
     Reports are cached for 60 s. Helm `backend.idleCost.*`.
   - Agents started with `--cluster` (Helm's default
     `agent.clusterName: "Kubernetes"`) report every node under one name, so
-    only a low-confidence cluster-wide split is possible there.
+    only a low-confidence cluster-wide split is possible there, and silence
+    counts only while every agent in the group is reporting.
 - **DNS names for external destinations (experimental, off by default).**
   The agent can label external destinations with the name the workload
   resolved (`api.stripe.com` instead of an IP): `--dns-names` /
@@ -161,9 +162,10 @@ destinations (experimental, off by default).
 - `GET /api/v1/graph/criticality` returns `hostname` for external services,
   like `/topology`.
 - `scripts/demo-gif`: a scripted, reproducible recorder for the README GIF.
-- Agent heartbeats: the backend records when each node's agent was
-  reporting (migration 000007), which is what Idle spend and drift use to
-  tell "quiet" from "not watched".
+- Agent heartbeats: the backend records when each agent was reporting, per
+  real node and with its `--cluster` group (migration 000007), which is what
+  Idle spend and drift use to tell "quiet" from "not watched". A group counts
+  as watched only while every member agent reports.
 
 ### Changed
 
@@ -185,10 +187,12 @@ destinations (experimental, off by default).
   cleared. A banner marks historical views. PNG export renders at 1:1.
 - Drift "gone" is measured in observed time: an outage of collection — the
   whole backend or a single node's agent — does not count towards
-  `DRIFT_GONE_AFTER`. Detection resumes from a checkpoint after a restart,
-  replicas sharing a database do not notify the same change twice, and
-  failed feed writes are retried. A dependency reported gone that later
-  returns is re-armed silently.
+  `DRIFT_GONE_AFTER`. A node whose agent stays silent for three times
+  `DRIFT_GONE_AFTER` (at least 6h) while the rest keeps reporting is treated
+  as retired, and its dependencies are then reported gone once. Detection
+  resumes from a checkpoint after a restart, replicas sharing a database do
+  not notify the same change twice, and failed feed writes are retried. A
+  dependency reported gone that later returns is re-armed silently.
 - The frontend's nginx forwards `X-Forwarded-Proto` and `X-Forwarded-Host`
   and routes `/mcp` to the backend. The Vite dev proxy keeps the browser's
   `Host` header (needed for the WebSocket same-origin check under login).

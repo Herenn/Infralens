@@ -207,9 +207,10 @@ func (ts *TopologyService) recordServiceHistory(ctx context.Context, svc *storag
 }
 
 // recordNodeHistory records an agent heartbeat (a host-metrics report) as
-// node observation coverage - see storage.NodeInterval. Throttled like the
+// node observation coverage - see storage.NodeInterval. node is the real
+// agent node, group its CLUSTER_NAME group ("" if none). Throttled like the
 // throughput-driven refreshes: agents report every few seconds.
-func (ts *TopologyService) recordNodeHistory(ctx context.Context, node string, at time.Time) {
+func (ts *TopologyService) recordNodeHistory(ctx context.Context, node, group string, at time.Time) {
 	if !ts.historyEnabled || node == "" {
 		return
 	}
@@ -217,7 +218,7 @@ func (ts *TopologyService) recordNodeHistory(ctx context.Context, node string, a
 	if !ts.claimHistoryRefresh("n:"+node, at) {
 		return
 	}
-	if err := ts.store.History().RecordNode(ctx, node, at, ts.historyMaxGap); err != nil {
+	if err := ts.store.History().RecordNode(ctx, node, group, at, ts.historyMaxGap); err != nil {
 		ts.logHistoryFailure(err, "node", node)
 	}
 }
@@ -534,10 +535,23 @@ func (ts *TopologyService) UpdateConnectionStats(ctx context.Context, connID str
 
 // UpdateNodeMetrics updates CPU/RAM metrics for a node.
 func (ts *TopologyService) UpdateNodeMetrics(ctx context.Context, metrics *storage.NodeMetrics) error {
+	return ts.UpdateAgentMetrics(ctx, metrics, "")
+}
+
+// UpdateAgentMetrics is UpdateNodeMetrics for an agent that reports under a
+// CLUSTER_NAME group: metrics.NodeName is the group (what the UI shows and
+// what the group's services carry), agentNode the real node, whose own
+// heartbeat is recorded - a group-level heartbeat would let one live agent
+// keep every node in the group "observed". agentNode "" means ungrouped.
+func (ts *TopologyService) UpdateAgentMetrics(ctx context.Context, metrics *storage.NodeMetrics, agentNode string) error {
 	if err := ts.store.Metrics().Upsert(ctx, metrics); err != nil {
 		return fmt.Errorf("upserting metrics: %w", err)
 	}
-	ts.recordNodeHistory(ctx, metrics.NodeName, metrics.LastSeen)
+	if agentNode == "" || agentNode == metrics.NodeName {
+		ts.recordNodeHistory(ctx, metrics.NodeName, "", metrics.LastSeen)
+	} else {
+		ts.recordNodeHistory(ctx, agentNode, metrics.NodeName, metrics.LastSeen)
+	}
 
 	ts.eventBus.PublishMetricsUpdated(MetricsEvent{
 		NodeName:   metrics.NodeName,

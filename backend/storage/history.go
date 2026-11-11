@@ -44,10 +44,13 @@ type ConnectionInterval struct {
 // reporting (its host-metrics heartbeat). It is the node's observation
 // coverage: only that node's own agent can extend it, unlike the service and
 // connection intervals touching the node, which the far end's agent extends
-// too. Under CLUSTER_NAME, Node is the group name.
+// too. Node is always the real agent node; Group is the CLUSTER_NAME group
+// it reports under ("" when ungrouped), which is what services and edges of
+// grouped agents carry as their node.
 type NodeInterval struct {
 	ID        int64     `json:"id"`
 	Node      string    `json:"node"`
+	Group     string    `json:"group,omitempty"`
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `json:"last_seen"`
 }
@@ -124,8 +127,9 @@ type HistoryRepository interface {
 	EachConnectionBetween(ctx context.Context, from, to time.Time, fn func(ConnectionInterval) error) error
 
 	// RecordNode extends or opens the reporting interval of node's agent,
-	// observed at `at` (see NodeInterval).
-	RecordNode(ctx context.Context, node string, at time.Time, maxGap time.Duration) error
+	// observed at `at`, reporting under group ("" when ungrouped; see
+	// NodeInterval).
+	RecordNode(ctx context.Context, node, group string, at time.Time, maxGap time.Duration) error
 
 	// NodesBetween returns every node reporting interval overlapping
 	// [from, to], ordered by first_seen.

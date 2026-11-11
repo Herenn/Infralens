@@ -16,8 +16,10 @@ type HistorySpan struct {
 	Service    *storage.Service
 	Connection *storage.Connection
 	// Node is a node whose agent was reporting over the span: its
-	// observation coverage (storage.NodeInterval).
-	Node string
+	// observation coverage (storage.NodeInterval). Group is its CLUSTER_NAME
+	// group, if any.
+	Node  string
+	Group string
 }
 
 // ImportHistory records history that was not observed by this process - the
@@ -66,11 +68,11 @@ func (ts *TopologyService) ImportHistory(ctx context.Context, spans []HistorySpa
 					}
 				}
 			case sp.Node != "":
-				if err := history.RecordNode(ctx, sp.Node, from, ts.historyMaxGap); err != nil {
+				if err := history.RecordNode(ctx, sp.Node, sp.Group, from, ts.historyMaxGap); err != nil {
 					return fmt.Errorf("importing node %s: %w", sp.Node, err)
 				}
 				if to.After(from) {
-					if err := history.RecordNode(ctx, sp.Node, to, extendGap); err != nil {
+					if err := history.RecordNode(ctx, sp.Node, sp.Group, to, extendGap); err != nil {
 						return fmt.Errorf("importing node %s: %w", sp.Node, err)
 					}
 				}

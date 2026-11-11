@@ -593,6 +593,10 @@ func (ts *TopologyService) computeIdleSpend(ctx context.Context, assume float64)
 		historyEnabled: ts.historyEnabled,
 		maxGap:         ts.historyMaxGap,
 		groups:         ts.agentGroups(now),
+		// A node silent for as long as a service must be to be a
+		// decommission candidate counts as retired: what was on it is
+		// offered as stale (low confidence), as before heartbeats.
+		retireAfter: ts.staleThreshold(),
 	}
 
 	if ts.historyEnabled {

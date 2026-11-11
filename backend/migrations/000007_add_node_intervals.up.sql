@@ -9,18 +9,28 @@
 -- counted that outage as silence. Agents report host metrics every few
 -- seconds; recording those reports as intervals per node gives each node a
 -- coverage only its own agent can extend. Same extend-or-open model as the
--- other interval tables. Under CLUSTER_NAME the node is the group name, as
--- everywhere else.
+-- other interval tables.
+--
+-- node_name is always the real agent node, never a CLUSTER_NAME group:
+-- under CLUSTER_NAME every agent's services and edges are recorded under the
+-- group name, so a group-level heartbeat would let one live agent keep the
+-- whole group "observed". group_name ('' when ungrouped) says which group
+-- the agent reports under; a group's coverage is derived from its members'
+-- intervals (service/coverage.go).
 
 CREATE TABLE IF NOT EXISTS node_intervals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_name TEXT NOT NULL,
+    group_name TEXT NOT NULL DEFAULT '',
     first_seen DATETIME NOT NULL,
     last_seen DATETIME NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_node_intervals_lookup
     ON node_intervals(node_name, last_seen);
+
+CREATE INDEX IF NOT EXISTS idx_node_intervals_group
+    ON node_intervals(group_name);
 
 CREATE INDEX IF NOT EXISTS idx_node_intervals_range
     ON node_intervals(first_seen, last_seen);

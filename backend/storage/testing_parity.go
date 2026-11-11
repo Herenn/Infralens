@@ -61,7 +61,7 @@ func ParitySuite(t *testing.T, store Store) {
 	t.Run("NodeIntervalsExtendSplitAndPrune", func(t *testing.T) {
 		node := tag + "-node"
 		for _, at := range []time.Duration{0, time.Minute, 2 * time.Minute, 2 * time.Hour} {
-			if err := h.RecordNode(ctx, node, base.Add(at), gap); err != nil {
+			if err := h.RecordNode(ctx, node, "grp", base.Add(at), gap); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -79,10 +79,13 @@ func ParitySuite(t *testing.T, store Store) {
 			!mine[1].FirstSeen.Equal(base.Add(2*time.Hour)) {
 			t.Fatalf("node intervals = %+v, want [base, base+2m] and [base+2h, base+2h]", mine)
 		}
+		if mine[0].Group != "grp" {
+			t.Errorf("group not stored: %+v", mine[0])
+		}
 		if mine[0].FirstSeen.Location() != time.UTC {
 			t.Errorf("node interval times not UTC: %v", mine[0].FirstSeen.Location())
 		}
-		if err := h.RecordNode(ctx, "", base, gap); err == nil {
+		if err := h.RecordNode(ctx, "", "", base, gap); err == nil {
 			t.Error("RecordNode accepted an empty node name")
 		}
 		// Pruning drops the ended interval, keeps the later one.

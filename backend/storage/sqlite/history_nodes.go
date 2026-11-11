@@ -10,7 +10,7 @@ import (
 
 // RecordNode extends or opens the reporting interval of a node's agent. Same
 // extend-or-open rules as RecordService, keyed by node name.
-func (r *HistoryRepo) RecordNode(ctx context.Context, node string, at time.Time, maxGap time.Duration) error {
+func (r *HistoryRepo) RecordNode(ctx context.Context, node, group string, at time.Time, maxGap time.Duration) error {
 	if node == "" {
 		return fmt.Errorf("recording node interval: node has no name")
 	}
@@ -20,7 +20,7 @@ func (r *HistoryRepo) RecordNode(ctx context.Context, node string, at time.Time,
 
 	res, err := exec.ExecContext(ctx, `
 		UPDATE node_intervals
-		SET last_seen = ?
+		SET last_seen = ?, group_name = ?
 		WHERE id = (
 			SELECT id FROM node_intervals
 			WHERE node_name = ?
@@ -29,7 +29,7 @@ func (r *HistoryRepo) RecordNode(ctx context.Context, node string, at time.Time,
 		)
 		AND last_seen >= ?
 		AND last_seen <= ?`,
-		at, node, cutoff, at)
+		at, group, node, cutoff, at)
 	if err != nil {
 		return fmt.Errorf("extending node interval: %w", err)
 	}
@@ -39,13 +39,13 @@ func (r *HistoryRepo) RecordNode(ctx context.Context, node string, at time.Time,
 		return nil
 	}
 	_, err = exec.ExecContext(ctx, `
-		INSERT INTO node_intervals (node_name, first_seen, last_seen)
-		SELECT ?, ?, ?
+		INSERT INTO node_intervals (node_name, group_name, first_seen, last_seen)
+		SELECT ?, ?, ?, ?
 		WHERE NOT EXISTS (
 			SELECT 1 FROM node_intervals
 			WHERE node_name = ? AND first_seen <= ? AND last_seen >= ?
 		)`,
-		node, at, at, node, at, at)
+		node, group, at, at, node, at, at)
 	if err != nil {
 		return fmt.Errorf("opening node interval: %w", err)
 	}
@@ -56,7 +56,7 @@ func (r *HistoryRepo) RecordNode(ctx context.Context, node string, at time.Time,
 func (r *HistoryRepo) NodesBetween(ctx context.Context, from, to time.Time) ([]storage.NodeInterval, error) {
 	from, to = queryTime(from), queryTime(to)
 	rows, err := r.executor(ctx).QueryContext(ctx, `
-		SELECT id, node_name, first_seen, last_seen
+		SELECT id, node_name, group_name, first_seen, last_seen
 		FROM node_intervals
 		WHERE first_seen <= ? AND last_seen >= ?
 		ORDER BY first_seen, id`, to, from)
@@ -67,7 +67,7 @@ func (r *HistoryRepo) NodesBetween(ctx context.Context, from, to time.Time) ([]s
 	var out []storage.NodeInterval
 	for rows.Next() {
 		var ni storage.NodeInterval
-		if err := rows.Scan(&ni.ID, &ni.Node, &ni.FirstSeen, &ni.LastSeen); err != nil {
+		if err := rows.Scan(&ni.ID, &ni.Node, &ni.Group, &ni.FirstSeen, &ni.LastSeen); err != nil {
 			return nil, err
 		}
 		ni.FirstSeen, ni.LastSeen = ni.FirstSeen.UTC(), ni.LastSeen.UTC()

@@ -177,8 +177,12 @@ func TestCoverageNoOwnReportsNoSilence(t *testing.T) {
 				// Wholly inside the gap (clear of the grace after gapFrom).
 				from, to := gapFrom.Add(time.Hour), gapTo.Add(-time.Minute)
 				got := cov.observed([]string{"n1"}, from, to)
-				ownReports := !heartbeats && localEndpointID(pe[0]) && nodeOf[pe[0]] == "n1" ||
-					!heartbeats && localEndpointID(pe[1]) && nodeOf[pe[1]] == "n1"
+				// An edge with a process-keyed n1 endpoint can only have been
+				// recorded by n1's agent: that is n1 reporting (with or
+				// without heartbeats - a failed metrics post must not blind
+				// the node).
+				ownReports := localEndpointID(pe[0]) && nodeOf[pe[0]] == "n1" ||
+					localEndpointID(pe[1]) && nodeOf[pe[1]] == "n1"
 				if ownReports {
 					// n1's own agent recorded the edge: that is evidence.
 					if got == 0 {
@@ -197,23 +201,104 @@ func TestCoverageNoOwnReportsNoSilence(t *testing.T) {
 	}
 }
 
-// TestCoverageEpoch: before the first heartbeat the edge evidence decides;
-// from it on only heartbeats do.
-func TestCoverageEpoch(t *testing.T) {
+// TestCoverageHeartbeatsAndOwnActivity: a node is observed while its agent
+// heartbeats OR its own local activity is recorded - a failing metrics post
+// does not blind it - and an unknown node is not observed.
+func TestCoverageHeartbeatsAndOwnActivity(t *testing.T) {
 	now := time.Now()
-	c := newObservationCoverage(time.Minute, time.Minute)
-	c.addEvidence("e1", []string{"n1"}, now.Add(-10*day), now)
-	c.addHeartbeat("n1", now.Add(-2*day), now.Add(-day))
-	if got := c.observed([]string{"n1"}, now.Add(-10*day), now.Add(-2*day)); got < 8*day-time.Minute {
-		t.Errorf("pre-epoch: %s, want the edge evidence (8d)", got)
+	c := newObservationCoverage(time.Minute, time.Minute, 0)
+	c.addEvidence("e1", []string{"n1"}, now.Add(-10*day), now.Add(-5*day))
+	c.setHeartbeats([]storage.NodeInterval{{Node: "n1", FirstSeen: now.Add(-2 * day), LastSeen: now.Add(-day)}})
+	if got := c.observed([]string{"n1"}, now.Add(-10*day), now.Add(-5*day)); got < 5*day {
+		t.Errorf("own activity, no heartbeat: %s, want 5d", got)
+	}
+	if got := c.observed([]string{"n1"}, now.Add(-2*day), now.Add(-day)); got < day {
+		t.Errorf("heartbeat: %s, want 1d", got)
 	}
 	if got := c.observed([]string{"n1"}, now.Add(-day+time.Hour), now); got != 0 {
-		t.Errorf("post-epoch without heartbeats: %s, want 0 despite edge evidence", got)
+		t.Errorf("neither: %s, want 0", got)
 	}
-	if got := c.observed([]string{"n9"}, now.Add(-day+time.Hour), now); got != 0 {
-		t.Errorf("unknown node after the epoch: %s, want 0", got)
+	if got := c.observed([]string{"n9"}, now.Add(-10*day), now); got != 0 {
+		t.Errorf("unknown node: %s, want 0", got)
 	}
 	if got := c.observed(nil, now.Add(-2*day), now.Add(-day)); got < day {
-		t.Errorf("global after the epoch: %s, want the heartbeat (1d)", got)
+		t.Errorf("global: %s, want the heartbeat (1d)", got)
+	}
+}
+
+// TestCoverageClusterGroup: a CLUSTER_NAME group is observed only while every
+// member agent reports; members join at their first heartbeat and drop out
+// once retired, so autoscaling does not leave the group unobserved for good.
+func TestCoverageClusterGroup(t *testing.T) {
+	now := time.Now()
+	const g = "Kubernetes"
+	c := newObservationCoverage(0, 0, 6*time.Hour)
+	c.setHeartbeats([]storage.NodeInterval{
+		{Node: "a", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now.Add(-8 * day)}, // dies, never returns
+		{Node: "b", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now},
+		{Node: "c", Group: g, FirstSeen: now.Add(-3 * day), LastSeen: now.Add(-2 * day)}, // joins, dies for 2h, back
+		{Node: "c", Group: g, FirstSeen: now.Add(-2*day + 2*time.Hour), LastSeen: now},
+		{Node: "x", FirstSeen: now.Add(-10 * day), LastSeen: now}, // another, ungrouped node
+	})
+	obs := func(from, to time.Time) time.Duration { return c.observed([]string{g}, from, to) }
+	if got := obs(now.Add(-10*day), now.Add(-8*day)); got < 2*day-time.Minute {
+		t.Errorf("all members up: %s, want 2d", got)
+	}
+	if got := obs(now.Add(-8*day+time.Minute), now.Add(-8*day+6*time.Hour)); got != 0 {
+		t.Errorf("member a down (not yet retired), b up: %s, want 0 - one live agent must not cover a dead one", got)
+	}
+	if got := obs(now.Add(-8*day+7*time.Hour), now.Add(-3*day)); got < 5*day-8*time.Hour {
+		t.Errorf("after a retired: %s, want b's coverage", got)
+	}
+	if got := obs(now.Add(-4*day), now.Add(-3*day)); got < day-time.Minute {
+		t.Errorf("before c joined: %s, want covered (c is not a member yet)", got)
+	}
+	if got := obs(now.Add(-2*day+time.Minute), now.Add(-2*day+2*time.Hour)); got != 0 {
+		t.Errorf("member c down for 2h: %s, want 0", got)
+	}
+	if got := obs(now.Add(-2*day+2*time.Hour), now); got < 2*day-2*time.Hour-time.Minute {
+		t.Errorf("c back: %s, want covered", got)
+	}
+	// Members are not nodes of their own for services: an ungrouped node is
+	// unaffected by the group.
+	if got := c.observed([]string{"x"}, now.Add(-8*day), now); got < 8*day {
+		t.Errorf("ungrouped node x: %s", got)
+	}
+}
+
+// TestCoverageRetirement: an outage shorter than retireAfter accrues
+// nothing; a node silent for longer, while others keep reporting, follows
+// the global coverage from then on.
+func TestCoverageRetirement(t *testing.T) {
+	now := time.Now()
+	c := newObservationCoverage(0, 0, 6*time.Hour)
+	c.setHeartbeats([]storage.NodeInterval{
+		{Node: "a", FirstSeen: now.Add(-2 * day), LastSeen: now.Add(-day)},
+		{Node: "b", FirstSeen: now.Add(-2 * day), LastSeen: now},
+		{Node: "short", FirstSeen: now.Add(-2 * day), LastSeen: now.Add(-4 * time.Hour)},
+	})
+	if got := c.observed([]string{"a"}, now.Add(-day), now.Add(-day+6*time.Hour)); got != 0 {
+		t.Errorf("a within the retirement threshold: %s, want 0", got)
+	}
+	if got := c.observed([]string{"a"}, now.Add(-day+6*time.Hour), now); got < 18*time.Hour-time.Minute {
+		t.Errorf("a retired: %s, want the global 18h", got)
+	}
+	if got := c.observed([]string{"short"}, now.Add(-4*time.Hour), now); got != 0 {
+		t.Errorf("4h outage: %s, want 0", got)
+	}
+}
+
+func TestCoverageMinus(t *testing.T) {
+	at := func(h int) time.Time { return time.Unix(0, 0).Add(time.Duration(h) * time.Hour) }
+	sp := func(a, b int) span { return span{at(a), at(b)} }
+	got := coverage{sp(0, 10), sp(20, 30)}.minus(coverage{sp(2, 3), sp(5, 22), sp(25, 26), sp(29, 40)})
+	want := coverage{sp(0, 2), sp(3, 5), sp(22, 25), sp(26, 29)}
+	if len(got) != len(want) {
+		t.Fatalf("minus = %v, want %v", got, want)
+	}
+	for i := range want {
+		if !got[i].from.Equal(want[i].from) || !got[i].to.Equal(want[i].to) {
+			t.Fatalf("minus = %v, want %v", got, want)
+		}
 	}
 }

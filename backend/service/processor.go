@@ -377,6 +377,9 @@ func (p *EventProcessor) ProcessHostMetrics(ctx context.Context, metrics HostMet
 		LastSeen:   time.Now(),
 	}
 
+	if metrics.ClusterName != "" {
+		return p.topology.UpdateAgentMetrics(ctx, m, metrics.NodeName)
+	}
 	return p.topology.UpdateNodeMetrics(ctx, m)
 }
 
