@@ -26,10 +26,42 @@ export function primaryHostname(service: Service): string | undefined {
   return serviceHostnames(service)[0]
 }
 
-// The label a service is drawn and sorted by: its DNS name when it has one,
-// otherwise the existing display name / name / ID.
+// An address rather than a name: "10.0.2.14", "10.0.3.10:5432", "::1",
+// "[fd00::1]:443", or a bare ":443" (how an outbound destination is named
+// when nothing better is known).
+export function isAddressLike(value: string): boolean {
+  const v = value.trim()
+  if (v === '') return true
+  if (/^:\d+$/.test(v)) return true
+  if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(v)) return true
+  if (/^\[?[0-9a-f]*:[0-9a-f:.]*\]?(:\d+)?$/i.test(v)) return true
+  return false
+}
+
+// Names the processor gives when it knows nothing: not worth a title.
+const GENERIC_NAMES = new Set(['external', 'unknown'])
+
+// The label a service is drawn and sorted by - the best name available:
+// its DNS name, then a Kubernetes or service name, then the process name an
+// agent reported. Agents name a host-side service by IP in display_name and
+// by process in name, so an address in display_name never wins over a real
+// name. Only when there is no name at all is the address the label.
 export function serviceLabel(service: Service): string {
-  return primaryHostname(service) || service.display_name || service.name || service.id
+  const host = primaryHostname(service)
+  if (host) return host
+  for (const candidate of [service.display_name, service.name, service.inspection?.process_name]) {
+    if (candidate && !isAddressLike(candidate) && !GENERIC_NAMES.has(candidate.toLowerCase())) return candidate
+  }
+  return service.pod_ip || service.display_name || service.name || service.id
+}
+
+// A readable name for a service known only by its ID (e.g. from a diff or
+// an event for a service no longer on the graph): "10.0.2.14/inventory-sync"
+// -> "inventory-sync"; "10.0.3.10:5432" stays as it is.
+export function nameFromServiceId(id: string): string {
+  const slash = id.indexOf('/')
+  if (slash > 0 && isAddressLike(id.slice(0, slash))) return id.slice(slash + 1)
+  return id
 }
 
 // Union of the DNS names of several services, for an aggregated node.

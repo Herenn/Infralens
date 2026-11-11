@@ -48,20 +48,79 @@ body {
 
 /* React Flow customizations */
 .react-flow__node {
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.25s ease, opacity 0.2s ease;
 }
 
-.react-flow__node:hover {
-  z-index: 100 !important;
+.react-flow__node.dragging {
+  transition: opacity 0.2s ease;
+}
+
+.react-flow__node-service:hover {
+  z-index: 1001 !important;
+}
+
+.react-flow__edge {
+  transition: opacity 0.2s ease;
 }
 
 .react-flow__edge-path {
-  stroke-width: 2;
-  transition: stroke 0.2s ease;
+  transition: stroke 0.2s ease, stroke-width 0.2s ease;
 }
 
-.react-flow__edge:hover .react-flow__edge-path {
-  stroke-width: 3;
+/* Focus: something is hovered, selected or highlighted - everything else
+   steps back. Only the lit elements carry a class, so focusing one service
+   in a large graph re-renders its edges, not all of them. */
+.il-dim-edges .react-flow__edge:not(.il-lit) {
+  opacity: 0.12;
+}
+
+.il-dim-nodes .react-flow__node-service:not(.il-lit) {
+  opacity: 0.22;
+}
+
+/* Blast radius: affected services glow amber, the root strongest. */
+.il-impact .il-card {
+  border-color: rgba(245, 158, 11, 0.75) !important;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14);
+}
+
+.il-impact-root .il-card {
+  border-color: #f59e0b !important;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.28), 0 0 28px rgba(245, 158, 11, 0.35);
+}
+
+/* Live traffic: small dots travel along busy edges. Off for reduced
+   motion, in history, during export, and above a size where it would cost
+   frames (App.tsx). */
+.il-edge-flow {
+  fill: none;
+  stroke-dasharray: 1.5 13;
+  stroke-linecap: round;
+  opacity: 0.55;
+  pointer-events: none;
+  animation-name: il-flow;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@keyframes il-flow {
+  to {
+    stroke-dashoffset: -14.5;
+  }
+}
+
+.il-dim-edges .react-flow__edge:not(.il-lit) .il-edge-flow,
+.il-exporting .il-edge-flow {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .il-edge-flow {
+    display: none;
+  }
+  .react-flow__node {
+    transition: none;
+  }
 }
 
 /* Animated edge */
@@ -123,18 +182,20 @@ body {
 
 /* React Flow Controls - Dark Theme */
 .react-flow__controls {
-  background: #1f2937 !important;
-  border: 1px solid #374151 !important;
+  background: #0f172a !important;
+  border: 1px solid #334155 !important;
   border-radius: 8px !important;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35) !important;
+  overflow: hidden;
+  transition: right 0.3s ease-out;
 }
 
 .react-flow__controls-button {
-  background: #1f2937 !important;
+  background: #0f172a !important;
   border: none !important;
-  border-bottom: 1px solid #374151 !important;
-  width: 28px !important;
-  height: 28px !important;
+  border-bottom: 1px solid #334155 !important;
+  width: 30px !important;
+  height: 30px !important;
   padding: 4px !important;
   display: flex !important;
   align-items: center !important;
@@ -146,13 +207,18 @@ body {
 }
 
 .react-flow__controls-button:hover {
-  background: #374151 !important;
+  background: #1e293b !important;
+}
+
+.react-flow__controls-button:focus-visible {
+  outline: 2px solid rgba(34, 197, 94, 0.6);
+  outline-offset: -2px;
 }
 
 .react-flow__controls-button svg {
   fill: #94a3b8 !important;
-  max-width: 14px !important;
-  max-height: 14px !important;
+  max-width: 13px !important;
+  max-height: 13px !important;
 }
 
 .react-flow__controls-button:hover svg {
@@ -161,7 +227,29 @@ body {
 
 /* MiniMap Dark Theme */
 .react-flow__minimap {
-  background: #1f2937 !important;
-  border: 1px solid #374151 !important;
+  background: #0f172a !important;
+  border: 1px solid #334155 !important;
   border-radius: 8px !important;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  transition: right 0.3s ease-out;
+}
+
+/* The React Flow attribution (MIT licensed: the link back is kept as a
+   courtesy, not a requirement), quiet in the corner under the minimap. */
+.react-flow__attribution {
+  background: transparent !important;
+  right: var(--il-right-inset, 0px) !important;
+  margin: 0 12px 0 0 !important;
+  padding: 0 !important;
+  transition: right 0.3s ease-out;
+}
+
+.react-flow__attribution a {
+  color: #334155 !important;
+  font-size: 9px;
+}
+
+.react-flow__attribution a:hover {
+  color: #64748b !important;
 }

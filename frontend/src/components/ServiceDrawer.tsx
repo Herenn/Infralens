@@ -31,7 +31,7 @@ import {
   Radar
 } from 'lucide-react'
 import { Service, Connection, ServiceInspection, formatBytes, TypeColors } from '../types'
-import { primaryHostname, serviceHostnames } from '../utils/hostnames'
+import { nameFromServiceId, serviceHostnames, serviceLabel } from '../utils/hostnames'
 import { apiUrl } from '../lib/api'
 import MarkdownRenderer from './MarkdownRenderer'
 
@@ -85,6 +85,10 @@ interface ServiceDrawerProps {
   onClearImpact?: () => void
   // Set when this service is the current impact root, to the direction shown
   activeImpactDirection?: 'upstream' | 'downstream' | null
+  // Services on the graph, to name connection peers.
+  services?: Map<string, Service>
+  // Set while time travel shows a past instant: rates are live-only.
+  viewingAt?: string | null
 }
 
 type TabType = 'overview' | 'ai'
@@ -99,7 +103,9 @@ export default function ServiceDrawer({
   nodeType,
   onShowImpact,
   onClearImpact,
-  activeImpactDirection = null
+  activeImpactDirection = null,
+  services,
+  viewingAt = null,
 }: ServiceDrawerProps) {
   const [activeTab, setActiveTab] = useState<TabType>('overview')
   const [isAnimating, setIsAnimating] = useState(false)
@@ -136,36 +142,36 @@ export default function ServiceDrawer({
   const outgoingConnections = service ? connections.filter(c => c.source_id === service.id) : []
   const incomingConnections = service ? connections.filter(c => c.target_id === service.id) : []
 
-  // Calculate total throughput rates
+  // Throughput from this service's side: a connection's "sent" is what its
+  // source sent, so on incoming connections this service received it.
   const totalSentRate = outgoingConnections.reduce((sum, c) => sum + (c.bytes_sent_rate || 0), 0)
-  const totalRecvRate = incomingConnections.reduce((sum, c) => sum + (c.bytes_recv_rate || 0), 0)
+    + incomingConnections.reduce((sum, c) => sum + (c.bytes_recv_rate || 0), 0)
+  const totalRecvRate = outgoingConnections.reduce((sum, c) => sum + (c.bytes_recv_rate || 0), 0)
+    + incomingConnections.reduce((sum, c) => sum + (c.bytes_sent_rate || 0), 0)
+  const peerName = (id: string) => {
+    const svc = services?.get(id)
+    return svc ? serviceLabel(svc) : nameFromServiceId(id)
+  }
 
   return (
     <>
-      {/* Backdrop */}
-      <div 
+      {/* Drawer Panel: docked under the header, with no backdrop - the map
+          stays visible and usable beside it (blast radius shows there). */}
+      <aside
         className={`
-          fixed inset-0 bg-black/40 backdrop-blur-sm z-40
-          transition-opacity duration-300
-          ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}
-        `}
-        onClick={onClose}
-      />
-
-      {/* Drawer Panel */}
-      <div 
-        className={`
-          fixed top-0 right-0 h-full w-[420px] z-50
-          bg-slate-900/95 backdrop-blur-xl border-l border-slate-700/50
+          fixed top-14 bottom-0 right-0 w-[400px] z-40 flex flex-col
+          bg-dark-900/95 backdrop-blur-xl border-l border-dark-700
           shadow-2xl shadow-black/50
           transform transition-transform duration-300 ease-out
           ${isOpen ? 'translate-x-0' : 'translate-x-full'}
         `}
         onTransitionEnd={handleTransitionEnd}
+        data-testid="drawer"
+        aria-label="Service details"
       >
         {/* Header */}
-        <div className="h-16 px-5 flex items-center justify-between border-b border-slate-700/50">
-          <div className="flex items-center gap-3">
+        <div className="h-16 shrink-0 px-5 flex items-center justify-between gap-3 border-b border-slate-700/50">
+          <div className="flex items-center gap-3 min-w-0">
             {nodeType === 'server' ? (
               <>
                 <div className="p-2 rounded-lg bg-slate-800 border border-slate-700">
@@ -187,8 +193,8 @@ export default function ServiceDrawer({
                 >
                   <ServiceTypeIcon type={service.type} size={18} />
                 </div>
-                <div>
-                  <h2 className="font-semibold text-slate-100">{primaryHostname(service) || service.name}</h2>
+                <div className="min-w-0">
+                  <h2 className="font-semibold text-slate-100 truncate" title={service.id}>{serviceLabel(service)}</h2>
                   <div className="flex items-center gap-2">
                     {service.tech && (
                       <span 
@@ -209,7 +215,10 @@ export default function ServiceDrawer({
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
+            className="p-2 shrink-0 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lens-500/50"
+            title="Close (Esc)"
+            aria-label="Close details"
+            data-testid="drawer-close"
           >
             <X size={18} />
           </button>
@@ -217,8 +226,8 @@ export default function ServiceDrawer({
 
         {/* Blast radius actions */}
         {nodeType === 'service' && service && onShowImpact && (
-          <div className="flex items-center gap-2 px-5 py-2.5 border-b border-slate-700/50">
-            <Radar size={14} className="text-slate-500 shrink-0" />
+          <div className="shrink-0 flex items-center gap-2 px-5 py-2.5 border-b border-slate-700/50">
+            <Radar size={14} className="text-amber-400/80 shrink-0" />
             <button
               onClick={() => activeImpactDirection === 'upstream'
                 ? onClearImpact?.()
@@ -228,9 +237,10 @@ export default function ServiceDrawer({
                   ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
                   : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200 hover:border-slate-600'
               }`}
-              title="Highlight everything that (transitively) calls this service"
+              title="Light up everything that (transitively) calls this service"
+              data-testid="impact-upstream"
             >
-              What breaks if this goes down
+              What breaks if it goes down
             </button>
             <button
               onClick={() => activeImpactDirection === 'downstream'
@@ -241,7 +251,8 @@ export default function ServiceDrawer({
                   ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
                   : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200 hover:border-slate-600'
               }`}
-              title="Highlight everything this service (transitively) depends on"
+              title="Light up everything this service (transitively) depends on"
+              data-testid="impact-downstream"
             >
               What this depends on
             </button>
@@ -249,7 +260,7 @@ export default function ServiceDrawer({
         )}
 
         {/* Tabs */}
-        <div className="flex border-b border-slate-700/50">
+        <div className="shrink-0 flex border-b border-slate-700/50">
           <TabButton
             active={activeTab === 'overview'}
             onClick={() => setActiveTab('overview')}
@@ -266,7 +277,7 @@ export default function ServiceDrawer({
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto h-[calc(100%-120px)]">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           {activeTab === 'overview' ? (
             nodeType === 'server' ? (
               <ServerOverview serverData={serverData} />
@@ -280,13 +291,15 @@ export default function ServiceDrawer({
                 totalSentRate={totalSentRate}
                 totalRecvRate={totalRecvRate}
                 formatTime={formatTime}
+                peerName={peerName}
+                viewingAt={viewingAt}
               />
             )
           ) : (
             <AIDocsTab service={service} serverData={serverData} nodeType={nodeType} />
           )}
         </div>
-      </div>
+      </aside>
     </>
   )
 }
@@ -417,7 +430,9 @@ function ServiceOverview({
   incomingConnections,
   totalSentRate,
   totalRecvRate,
-  formatTime
+  formatTime,
+  peerName,
+  viewingAt,
 }: {
   service?: Service | null
   connections: Connection[]
@@ -427,11 +442,15 @@ function ServiceOverview({
   totalSentRate: number
   totalRecvRate: number
   formatTime: (s: string) => string
+  peerName: (id: string) => string
+  viewingAt: string | null
 }) {
   if (!service) return null
 
   const totalBytesSent = outgoingConnections.reduce((sum, c) => sum + (c.bytes_sent || 0), 0)
-  const totalBytesRecv = incomingConnections.reduce((sum, c) => sum + (c.bytes_recv || 0), 0)
+    + incomingConnections.reduce((sum, c) => sum + (c.bytes_recv || 0), 0)
+  const totalBytesRecv = outgoingConnections.reduce((sum, c) => sum + (c.bytes_recv || 0), 0)
+    + incomingConnections.reduce((sum, c) => sum + (c.bytes_sent || 0), 0)
 
   return (
     <div className="p-5 space-y-6">
@@ -449,8 +468,12 @@ function ServiceOverview({
         </div>
       )}
 
-      {/* Throughput */}
-      {(totalSentRate > 0 || totalRecvRate > 0 || totalBytesSent > 0 || totalBytesRecv > 0) && (
+      {/* Throughput: live only. A past instant has its graph, not its rates. */}
+      {viewingAt ? (
+        <p className="text-xs text-slate-500 bg-slate-800/40 border border-slate-700/30 rounded-lg px-3 py-2.5">
+          Throughput is live only. You are viewing the map as it was on {formatTime(viewingAt)}.
+        </p>
+      ) : (totalSentRate > 0 || totalRecvRate > 0 || totalBytesSent > 0 || totalBytesRecv > 0) && (
         <div className="space-y-3">
           <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
             <Zap size={14} className="text-yellow-400" />
@@ -460,7 +483,7 @@ function ServiceOverview({
             <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/30">
               <div className="flex items-center gap-1.5 text-blue-400 mb-2">
                 <ArrowUpRight size={14} />
-                <span className="text-xs uppercase tracking-wide font-medium">Upload</span>
+                <span className="text-xs uppercase tracking-wide font-medium">Sent</span>
               </div>
               <p className="text-xl font-bold text-slate-100">{formatRate(totalSentRate)}</p>
               <p className="text-xs text-slate-500 mt-1">Total: {formatBytes(totalBytesSent)}</p>
@@ -468,7 +491,7 @@ function ServiceOverview({
             <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/30">
               <div className="flex items-center gap-1.5 text-green-400 mb-2">
                 <ArrowDownLeft size={14} />
-                <span className="text-xs uppercase tracking-wide font-medium">Download</span>
+                <span className="text-xs uppercase tracking-wide font-medium">Received</span>
               </div>
               <p className="text-xl font-bold text-slate-100">{formatRate(totalRecvRate)}</p>
               <p className="text-xs text-slate-500 mt-1">Total: {formatBytes(totalBytesRecv)}</p>
@@ -522,7 +545,7 @@ function ServiceOverview({
               </div>
               <div className="space-y-2">
                 {outgoingConnections.slice(0, 5).map(conn => (
-                  <ConnectionCard key={conn.id} connection={conn} direction="outgoing" />
+                  <ConnectionCard key={conn.id} connection={conn} direction="outgoing" peerName={peerName} />
                 ))}
                 {outgoingConnections.length > 5 && (
                   <p className="text-xs text-slate-500 text-center">
@@ -541,7 +564,7 @@ function ServiceOverview({
               </div>
               <div className="space-y-2">
                 {incomingConnections.slice(0, 5).map(conn => (
-                  <ConnectionCard key={conn.id} connection={conn} direction="incoming" />
+                  <ConnectionCard key={conn.id} connection={conn} direction="incoming" peerName={peerName} />
                 ))}
                 {incomingConnections.length > 5 && (
                   <p className="text-xs text-slate-500 text-center">
@@ -1535,32 +1558,40 @@ function DetailRow({ icon, label, value, mono }: { icon: React.ReactNode; label:
   )
 }
 
-function ConnectionCard({ connection, direction }: { connection: Connection; direction: 'incoming' | 'outgoing' }) {
+function ConnectionCard({ connection, direction, peerName }: {
+  connection: Connection
+  direction: 'incoming' | 'outgoing'
+  peerName: (id: string) => string
+}) {
+  const peerId = direction === 'outgoing' ? connection.target_id : connection.source_id
+  const name = direction === 'outgoing' && connection.hostnames?.length ? connection.hostnames[0] : peerName(peerId)
+  // From this service's side: on an incoming connection the peer sent what
+  // the connection records as "sent".
+  const sent = direction === 'outgoing' ? connection.bytes_sent_rate : connection.bytes_recv_rate
+  const recv = direction === 'outgoing' ? connection.bytes_recv_rate : connection.bytes_sent_rate
   return (
     <div className="bg-slate-800/50 rounded-lg px-3 py-2 text-xs border border-slate-700/20">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <span
-          className="text-slate-300 font-mono truncate"
-          title={connection.hostnames?.length ? `DNS: ${connection.hostnames.join(', ')}` : undefined}
+          className="text-slate-200 truncate"
+          title={connection.hostnames?.length ? `${peerId} - DNS: ${connection.hostnames.join(', ')}` : peerId}
         >
-          {direction === 'outgoing' && connection.hostnames?.length
-            ? `${connection.hostnames[0]} (${connection.target_id})`
-            : direction === 'outgoing' ? connection.target_id : connection.source_id}
+          {name}
         </span>
-        <span className="text-slate-500 font-mono">:{connection.port}</span>
+        <span className="text-slate-500 font-mono shrink-0">:{connection.port}{connection.protocol === 'udp' ? '/udp' : ''}</span>
       </div>
-      {(connection.bytes_sent_rate || connection.bytes_recv_rate) && (
+      {!!(sent || recv) && (
         <div className="flex items-center gap-3 mt-1 text-slate-500">
-          {connection.bytes_sent_rate !== undefined && connection.bytes_sent_rate > 0 && (
-            <span className="flex items-center gap-1">
+          {!!sent && (
+            <span className="flex items-center gap-1" title="Sent by this service">
               <ArrowUpRight size={10} className="text-blue-400" />
-              {formatRate(connection.bytes_sent_rate)}
+              {formatRate(sent)}
             </span>
           )}
-          {connection.bytes_recv_rate !== undefined && connection.bytes_recv_rate > 0 && (
-            <span className="flex items-center gap-1">
+          {!!recv && (
+            <span className="flex items-center gap-1" title="Received by this service">
               <ArrowDownLeft size={10} className="text-green-400" />
-              {formatRate(connection.bytes_recv_rate)}
+              {formatRate(recv)}
             </span>
           )}
         </div>

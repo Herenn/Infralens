@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image, Search, X, FileCode, Share2, PiggyBank } from 'lucide-react'
+import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image, Search, X, FileCode, Share2, Layers, History } from 'lucide-react'
 import { Stats } from '../types'
-import ChangesButton from './ChangesButton'
 import { LogOut } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 
@@ -25,13 +24,11 @@ interface HeaderProps {
   onExportJson?: () => void
   onExportMermaid?: () => void
   onExportDot?: () => void
-  // Architecture drift feed button; omitted when the feed is unavailable.
-  changes?: { open: boolean; unread: number; onToggle: () => void }
-  idleSpendOpen?: boolean
-  onToggleIdleSpend?: () => void
+  // Set while time travel shows a past instant.
+  viewingPast?: boolean
 }
 
-export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot, changes, idleSpendOpen, onToggleIdleSpend }: HeaderProps) {
+export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot, viewingPast }: HeaderProps) {
   const [filterDropdownOpen, setFilterDropdownOpen] = useState(false)
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false)
   const filterButtonRef = useRef<HTMLButtonElement>(null)
@@ -128,7 +125,8 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search services...  ( / )"
+            placeholder="Search services…  ( / )"
+            aria-label="Search services"
             className="w-48 min-[1440px]:w-56 pl-9 pr-8 py-1.5 rounded-lg text-xs bg-dark-800 text-dark-200 border border-dark-700 
               placeholder:text-dark-500 focus:outline-none focus:border-lens-500/50 focus:ring-1 focus:ring-lens-500/30 transition-all"
           />
@@ -230,7 +228,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           `}
           title="Collapse external endpoints by type"
         >
-          <span>🗂️</span>
+          <Layers size={14} />
           <span>Collapse</span>
         </button>
 
@@ -310,45 +308,20 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             onClick={() => onFiltersChange({ hideLocalhost: false, minConnections: 1, collapseExternal: false })}
             className="px-2 py-1.5 rounded-lg text-xs text-dark-500 hover:text-dark-300 hover:bg-dark-800 transition-colors"
             title="Clear all filters"
+            aria-label="Clear all filters"
           >
-            ✕
+            <X size={14} />
           </button>
         )}
       </div>
 
-      {/* Stats. Below 1440px the "services"/"connections" words give way
-          (numbers and icons stay, with a tooltip) so the header keeps to one
-          line at 1280px with every v3.1 control and the Disconnected state. */}
+      {/* Stats and connection status. Secondary panels open from the rail on
+          the map's left (SideRail), which keeps this to one line at 1280px. */}
       <div className="flex items-center gap-4 min-[1440px]:gap-6">
-        {/* The two side panels that open in the map's top-left slot (one at
-            a time - see App.tsx), side by side. */}
-        {(changes || onToggleIdleSpend) && (
-          <div className="flex items-center gap-2 shrink-0">
-            {changes && <ChangesButton {...changes} />}
-            {onToggleIdleSpend && (
-              <button
-                onClick={onToggleIdleSpend}
-                aria-pressed={!!idleSpendOpen}
-                className={`
-                  flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all
-                  ${idleSpendOpen
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'bg-dark-800 text-dark-300 border border-dark-700 hover:text-dark-100 hover:border-dark-600'
-                  }
-                `}
-                title="Idle spend (beta): what services nothing talks to are costing"
-              >
-                <PiggyBank size={14} />
-                <span className="whitespace-nowrap">Idle spend</span>
-              </button>
-            )}
-          </div>
-        )}
-
         <div className="flex items-center gap-2 text-sm" title={`${displayStats.services} services`}>
           <Server size={16} className="text-dark-400" />
           <span className="text-dark-300">{displayStats.services}</span>
-          <span className="text-dark-500 hidden min-[1440px]:inline">services</span>
+          <span className="text-dark-500">services</span>
           {hasFilters && stats.services !== displayStats.services && (
             <span className="text-dark-600 text-xs">/ {stats.services}</span>
           )}
@@ -357,7 +330,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
         <div className="flex items-center gap-2 text-sm" title={`${displayStats.connections} connections`}>
           <GitBranch size={16} className="text-dark-400" />
           <span className="text-dark-300">{displayStats.connections}</span>
-          <span className="text-dark-500 hidden min-[1440px]:inline">connections</span>
+          <span className="text-dark-500">connections</span>
           {hasFilters && stats.connections !== displayStats.connections && (
             <span className="text-dark-600 text-xs">/ {stats.connections}</span>
           )}
@@ -365,13 +338,20 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
 
         {/* Connection status */}
         <div className={`
-          flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium
-          ${isConnected 
+          flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap
+          ${viewingPast
+            ? 'bg-amber-500/10 text-amber-300 border border-amber-500/25'
+            : isConnected
             ? 'bg-lens-500/10 text-lens-400 border border-lens-500/20' 
             : 'bg-red-500/10 text-red-400 border border-red-500/20'
           }
-        `}>
-          {isConnected ? (
+        `} data-testid="connection-status">
+          {viewingPast ? (
+            <>
+              <History size={14} />
+              <span>History</span>
+            </>
+          ) : isConnected ? (
             <>
               <Wifi size={14} />
               <span>Live</span>

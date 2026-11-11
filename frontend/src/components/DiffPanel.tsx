@@ -1,20 +1,18 @@
-import { useState, useEffect } from 'react'
-import { GitCompare, X } from 'lucide-react'
+import { useState, useEffect, useMemo, ReactNode } from 'react'
+import { ArrowRight, GitCompare } from 'lucide-react'
 import { apiUrl } from '../lib/api'
 import { HistoryRange } from './TimelineScrubber'
-
-interface DiffEntity {
-  id: string
-  name?: string
-}
+import DockPanel, { PanelMessage, PanelSkeleton } from './DockPanel'
+import { Connection, Service } from '../types'
+import { nameFromServiceId, serviceLabel } from '../utils/hostnames'
 
 interface DiffResponse {
   from: string
   to: string
-  added_services: DiffEntity[]
-  removed_services: DiffEntity[]
-  added_connections: DiffEntity[]
-  removed_connections: DiffEntity[]
+  added_services: Service[]
+  removed_services: Service[]
+  added_connections: Connection[]
+  removed_connections: Connection[]
 }
 
 function formatTimestamp(iso: string): string {
@@ -29,26 +27,37 @@ function formatTimestamp(iso: string): string {
 interface DiffPanelProps {
   // Only rendered by the caller once this is non-null - see App.tsx.
   range: HistoryRange
+  onClose: () => void
+  // Names of the services on the live graph, by ID.
+  liveServices: Map<string, Service>
 }
 
-export default function DiffPanel({ range }: DiffPanelProps) {
-  const [open, setOpen] = useState(false)
+const SHOWN = 8
+
+export default function DiffPanel({ range, onClose, liveServices }: DiffPanelProps) {
   const earliestMs = new Date(range.earliest).getTime()
   const latestMs = new Date(range.latest).getTime()
-  const [fromMs, setFromMs] = useState(earliestMs)
+  // Default: a day back (or the whole history when there is less).
+  const [fromMs, setFromMs] = useState(() => Math.max(earliestMs, latestMs - 24 * 3600 * 1000))
+  const [debouncedFrom, setDebouncedFrom] = useState(fromMs)
   const [loading, setLoading] = useState(false)
   const [diff, setDiff] = useState<DiffResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Dragging the slider asks once it settles, not on every pixel.
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedFrom(fromMs), 200)
+    return () => window.clearTimeout(t)
+  }, [fromMs])
 
   // "to" is always now - this answers "what's changed since X", the common
   // case, rather than requiring two independent picks for an arbitrary
   // point-to-point comparison.
   useEffect(() => {
-    if (!open) return
     let cancelled = false
     setLoading(true)
     setError(null)
-    const from = new Date(fromMs).toISOString()
+    const from = new Date(debouncedFrom).toISOString()
     const to = new Date().toISOString()
     fetch(apiUrl(`/api/v1/topology/history/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`))
       .then(res => {
@@ -65,85 +74,126 @@ export default function DiffPanel({ range }: DiffPanelProps) {
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [open, fromMs])
+  }, [debouncedFrom])
 
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="flex items-center gap-2 px-3 py-2 rounded-lg bg-dark-800 border border-dark-600
-          text-dark-300 hover:text-white hover:border-dark-500 shadow-xl transition-colors"
-        title="Compare the topology at an earlier point to right now"
-      >
-        <GitCompare size={16} />
-        <span className="text-sm">Compare to now</span>
-      </button>
-    )
-  }
+  // Names as the graph and the Changes feed show them: the diff's own
+  // service records first (they include ones no longer live), then the live
+  // graph, then whatever the ID says.
+  const nameOf = useMemo(() => {
+    const known = new Map<string, Service>(liveServices)
+    for (const s of [...(diff?.added_services || []), ...(diff?.removed_services || [])]) known.set(s.id, s)
+    return (id: string) => {
+      const svc = known.get(id)
+      return svc ? serviceLabel(svc) : nameFromServiceId(id)
+    }
+  }, [diff, liveServices])
+
+  const total = diff
+    ? diff.added_services.length + diff.removed_services.length + diff.added_connections.length + diff.removed_connections.length
+    : 0
 
   return (
-    <div className="w-80 max-h-[70vh] rounded-lg bg-dark-800 border border-dark-600 shadow-xl flex flex-col">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700 shrink-0">
-        <span className="text-sm font-medium text-dark-200">Compare to now</span>
-        <button onClick={() => setOpen(false)} className="text-dark-400 hover:text-white transition-colors">
-          <X size={16} />
-        </button>
-      </div>
-
-      <div className="px-4 py-3 border-b border-dark-700 shrink-0">
-        <div className="text-xs text-dark-500 mb-1">Since {formatTimestamp(new Date(fromMs).toISOString())}</div>
-        <input
-          type="range"
-          min={earliestMs}
-          max={latestMs}
-          step={1000}
-          value={fromMs}
-          onChange={e => setFromMs(Number(e.target.value))}
-          className="w-full accent-lens-500"
-        />
-      </div>
-
-      <div className="overflow-y-auto flex-1 p-4 space-y-3">
-        {loading && <p className="text-xs text-dark-500">Loading…</p>}
-        {error && <p className="text-xs text-red-400">{error}</p>}
-        {diff && !loading && !error && (
-          <>
-            <DiffStat
-              label="Services appeared"
-              names={diff.added_services.map(s => s.name || s.id)}
-              color="text-lens-400"
-            />
-            <DiffStat
-              label="Services disappeared"
-              names={diff.removed_services.map(s => s.name || s.id)}
-              color="text-red-400"
-            />
-            <DiffStat
-              label="Connections appeared"
-              names={diff.added_connections.map(c => c.id)}
-              color="text-lens-400"
-            />
-            <DiffStat
-              label="Connections disappeared"
-              names={diff.removed_connections.map(c => c.id)}
-              color="text-red-400"
-            />
-          </>
-        )}
-      </div>
-    </div>
+    <DockPanel
+      id="compare"
+      icon={<GitCompare size={16} />}
+      tone="bg-violet-500/15 border-violet-500/30 text-violet-300"
+      title="Compare to now"
+      subtitle="What appeared or disappeared since an earlier moment"
+      onClose={onClose}
+      toolbar={
+        <div>
+          <div className="flex items-center justify-between text-[11px] mb-1.5">
+            <span className="text-dark-400">Since <span className="text-dark-100 font-medium">{formatTimestamp(new Date(fromMs).toISOString())}</span></span>
+            {diff && !loading && <span className="text-dark-500 tabular-nums">{total} change{total === 1 ? '' : 's'}</span>}
+            {loading && <span className="text-dark-500">Comparing…</span>}
+          </div>
+          <input
+            type="range"
+            min={earliestMs}
+            max={latestMs}
+            step={1000}
+            value={fromMs}
+            onChange={e => setFromMs(Number(e.target.value))}
+            className="w-full accent-lens-500"
+            aria-label="Compare since"
+            data-testid="compare-since"
+          />
+          <div className="flex justify-between text-[10px] text-dark-500 mt-0.5">
+            <span>{formatTimestamp(range.earliest)}</span>
+            <span>now</span>
+          </div>
+        </div>
+      }
+    >
+      {!diff && loading && <PanelSkeleton rows={3} />}
+      {error && <PanelMessage tone="error">{error}</PanelMessage>}
+      {diff && !error && total === 0 && (
+        <PanelMessage>Nothing changed since then: the same services and connections as now.</PanelMessage>
+      )}
+      {diff && !error && total > 0 && (
+        <div className={`p-4 space-y-4 transition-opacity ${loading ? 'opacity-60' : ''}`}>
+          <DiffList
+            label="Services appeared"
+            tone="text-lens-400"
+            items={diff.added_services.map(s => ({ key: s.id, title: serviceLabel(s), sub: s.node || s.pod_ip }))}
+          />
+          <DiffList
+            label="Services disappeared"
+            tone="text-rose-400"
+            items={diff.removed_services.map(s => ({ key: s.id, title: serviceLabel(s), sub: s.node || s.pod_ip }))}
+          />
+          <DiffList
+            label="Connections appeared"
+            tone="text-lens-400"
+            items={diff.added_connections.map(c => connectionItem(c, nameOf))}
+          />
+          <DiffList
+            label="Connections disappeared"
+            tone="text-rose-400"
+            items={diff.removed_connections.map(c => connectionItem(c, nameOf))}
+          />
+        </div>
+      )}
+    </DockPanel>
   )
 }
 
-function DiffStat({ label, names, color }: { label: string; names: string[]; color: string }) {
+interface DiffItem {
+  key: string
+  title: ReactNode
+  sub?: string
+}
+
+function connectionItem(c: Connection, nameOf: (id: string) => string): DiffItem {
+  const target = c.hostnames?.[0] || nameOf(c.target_id)
+  const proto = c.protocol && c.protocol !== 'tcp' ? `/${c.protocol}` : ''
+  return {
+    key: c.id,
+    title: (
+      <span className="inline-flex items-center gap-1 min-w-0">
+        <span className="truncate">{nameOf(c.source_id)}</span>
+        <ArrowRight size={11} className="shrink-0 text-dark-500" />
+        <span className="truncate">{target}</span>
+        <span className="shrink-0 font-mono text-[11px] text-dark-500">:{c.port}{proto}</span>
+      </span>
+    ),
+  }
+}
+
+function DiffList({ label, tone, items }: { label: string; tone: string; items: DiffItem[] }) {
+  if (items.length === 0) return null
   return (
     <div>
-      <div className={`text-sm font-medium ${color}`}>{label}: {names.length}</div>
-      {names.length > 0 && (
-        <div className="text-xs text-dark-500 mt-0.5" title={names.join(', ')}>
-          {names.slice(0, 5).join(', ')}{names.length > 5 ? `, +${names.length - 5} more` : ''}
-        </div>
-      )}
+      <div className={`text-xs font-medium ${tone}`}>{label} <span className="text-dark-500 tabular-nums">{items.length}</span></div>
+      <ul className="mt-1.5 space-y-1">
+        {items.slice(0, SHOWN).map(item => (
+          <li key={item.key} className="text-[13px] text-dark-200 min-w-0" title={item.key}>
+            <div className="truncate">{item.title}</div>
+            {item.sub && <div className="text-[11px] text-dark-500 truncate">{item.sub}</div>}
+          </li>
+        ))}
+      </ul>
+      {items.length > SHOWN && <p className="mt-1 text-[11px] text-dark-500">+{items.length - SHOWN} more</p>}
     </div>
   )
 }

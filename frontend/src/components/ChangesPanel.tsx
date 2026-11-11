@@ -1,6 +1,7 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, Crosshair, Globe, History, Loader2, Plus, Radar, RotateCcw, Unplug, X } from 'lucide-react'
 import { DriftEvent, DriftSummary } from '../types'
+import { DOCK_CLASS } from './dock'
 import {
   DriftFilter, driftMoment, fetchDriftEvents, fetchDriftSummary, isAfter, matchesFilter, onDriftEvents, onDriftResync,
   prettyName,
@@ -183,8 +184,7 @@ export default function ChangesPanel({ onClose, seenAtOpen, selectedId, onSelect
     : null
 
   return (
-    <div className="absolute top-4 left-4 z-20 w-[400px] max-w-[calc(100vw-2rem)] max-h-[calc(100%-8.5rem)] flex flex-col
-      rounded-xl bg-dark-900/95 backdrop-blur-md border border-dark-600 shadow-2xl shadow-black/50 overflow-hidden">
+    <section className={DOCK_CLASS} data-panel="changes" aria-label="Changes">
       {/* Header */}
       <div className="px-4 pt-4 pb-3 border-b border-dark-700/80 shrink-0">
         <div className="flex items-start justify-between">
@@ -199,7 +199,7 @@ export default function ChangesPanel({ onClose, seenAtOpen, selectedId, onSelect
               <p className="text-[11px] text-dark-500 leading-tight mt-0.5">Architecture drift, as it happens</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1 -m-1 rounded text-dark-500 hover:text-white transition-colors" title="Close">
+          <button onClick={onClose} className="p-1.5 -m-1 rounded-md text-dark-400 hover:text-white hover:bg-dark-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lens-500/50" title="Close" aria-label="Close Changes" data-testid="panel-close">
             <X size={16} />
           </button>
         </div>
@@ -326,7 +326,7 @@ export default function ChangesPanel({ onClose, seenAtOpen, selectedId, onSelect
           )}
         </div>
       )}
-    </div>
+    </section>
   )
 }
 

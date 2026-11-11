@@ -4,6 +4,7 @@ import {
   Crosshair, Info, ShieldCheck, AlertTriangle, History, Server,
 } from 'lucide-react'
 import { apiUrl } from '../lib/api'
+import { DOCK_CLASS } from './dock'
 import {
   CATEGORY_LABELS, Confidence, EXCLUSION_LABELS, IdleServiceItem, IdleSpendReport,
   formatDuration, formatMoney,
@@ -167,8 +168,7 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
   const needsPrice = report && !report.pricing.configured
 
   return (
-    <div className="absolute top-4 left-4 z-20 w-[440px] max-h-[calc(100%-10rem)] flex flex-col rounded-xl
-      bg-dark-900/95 backdrop-blur border border-dark-700 shadow-2xl overflow-hidden">
+    <section className={DOCK_CLASS} data-panel="idle" aria-label="Idle spend">
       {/* Title */}
       <div className="flex items-center gap-3 px-4 pt-4 pb-3 shrink-0">
         <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/25 flex items-center justify-center">
@@ -189,7 +189,7 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
         >
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
         </button>
-        <button onClick={onClose} className="p-1.5 rounded-md text-dark-400 hover:text-white hover:bg-dark-800 transition-colors" title="Close" aria-label="Close idle spend panel">
+        <button onClick={onClose} className="p-1.5 rounded-md text-dark-400 hover:text-white hover:bg-dark-800 transition-colors" title="Close" aria-label="Close idle spend panel" data-testid="panel-close">
           <X size={16} />
         </button>
       </div>
@@ -419,7 +419,7 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
           )}
         </>
       )}
-    </div>
+    </section>
   )
 }
 

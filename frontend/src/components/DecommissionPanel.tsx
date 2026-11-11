@@ -1,6 +1,7 @@
 import { Trash2 } from 'lucide-react'
 import ServiceListPanel from './ServiceListPanel'
 import { StaleService } from '../types'
+import { isAddressLike, nameFromServiceId } from '../utils/hostnames'
 
 function formatDaysAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime()
@@ -10,16 +11,19 @@ function formatDaysAgo(iso: string): string {
   return `${days} days ago`
 }
 
-export default function DecommissionPanel() {
+export default function DecommissionPanel({ onClose }: { onClose: () => void }) {
   return (
     <ServiceListPanel<StaleService>
+      id="stale"
       icon={<Trash2 size={16} />}
-      label="Decommission candidates"
-      tooltip="Services not seen recently - candidates for decommissioning"
+      tone="bg-dark-700/60 border-dark-600 text-dark-300"
+      title="Decommission candidates"
+      subtitle="Services not seen recently: no longer on the live map"
       fetchUrl="/api/v1/topology/history/stale"
-      emptyMessage="Nothing idle — everything's been seen recently."
+      emptyMessage="Nothing idle: everything has been seen recently."
+      onClose={onClose}
       getId={svc => svc.id}
-      getName={svc => svc.name || svc.id}
+      getName={svc => (svc.name && !isAddressLike(svc.name) ? svc.name : nameFromServiceId(svc.id))}
       renderSubtitle={svc => (
         <>last seen {formatDaysAgo(svc.last_seen)}{svc.node && <> · {svc.node}</>}</>
       )}
