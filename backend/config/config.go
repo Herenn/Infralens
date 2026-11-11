@@ -12,6 +12,7 @@ import (
 	"github.com/Herenn/Infralens/backend/api/middleware"
 	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
+	log "github.com/sirupsen/logrus"
 )
 
 // Config holds all configuration for the InfraLens backend.
@@ -236,8 +237,22 @@ func Load() *Config {
 		cfg.Storage.DSN = DefaultDemoDSN
 	}
 
+	if gap := cfg.Storage.HistoryMaxGap; gap > 0 && gap < MinHistoryMaxGap {
+		log.WithFields(log.Fields{"HISTORY_MAX_GAP": gap, "using": MinHistoryMaxGap}).Warn(
+			"HISTORY_MAX_GAP is shorter than a few agent heartbeats (host metrics every 5s): every heartbeat " +
+				"would open a new node interval and observation coverage would fragment; raising it")
+		cfg.Storage.HistoryMaxGap = MinHistoryMaxGap
+	}
+
 	return cfg
 }
+
+// MinHistoryMaxGap is the shortest HISTORY_MAX_GAP accepted: three default
+// agent heartbeat periods (host metrics every 5s). History refreshes are
+// throttled to half the gap, so below this consecutive heartbeats no longer
+// extend one interval and node coverage (see service/coverage.go) breaks
+// into a row per heartbeat.
+const MinHistoryMaxGap = 15 * time.Second
 
 // DefaultDemoDSN is the SQLite database demo mode uses when DB_DSN is unset.
 const DefaultDemoDSN = "infralens-demo.db"

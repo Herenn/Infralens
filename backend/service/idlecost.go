@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	log "github.com/sirupsen/logrus"
+
 	"github.com/Herenn/Infralens/backend/storage"
 )
 
@@ -380,10 +382,11 @@ type idleState struct {
 	cacheMu sync.Mutex
 	cache   map[string]*idleCacheEntry
 
-	groupsMu    sync.Mutex
-	groups      map[string]map[string]time.Time // group -> agent node -> last heard
-	groupsSwept time.Time
-	groupsSize  int // agent nodes across all groups
+	groupsMu        sync.Mutex
+	groups          map[string]map[string]time.Time // group -> agent node -> last heard
+	groupsSwept     time.Time
+	groupsSize      int // agent nodes across all groups
+	groupsCapLogged bool
 
 	liveMu      sync.Mutex
 	liveSeen    map[string]time.Time
@@ -439,7 +442,14 @@ func (ts *TopologyService) NoteAgentNode(group, node string) {
 	members := ts.idle.groups[group]
 	if _, known := members[node]; !known {
 		if ts.idle.groupsSize >= maxAgentNodes {
-			return // pathological; the registry only refines idle pricing
+			// Pathological (agent node names come from whoever can post
+			// host metrics): make room by forgetting the least recently
+			// heard node, so a real new node is never ignored.
+			ts.evictOldestAgentNodeLocked()
+			if !ts.idle.groupsCapLogged {
+				ts.idle.groupsCapLogged = true
+				log.WithField("cap", maxAgentNodes).Warn("Agent-node registry is full; forgetting the least recently heard agent nodes")
+			}
 		}
 		if members == nil {
 			members = map[string]time.Time{}
@@ -453,6 +463,28 @@ func (ts *TopologyService) NoteAgentNode(group, node string) {
 // maxAgentNodes caps the agent-node registry. Agent node names come from
 // whoever can post host metrics; far beyond any real cluster.
 const maxAgentNodes = 10000
+
+// evictOldestAgentNodeLocked forgets the least recently heard agent node.
+// groupsMu must be held. Linear, but only ever reached at the cap.
+func (ts *TopologyService) evictOldestAgentNodeLocked() {
+	var og, on string
+	var oldest time.Time
+	for g, nodes := range ts.idle.groups {
+		for n, at := range nodes {
+			if og == "" || at.Before(oldest) {
+				og, on, oldest = g, n, at
+			}
+		}
+	}
+	if og == "" {
+		return
+	}
+	delete(ts.idle.groups[og], on)
+	if len(ts.idle.groups[og]) == 0 {
+		delete(ts.idle.groups, og)
+	}
+	ts.idle.groupsSize--
+}
 
 // sweepAgentGroupsLocked drops agent nodes not heard from within
 // agentGroupTTL, and groups left empty. groupsMu must be held.

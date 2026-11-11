@@ -38,6 +38,15 @@ func TestAgentNodeRegistryIsBounded(t *testing.T) {
 	if size > maxAgentNodes || n > maxAgentNodes {
 		t.Errorf("registry grew to %d (%d in group), cap %d", size, n, maxAgentNodes)
 	}
+	// At the cap a new real node evicts the least recently heard one rather
+	// than being ignored.
+	ts.NoteAgentNode("cluster", "brand-new")
+	ts.idle.groupsMu.Lock()
+	_, kept := ts.idle.groups["cluster"]["brand-new"]
+	ts.idle.groupsMu.Unlock()
+	if !kept {
+		t.Error("a new node was ignored at the cap")
+	}
 }
 
 // TestLivenessRefreshFitsPruneAge: with PRUNE_MAX_AGE under a few minutes

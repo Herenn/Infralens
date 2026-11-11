@@ -391,7 +391,7 @@ HISTORY_ENABLED=true           # Record topology history (on by default; ~30% mo
                                # state, it cannot be re-derived by the agents once lost.
                                # Helm: --set backend.persistence.enabled=true
 HISTORY_RETENTION=720h         # How long history (and the Changes feed) is kept (30 days)
-HISTORY_MAX_GAP=5m             # Gap before a re-appearance opens a new interval
+HISTORY_MAX_GAP=5m             # Gap before a re-appearance opens a new interval (min 15s)
 
 # ── Changes feed / drift (needs HISTORY_ENABLED) ────────
 DRIFT_ENABLED=true             # Drift detection: the UI's Changes feed and the webhook
