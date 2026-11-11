@@ -29,15 +29,22 @@ services:
       - API_KEY=${API_KEY:-}
       # Set ALLOW_NO_AUTH=true to start without an API key (development only).
       - ALLOW_NO_AUTH=${ALLOW_NO_AUTH:-}
+      # UI login (optional, empty = UI and read endpoints stay public as in v3.0)
+      - UI_PASSWORD=${UI_PASSWORD:-}
+      - UI_USERNAME=${UI_USERNAME:-admin}
+      - SESSION_SECRET=${SESSION_SECRET:-}
+      - SESSION_TTL=${SESSION_TTL:-12h}
+      # Whose X-Forwarded-For to trust for login throttling (empty = private ranges, one hop)
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
       # AI Documentation (optional)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
+      - OPENAI_MODEL=${OPENAI_MODEL:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-haiku-20240307}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-pro}
+      - GEMINI_MODEL=${GEMINI_MODEL:-}
       - OLLAMA_URL=${OLLAMA_URL:-}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama2}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-}
       - DEFAULT_LLM_PROVIDER=${DEFAULT_LLM_PROVIDER:-openai}
       # Topology history. Retention is measured in days and is what decides how
       # far back the timeline can scrub; it is unrelated to PRUNE_MAX_AGE, which
@@ -45,11 +52,29 @@ services:
       - HISTORY_ENABLED=${HISTORY_ENABLED:-true}
       - HISTORY_RETENTION=${HISTORY_RETENTION:-720h}
       - HISTORY_MAX_GAP=${HISTORY_MAX_GAP:-5m}
-      # Architecture drift notifications - off unless a webhook URL is set
+      # Architecture drift detection (the Changes feed) - false switches it off
+      - DRIFT_ENABLED=${DRIFT_ENABLED:-true}
+      # Drift timings (apply to the feed with or without a webhook) and the
+      # optional webhook
       - DRIFT_WEBHOOK_URL=${DRIFT_WEBHOOK_URL:-}
       - DRIFT_CHECK_INTERVAL=${DRIFT_CHECK_INTERVAL:-5m}
       - DRIFT_GONE_AFTER=${DRIFT_GONE_AFTER:-24h}
       - DRIFT_WARMUP=${DRIFT_WARMUP:-1h}
+      # Idle spend - costs shown only once a price is set (no built-in prices)
+      - IDLE_COST_NODE_MONTHLY=${IDLE_COST_NODE_MONTHLY:-}
+      - IDLE_COST_NODE_PRICES=${IDLE_COST_NODE_PRICES:-}
+      - IDLE_COST_SERVICE_PRICES=${IDLE_COST_SERVICE_PRICES:-}
+      - IDLE_COST_CURRENCY=${IDLE_COST_CURRENCY:-USD}
+      - IDLE_COST_EXCLUDE=${IDLE_COST_EXCLUDE:-}
+      - IDLE_COST_WINDOW=${IDLE_COST_WINDOW:-720h}
+      - IDLE_COST_QUIET_AFTER=${IDLE_COST_QUIET_AFTER:-72h}
+      - IDLE_COST_WARMUP=${IDLE_COST_WARMUP:-24h}
+      # MCP endpoint (/mcp) for AI assistants - read-only. MCP_API_KEY is a
+      # key valid on /mcp only; give it to AI clients instead of API_KEY.
+      # With UI_PASSWORD set and no key, /mcp refuses every request.
+      - MCP_ENABLED=${MCP_ENABLED:-true}
+      - MCP_API_KEY=${MCP_API_KEY:-}
+      - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-}
     volumes:
       # The backend's SQLite database lives in the image's WORKDIR (/data).
       # Without this volume every restart discards it - and topology history,
@@ -103,6 +128,8 @@ services:
       - --inspect
     environment:
       - INFRALENS_API_KEY=${API_KEY:-}
+      # EXPERIMENTAL DNS names for external destinations (off by default)
+      - INFRALENS_DNS_NAMES=${INFRALENS_DNS_NAMES:-false}
     volumes:
       - /proc:/proc:ro
       - /sys:/sys:rw

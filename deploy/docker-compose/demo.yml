@@ -26,6 +26,12 @@ services:
       # Demo runs with no agents and no secrets; opting out of auth explicitly
       # is what the backend now requires instead of silently defaulting open.
       - ALLOW_NO_AUTH=true
+      # The demo needs no login. To try the login screen, uncomment:
+      # - UI_PASSWORD=change-me-to-something-long
+      # With a UI password /mcp needs a key too (it never bypasses the login):
+      # - MCP_API_KEY=change-me-to-a-long-random-key
+      # The demo seeds two weeks of history, a drift feed and idle-spend
+      # prices (labelled "demo"); keep it in its own database.
       - DB_DSN=/tmp/infralens-demo.db
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Herenn/Infralens/backend/storage"
@@ -73,6 +74,20 @@ type TopologyService struct {
 	historyRefreshMu    sync.Mutex
 	historyRefreshed    map[string]time.Time
 	historyRefreshSwept time.Time
+
+	// driftStatus is published by the running drift detector. See
+	// GetDriftStatus.
+	driftStatus atomic.Pointer[DriftStatus]
+
+	// Throttles DNS-name checks driven by throughput reports. See
+	// AddConnectionHostnames.
+	hostnames hostnameMemo
+
+	// Serializes read-merge-write of a connection's names. See connLocks.
+	connLocks connLocks
+
+	// idle holds the idle-spend feature's state (idlecost.go, liveness.go).
+	idle idleState
 }
 
 // NewTopologyService creates a new topology service.
@@ -188,6 +203,25 @@ func (ts *TopologyService) recordServiceHistory(ctx context.Context, svc *storag
 	}
 	if err := ts.store.History().RecordService(ctx, svc, observationTime(at), ts.historyMaxGap); err != nil {
 		ts.logHistoryFailure(err, "service_id", svc.ID)
+	}
+}
+
+// recordNodeHistory records an agent heartbeat (a host-metrics report) as
+// node observation coverage - see storage.NodeInterval. node is the real
+// agent node, group its CLUSTER_NAME group ("" if none). Throttled like the
+// throughput-driven refreshes: agents report every few seconds.
+func (ts *TopologyService) recordNodeHistory(ctx context.Context, node, group string, at time.Time) {
+	if !ts.historyEnabled || node == "" {
+		return
+	}
+	at = observationTime(at)
+	// Keyed by (group, node), like the intervals: same-named nodes in two
+	// clusters are two agents.
+	if !ts.claimHistoryRefresh("n:"+group+"\x00"+node, at) {
+		return
+	}
+	if err := ts.store.History().RecordNode(ctx, node, group, at, ts.historyMaxGap); err != nil {
+		ts.logHistoryFailure(err, "node", node)
 	}
 }
 
@@ -396,7 +430,9 @@ func (ts *TopologyService) UpdateServiceInspection(ctx context.Context, serviceI
 		svc, _ := ts.store.Services().Get(ctx, serviceID)
 		if svc != nil && svc.Tech == "" {
 			svc.Tech = insp.HTTPInfo.ServerHeader
-			ts.store.Services().Upsert(ctx, svc)
+			if err := ts.store.Services().Upsert(ctx, svc); err != nil {
+				log.WithError(err).WithField("service", serviceID).Warn("Failed to update service tech from inspection")
+			}
 		}
 	}
 	if insp.DBInfo != nil && insp.DBInfo.Type != "" {
@@ -406,7 +442,9 @@ func (ts *TopologyService) UpdateServiceInspection(ctx context.Context, serviceI
 			if insp.DBInfo.Version != "" {
 				svc.Tech = fmt.Sprintf("%s %s", insp.DBInfo.Type, insp.DBInfo.Version)
 			}
-			ts.store.Services().Upsert(ctx, svc)
+			if err := ts.store.Services().Upsert(ctx, svc); err != nil {
+				log.WithError(err).WithField("service", serviceID).Warn("Failed to update service tech from inspection")
+			}
 		}
 	}
 
@@ -415,26 +453,38 @@ func (ts *TopologyService) UpdateServiceInspection(ctx context.Context, serviceI
 
 // AddConnection adds or updates a connection in the topology.
 func (ts *TopologyService) AddConnection(ctx context.Context, conn *storage.Connection) error {
+	// Held across read-merge-write so concurrent reports for one edge don't
+	// lose each other's DNS names. See connLocks.
+	unlock := ts.connLocks.lock(conn.ID)
+
 	// Check if connection exists
 	existing, err := ts.store.Connections().Get(ctx, conn.ID)
 	if err != nil {
+		unlock()
 		return fmt.Errorf("checking existing connection: %w", err)
 	}
 
 	isNew := existing == nil
 
+	var previousNames []storage.Hostname
 	if existing != nil {
 		// Increment count for existing connection
 		conn.Count = existing.Count + 1
+		previousNames = existing.Hostnames
 	} else {
 		conn.Count = 1
 	}
+	// Names accumulate (each at its latest sighting) rather than being replaced.
+	conn.Hostnames = storage.MergeHostnames(conn.Hostnames, previousNames, time.Now())
+	namesChanged := !storage.EqualHostnames(conn.Hostnames, previousNames)
 
 	if err := ts.store.Connections().Upsert(ctx, conn); err != nil {
+		unlock()
 		return fmt.Errorf("upserting connection: %w", err)
 	}
 
 	ts.recordConnectionHistory(ctx, conn, conn.LastSeen)
+	unlock()
 
 	// Publish event
 	event := ConnectionEvent{
@@ -450,6 +500,11 @@ func (ts *TopologyService) AddConnection(ctx context.Context, conn *storage.Conn
 		ts.eventBus.PublishConnectionCreated(event)
 	} else {
 		ts.eventBus.PublishConnectionUpdated(event)
+	}
+	// The target's derived names changed, after its own update was already
+	// published (the processor stores the service before the connection).
+	if namesChanged {
+		ts.publishTargetUpdated(ctx, conn.TargetID)
 	}
 
 	return nil
@@ -469,6 +524,7 @@ func (ts *TopologyService) UpdateConnectionStats(ctx context.Context, connID str
 	// Get updated connection for event
 	conn, _ := ts.store.Connections().Get(ctx, connID)
 	if conn != nil {
+		ts.refreshEndpointsFromStats(ctx, conn)
 		ts.refreshHistoryFromStats(ctx, conn)
 		ts.eventBus.PublishConnectionUpdated(ConnectionEvent{
 			ConnectionID:  conn.ID,
@@ -485,8 +541,22 @@ func (ts *TopologyService) UpdateConnectionStats(ctx context.Context, connID str
 
 // UpdateNodeMetrics updates CPU/RAM metrics for a node.
 func (ts *TopologyService) UpdateNodeMetrics(ctx context.Context, metrics *storage.NodeMetrics) error {
+	return ts.UpdateAgentMetrics(ctx, metrics, "")
+}
+
+// UpdateAgentMetrics is UpdateNodeMetrics for an agent that reports under a
+// CLUSTER_NAME group: metrics.NodeName is the group (what the UI shows and
+// what the group's services carry), agentNode the real node, whose own
+// heartbeat is recorded - a group-level heartbeat would let one live agent
+// keep every node in the group "observed". agentNode "" means ungrouped.
+func (ts *TopologyService) UpdateAgentMetrics(ctx context.Context, metrics *storage.NodeMetrics, agentNode string) error {
 	if err := ts.store.Metrics().Upsert(ctx, metrics); err != nil {
 		return fmt.Errorf("upserting metrics: %w", err)
+	}
+	if agentNode == "" || agentNode == metrics.NodeName {
+		ts.recordNodeHistory(ctx, metrics.NodeName, "", metrics.LastSeen)
+	} else {
+		ts.recordNodeHistory(ctx, agentNode, metrics.NodeName, metrics.LastSeen)
 	}
 
 	ts.eventBus.PublishMetricsUpdated(MetricsEvent{
@@ -500,7 +570,11 @@ func (ts *TopologyService) UpdateNodeMetrics(ctx context.Context, metrics *stora
 
 // GetService retrieves a service by ID.
 func (ts *TopologyService) GetService(ctx context.Context, id string) (*storage.Service, error) {
-	return ts.store.Services().Get(ctx, id)
+	svc, err := ts.store.Services().Get(ctx, id)
+	if err == nil {
+		ts.annotateService(ctx, svc)
+	}
+	return svc, err
 }
 
 // GetConnection retrieves a connection by ID.
@@ -515,7 +589,13 @@ func (ts *TopologyService) GetNodeMetrics(ctx context.Context, nodeName string) 
 
 // ListServices returns all services matching the given filter.
 func (ts *TopologyService) ListServices(ctx context.Context, filter storage.ServiceFilter) ([]storage.Service, error) {
-	return ts.store.Services().List(ctx, filter)
+	services, err := ts.store.Services().List(ctx, filter)
+	if err == nil && len(services) > 0 {
+		if conns, cerr := ts.store.Connections().List(ctx, storage.ConnectionFilter{}); cerr == nil {
+			AnnotateHostnames(services, conns)
+		}
+	}
+	return services, err
 }
 
 // ListConnections returns all connections matching the given filter.
@@ -525,7 +605,9 @@ func (ts *TopologyService) ListConnections(ctx context.Context, filter storage.C
 
 // GetTopology returns a snapshot of the current topology.
 func (ts *TopologyService) GetTopology(ctx context.Context) (*storage.Topology, error) {
-	return ts.store.GetTopology(ctx)
+	topo, err := ts.store.GetTopology(ctx)
+	annotateTopology(topo)
+	return topo, err
 }
 
 // ImpactDirection controls which way GetImpact traverses the graph.
@@ -558,7 +640,7 @@ const (
 // non-zero instant is supplied.
 func (ts *TopologyService) resolveTopology(ctx context.Context, at time.Time) (*storage.Topology, error) {
 	if at.IsZero() {
-		return ts.store.GetTopology(ctx)
+		return ts.GetTopology(ctx)
 	}
 	return ts.GetTopologyAt(ctx, at)
 }
@@ -597,8 +679,8 @@ func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, dire
 	services := make([]storage.Service, 0, len(visited))
 	for id := range visited {
 		// A connection can reference an endpoint that is not in the services
-		// table - see realReachedCount for why that is routine rather than
-		// exceptional. Skip rather than emit a zero-value Service for it.
+		// table - see realReachedCount for when that still happens. Skip
+		// rather than emit a zero-value Service for it.
 		if svc, ok := svcByID[id]; ok {
 			services = append(services, svc)
 		}
@@ -628,13 +710,16 @@ func (ts *TopologyService) GetImpact(ctx context.Context, serviceID string, dire
 // one goes down."
 //
 // Counting the raw visited set instead would count endpoints that no longer
-// exist. That is not a rare edge case: ConnectionRepo.UpdateStats refreshes a
-// connection's last_seen from throughput reports, while only a connect/accept
-// event refreshes a *service's*. So a long-lived connection carrying steady
-// traffic keeps itself alive while its endpoints age out at PruneMaxAge and are
-// deleted - exactly the persistent connections (DB pools, gRPC channels) whose
-// blast radius matters most. Counting those phantoms inflates the ranking, and
-// can report a blast radius larger than the total number of services.
+// exist. Up to v3.0 that was routine: throughput reports refreshed only the
+// connection's last_seen, so the endpoints of a long-lived connection (DB
+// pools, gRPC channels) aged out at PruneMaxAge while the edge stayed. Since
+// v3.1 UpdateConnectionStats also refreshes both endpoints
+// (refreshEndpointsFromStats, liveness.go), so that no longer happens while
+// traffic flows - but an edge can still outlive an endpoint: a service
+// deleted (RemoveService, demo retirements) or pruned while its connection is
+// still inside its own prune window, or a connection reported for a peer that
+// was never upserted. Counting those phantoms would inflate the ranking, and
+// could report a blast radius larger than the total number of services.
 func realReachedCount(visited map[string]bool, known map[string]bool, seed string) int {
 	n := 0
 	for id := range visited {
@@ -789,6 +874,9 @@ func (ts *TopologyService) rankedCriticality(ctx context.Context) ([]ServiceCrit
 	if err != nil {
 		return nil, fmt.Errorf("getting topology: %w", err)
 	}
+	// So the ranking names external endpoints by hostname (ServiceHostname),
+	// like the map does, instead of ":443".
+	annotateTopology(topo)
 
 	byEndpoint := buildImpactIndex(topo.Connections, ImpactUpstream)
 
@@ -848,9 +936,9 @@ func (ts *TopologyService) GetOrphanServices(ctx context.Context) ([]storage.Ser
 	// and is exactly the "leftover" this panel is meant to surface. Counting it
 	// as connected made the panel disagree with the picture beside it.
 	//
-	// Reachable in normal operation: throughput reports refresh a connection's
-	// last_seen while only connect/accept refreshes a service's, so a peer can
-	// be pruned out from under a still-live edge (see realReachedCount).
+	// Rarer since v3.1 (throughput now keeps both endpoints alive), but still
+	// reachable: a peer deleted or pruned while the edge is inside its own
+	// prune window (see realReachedCount).
 	connected := make(map[string]bool, len(topo.Connections)*2)
 	for _, conn := range topo.Connections {
 		if !known[conn.SourceID] || !known[conn.TargetID] {
@@ -892,11 +980,13 @@ func (ts *TopologyService) GetTopologyAt(ctx context.Context, at time.Time) (*st
 	}
 
 	services := servicesFromIntervals(svcIntervals)
-	return &storage.Topology{
+	topo := &storage.Topology{
 		Services:    services,
 		Connections: edgesWithinServices(connectionsFromIntervals(connIntervals), services),
 		UpdatedAt:   at,
-	}, nil
+	}
+	annotateTopologyAt(topo, at)
+	return topo, nil
 }
 
 // edgesWithinServices drops connections whose endpoints are not among the
@@ -1051,14 +1141,18 @@ func (ts *TopologyService) GetTopologyDiff(ctx context.Context, from, to time.Ti
 		}
 	}
 
-	return &TopologyDiff{
+	diff := &TopologyDiff{
 		From:               from,
 		To:                 to,
 		AddedServices:      servicesFromIntervals(addedSvc),
 		RemovedServices:    servicesFromIntervals(removedSvc),
 		AddedConnections:   connectionsFromIntervals(addedConn),
 		RemovedConnections: connectionsFromIntervals(removedConn),
-	}, nil
+	}
+	// Each side is named from the edges present at its own instant.
+	annotateHostnamesAt(diff.AddedServices, connectionsFromIntervals(toConn), to)
+	annotateHostnamesAt(diff.RemovedServices, connectionsFromIntervals(fromConn), from)
+	return diff, nil
 }
 
 func servicesFromIntervals(intervals []storage.ServiceInterval) []storage.Service {
@@ -1092,6 +1186,7 @@ func connectionsFromIntervals(intervals []storage.ConnectionInterval) []storage.
 			LastSeen:  ci.LastSeen,
 			CreatedAt: ci.FirstSeen,
 			UpdatedAt: ci.LastSeen,
+			Hostnames: ci.Hostnames,
 		})
 	}
 	return out

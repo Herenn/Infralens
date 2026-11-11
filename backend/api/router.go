@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"runtime"
+	"sync"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -17,6 +18,7 @@ import (
 	"github.com/Herenn/Infralens/backend/pkg/llm"
 	"github.com/Herenn/Infralens/backend/pkg/metrics"
 	"github.com/Herenn/Infralens/backend/service"
+	"github.com/Herenn/Infralens/backend/service/demo"
 	"github.com/Herenn/Infralens/backend/storage"
 )
 
@@ -31,8 +33,16 @@ type Server struct {
 	k8sWatcher *k8s.Watcher
 	llmManager *llm.Manager
 
+	// sessions is nil unless UI login is enabled (UI_PASSWORD).
+	sessions *middleware.SessionManager
+
 	// stopBackground cancels goroutines the server owns (drift detection).
 	stopBackground context.CancelFunc
+	background     context.Context
+	driftOnce      sync.Once
+
+	// mcp is the /mcp endpoint, nil when MCP_ENABLED=false. See mcp.go.
+	mcp http.Handler
 }
 
 // NewServer creates a new API server.
@@ -50,6 +60,12 @@ func NewServer(
 	if cfg.Storage.HistoryEnabled {
 		topologySvc.EnableHistory(cfg.Storage.HistoryMaxGap, cfg.Storage.HistoryRetention)
 	}
+	topologySvc.SetPruneMaxAge(cfg.Storage.PruneMaxAge)
+
+	topologySvc.ConfigureIdleCost(cfg.IdleCost)
+	for _, w := range cfg.IdleCost.Warnings {
+		log.Warn(w)
+	}
 
 	// Create event processor
 	processor := service.NewEventProcessor(topologySvc, k8sWatcher)
@@ -64,35 +80,69 @@ func NewServer(
 		k8sWatcher: k8sWatcher,
 		llmManager: llmManager,
 	}
+	// Logouts are persisted so they survive restarts and reach every
+	// replica; both bundled stores support it.
+	var revocations storage.SessionRevocationRepository
+	if rs, ok := store.(storage.SessionRevocationStore); ok {
+		revocations = rs.SessionRevocations()
+	}
+	s.sessions = middleware.NewSessionManager(cfg.Auth, cfg.CORS.AllowedOrigins, revocations)
 
 	// Set build info for metrics
 	metrics.SetBuildInfo(handlers.Version, runtime.Version())
 
 	bgCtx, cancel := context.WithCancel(context.Background())
 	s.stopBackground = cancel
-	s.startDriftDetection(bgCtx)
+	s.background = bgCtx
+	// In demo mode the simulator writes a synthetic past at startup; the
+	// detector must seed after it, so main starts it once that is done.
+	if !cfg.Server.DemoMode {
+		s.StartDriftDetection()
+	}
 
 	s.setupRoutes()
 	return s
 }
 
-// startDriftDetection starts architecture drift notifications if a webhook is
-// configured. Drift is computed from topology history, so it needs history on.
+// StartDriftDetection starts drift detection, if configured. NewServer does
+// this itself except in demo mode, where it must wait until the simulator
+// has written its past (see main). Calling it again is a no-op.
+func (s *Server) StartDriftDetection() {
+	s.driftOnce.Do(func() { s.startDriftDetection(s.background) })
+}
+
+// startDriftDetection starts architecture drift detection. It runs whenever
+// topology history is on (drift is computed from it), recording changes in
+// the drift feed and pushing them to open UIs; a configured webhook is also
+// notified.
 func (s *Server) startDriftDetection(ctx context.Context) {
-	if !s.config.Drift.Enabled() {
+	if !s.config.Drift.DetectionEnabled {
+		if s.config.Drift.Enabled() {
+			log.Warn("DRIFT_WEBHOOK_URL is set but DRIFT_ENABLED=false - no drift notifications will be sent")
+		}
 		return
 	}
-	detector, err := s.topology.NewDriftDetector(service.DriftConfig{
+	cfg := service.DriftConfig{
 		Interval:  s.config.Drift.Interval,
 		GoneAfter: s.config.Drift.GoneAfter,
 		Warmup:    s.config.Drift.Warmup,
-	}, service.NewWebhookDriftNotifier(s.config.Drift.WebhookURL))
+	}
+	if s.config.Server.DemoMode {
+		cfg = demo.TuneDriftConfig(cfg)
+	}
+	var notifier service.DriftNotifier
+	if s.config.Drift.Enabled() {
+		notifier = service.NewWebhookDriftNotifier(s.config.Drift.WebhookURL)
+	}
+	detector, err := s.topology.NewDriftDetector(cfg, notifier)
 	if err != nil {
-		log.WithError(err).Warn("DRIFT_WEBHOOK_URL is set but drift detection could not start " +
-			"(it requires HISTORY_ENABLED=true) - no drift notifications will be sent")
+		if s.config.Drift.Enabled() {
+			log.WithError(err).Warn("DRIFT_WEBHOOK_URL is set but drift detection could not start " +
+				"(it requires HISTORY_ENABLED=true) - no drift notifications will be sent")
+		}
 		return
 	}
-	log.Info("Architecture drift notifications enabled")
+	log.WithField("webhook", notifier != nil).Info("Architecture drift detection enabled")
 	go detector.Run(ctx)
 }
 
@@ -105,6 +155,8 @@ func (s *Server) setupRoutes() {
 	wsHandler := handlers.NewWebSocketHandler(s.topology, s.eventBus)
 	healthHandler := handlers.NewHealthHandler(s.store, s.k8sWatcher)
 	aiHandler := handlers.NewAIHandler(s.topology, s.llmManager)
+	driftHandler := handlers.NewDriftHandler(s.topology)
+	authHandler := handlers.NewAuthHandler(s.sessions)
 
 	// API v1 subrouter
 	api := s.router.PathPrefix("/api/v1").Subrouter()
@@ -137,6 +189,14 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/graph/stats", topologyHandler.HandleGetStats).Methods("GET")
 	api.HandleFunc("/graph/criticality", topologyHandler.HandleGetCriticality).Methods("GET")
 	api.HandleFunc("/graph/orphans", topologyHandler.HandleGetOrphans).Methods("GET")
+	api.HandleFunc("/graph/idle-cost", topologyHandler.HandleGetIdleCost).Methods("GET")
+
+	// Architecture drift feed. Not registered at all when switched off, so
+	// it answers 404 and the UI hides it.
+	if s.config.Drift.DetectionEnabled {
+		api.HandleFunc("/drift/events", driftHandler.HandleListEvents).Methods("GET")
+		api.HandleFunc("/drift/summary", driftHandler.HandleSummary).Methods("GET")
+	}
 
 	// WebSocket endpoint
 	api.HandleFunc("/ws", wsHandler.HandleWebSocket)
@@ -147,6 +207,17 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/ai/docs", aiHandler.HandleDocs).Methods("POST")
 	api.HandleFunc("/ai/ask", aiHandler.HandleAsk).Methods("POST")
 	api.HandleFunc("/ai/providers", aiHandler.HandleProviders).Methods("GET")
+
+	// UI login. Always public; with UI_PASSWORD set, every other route not
+	// listed in middleware/uiauth.go requires a session or the API key.
+	api.HandleFunc("/auth/login", authHandler.HandleLogin).Methods("POST")
+	api.HandleFunc("/auth/logout", authHandler.HandleLogout).Methods("POST")
+	api.HandleFunc("/auth/status", authHandler.HandleStatus).Methods("GET")
+	// MCP endpoint for AI assistants. Not routed here: it is served ahead of
+	// the global middleware with its own auth and CORS - see mcp.go.
+	if s.config.MCP.Enabled {
+		s.mcp = s.newMCPEndpoint()
+	}
 
 	// Health/Ready endpoints
 	s.router.HandleFunc("/health", healthHandler.HandleHealth).Methods("GET")
@@ -172,10 +243,10 @@ func (s *Server) Handler() http.Handler {
 		middleware.Logging(),
 		middleware.BodyLimit(s.config.Server.MaxRequestBytes),
 		middleware.CORS(s.config.CORS),
-		middleware.Auth(s.config.Auth),
+		middleware.UIAuth(s.config.Auth, s.sessions),
 	)(s.router)
 
-	return handler
+	return s.withMCP(handler)
 }
 
 // EventBus returns the event bus for external access.
@@ -193,5 +264,6 @@ func (s *Server) Close() {
 	if s.stopBackground != nil {
 		s.stopBackground()
 	}
+	s.sessions.Close()
 	s.eventBus.Close()
 }

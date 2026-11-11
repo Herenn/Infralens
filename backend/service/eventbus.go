@@ -7,6 +7,8 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+
+	"github.com/Herenn/Infralens/backend/storage"
 )
 
 // EventType represents the type of topology event.
@@ -21,6 +23,10 @@ const (
 	EventConnectionDeleted EventType = "connection.deleted"
 	EventMetricsUpdated    EventType = "metrics.updated"
 	EventTopologySnapshot  EventType = "topology.snapshot"
+
+	// EventDriftDetected carries newly recorded architecture drift events;
+	// Data is []storage.DriftEvent.
+	EventDriftDetected EventType = "drift.detected"
 )
 
 // Event represents a topology change event.
@@ -195,6 +201,14 @@ func (eb *EventBus) PublishTopologySnapshot(topology interface{}) {
 	eb.Publish(Event{
 		Type: EventTopologySnapshot,
 		Data: topology,
+	})
+}
+
+// PublishDriftDetected publishes newly recorded drift events.
+func (eb *EventBus) PublishDriftDetected(events []storage.DriftEvent) {
+	eb.Publish(Event{
+		Type: EventDriftDetected,
+		Data: events,
 	})
 }
 

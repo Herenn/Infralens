@@ -28,6 +28,10 @@ type TCPEvent struct {
 	DstPort   uint16 `json:"dst_port"`
 	Direction uint8  `json:"direction"`
 	Protocol  string `json:"protocol,omitempty"` // "tcp" (default) or "udp"
+
+	// DstHostname is the DNS name the source resolved DstAddr from, as the
+	// agent observed it in DNS answers. Optional: older agents never send it.
+	DstHostname string `json:"dst_hostname,omitempty"`
 }
 
 // ThroughputStats represents throughput statistics for a connection.
@@ -45,6 +49,10 @@ type ThroughputStats struct {
 	BytesRecvRate float64 `json:"bytes_recv_rate"`
 	PacketsSent   uint64  `json:"packets_sent"`
 	PacketsRecv   uint64  `json:"packets_recv"`
+
+	// DstHostname: see TCPEvent.DstHostname. Applied to the outbound edge
+	// only.
+	DstHostname string `json:"dst_hostname,omitempty"`
 }
 
 // HostMetrics represents CPU/RAM metrics from an agent.
@@ -197,6 +205,12 @@ func (p *EventProcessor) ProcessTCPEvent(ctx context.Context, nodeName string, e
 		Protocol: normalizeProtocol(event.Protocol),
 		LastSeen: now,
 	}
+	// A DNS name only describes where an outbound connection was headed.
+	if event.Direction == DirectionOutbound {
+		if h, ok := normalizeHostname(event.DstHostname); ok {
+			conn.Hostnames = storage.ObservedHostnames(now, h)
+		}
+	}
 	if err := p.topology.AddConnection(ctx, conn); err != nil {
 		log.WithError(err).WithField("conn_id", connID).Error("Failed to add connection")
 	}
@@ -295,8 +309,20 @@ func (p *EventProcessor) ProcessThroughputBatch(ctx context.Context, nodeName st
 	}
 
 	totals := make(map[string]*aggregatedStats, len(batch))
+	var hostnames map[string][]string
 	for _, stats := range batch {
-		for _, connID := range p.connectionIDsForStats(stats) {
+		ids := p.connectionIDsForStats(stats)
+		// ids[0] is the outbound candidate - the only edge a DNS name can
+		// describe. See connectionIDsForStats.
+		if h, ok := normalizeHostname(stats.DstHostname); ok {
+			if hostnames == nil {
+				hostnames = make(map[string][]string)
+			}
+			if !containsString(hostnames[ids[0]], h) {
+				hostnames[ids[0]] = append(hostnames[ids[0]], h)
+			}
+		}
+		for _, connID := range ids {
 			agg, ok := totals[connID]
 			if !ok {
 				agg = &aggregatedStats{}
@@ -323,6 +349,12 @@ func (p *EventProcessor) ProcessThroughputBatch(ctx context.Context, nodeName st
 		}
 	}
 
+	for connID, names := range hostnames {
+		if err := p.topology.AddConnectionHostnames(ctx, connID, names); err != nil {
+			log.WithError(err).WithField("conn_id", connID).Debug("Failed to record connection hostnames")
+		}
+	}
+
 	return nil
 }
 
@@ -332,6 +364,8 @@ func (p *EventProcessor) ProcessHostMetrics(ctx context.Context, metrics HostMet
 	nodeName := metrics.NodeName
 	if metrics.ClusterName != "" {
 		nodeName = metrics.ClusterName
+		// Remember the real node behind the group (idle-spend pricing).
+		p.topology.NoteAgentNode(metrics.ClusterName, metrics.NodeName)
 	}
 
 	m := &storage.NodeMetrics{
@@ -343,6 +377,9 @@ func (p *EventProcessor) ProcessHostMetrics(ctx context.Context, metrics HostMet
 		LastSeen:   time.Now(),
 	}
 
+	if metrics.ClusterName != "" {
+		return p.topology.UpdateAgentMetrics(ctx, m, metrics.NodeName)
+	}
 	return p.topology.UpdateNodeMetrics(ctx, m)
 }
 
@@ -413,6 +450,15 @@ func makeServiceIDWithPort(ipStr string, port uint16) string {
 		ipPart = ip.String()
 	}
 	return fmt.Sprintf("%s:%d", ipPart, port)
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeProtocol maps agent-reported protocols to "tcp" or "udp".

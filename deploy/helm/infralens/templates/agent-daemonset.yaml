@@ -14,9 +14,20 @@ spec:
     metadata:
       labels:
         {{- include "infralens.agent.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the agents with the backend when the chart's Secret changes:
+        # they read INFRALENS_API_KEY from it at start, so rotating
+        # auth.apiKey with `helm upgrade` would otherwise restart only the
+        # backend (checksum on its pod too) and leave every agent sending the
+        # old key - all ingest refused until the DaemonSet is restarted by
+        # hand.
+        checksum/secret: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ include "infralens.serviceAccountName" . }}
       hostNetwork: true
+      # With hostNetwork the default policy uses the node's resolv.conf, which
+      # cannot resolve the backend Service name passed in --backend.
+      dnsPolicy: ClusterFirstWithHostNet
       hostPID: true
       containers:
         - name: agent
@@ -33,6 +44,21 @@ spec:
             - --cluster={{ .Values.agent.clusterName }}
             {{- end }}
             - --inspect
+            {{- if eq (toString .Values.agent.dnsNames) "true" }}
+            - --dns-names=true
+            {{- with .Values.agent.dns }}
+            {{- /* Set unless empty or null: a plain `if` would drop an explicit 0 ("0 disables" the stats log). */}}
+            {{- if and (not (kindIs "invalid" .maxPPS)) (ne (toString .maxPPS) "") }}
+            - --dns-max-pps={{ .maxPPS }}
+            {{- end }}
+            {{- if and (not (kindIs "invalid" .cacheSize)) (ne (toString .cacheSize) "") }}
+            - --dns-cache-size={{ .cacheSize }}
+            {{- end }}
+            {{- if and (not (kindIs "invalid" .statsInterval)) (ne (toString .statsInterval) "") }}
+            - --dns-stats-interval={{ .statsInterval }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:

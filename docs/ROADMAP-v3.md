@@ -1,8 +1,20 @@
 # InfraLens v3.0 — Roadmap
 
 **Shipped as v3.0.0 on 2026-11-04** (original target: September 1st).
+**v3.1.0 followed on 2026-11-11.**
 
-## Status at release
+## Status at v3.1.0
+
+| Item | v3.1.0 |
+|---|---|
+| 1. Historical topology | **Shipped (v3.0)**, corrected — SQLite stored local-zone times and gave wrong time travel/diff/blast radius on non-UTC hosts and across DST; all times are UTC now. Per-node agent heartbeats make "not observed" distinguishable from "quiet" |
+| 2. Change detection | **Feed shipped, still no rules engine** — drift events are persisted and shown in an in-UI Changes feed (unread badge, filters, jump to time travel, live over the WebSocket, `GET /api/v1/drift/events`); the webhook is optional. "Gone" is measured in observed time. Still missing: rules (ignore lists, traffic-change %N), a "reappeared" marker, a digest |
+| 3. Auth / sessions / RBAC | **Auth shipped, RBAC not** — opt-in single-admin login (`UI_PASSWORD`), signed cookie sessions with persisted logout, deny-by-default API under login, login throttling. No roles, no OIDC/SSO. Without `UI_PASSWORD` reads stay public as in v3.0 |
+| 4. Real latency | **Not shipped** — still open; still needs no schema/API change |
+
+Also in v3.1, outside the four items: a read-only MCP server (`/mcp`), Idle spend (beta), and DNS names for external destinations (experimental, off by default).
+
+## Status at v3.0.0 release
 
 | Item | v3.0.0 |
 |---|---|

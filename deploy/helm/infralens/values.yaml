@@ -26,21 +26,72 @@ backend:
     retention: 720h
     maxGap: 5m
 
-  # Architecture drift notifications (v3): POST to a webhook when a dependency
-  # appears that has never been seen before (flagging ones that reach the
-  # public internet) or an established one stops being observed. Works with
-  # Slack/Mattermost incoming webhooks as-is. Off unless webhookUrl is set;
-  # needs history.enabled. The URL is stored in the chart's Secret, since
-  # Slack-style webhook URLs embed their credential.
+  # Architecture drift: a dependency appears that has never been seen before
+  # (flagging ones that reach the public internet) or an established one
+  # stops being observed. Since v3.1 detection runs whenever history is
+  # enabled and records every change in the UI's Changes feed; the timings
+  # below apply to it with or without a webhook. Optionally it also POSTs to
+  # webhookUrl (Slack/Mattermost incoming webhooks work as-is); the URL is
+  # stored in the chart's Secret, since such URLs embed their credential.
   drift:
+    # false switches drift detection (feed and webhook) off entirely.
+    enabled: true
     webhookUrl: ""
-    checkInterval: 5m
-    # How long a dependency must go unobserved before it is reported gone.
-    # Long on purpose: this is drift, not outage alerting.
-    goneAfter: 24h
+    # Timings; empty uses the backend default shown (demo mode uses 15s / 5m
+    # / no warmup unless these are set).
+    # How often history is checked for changes (default 5m).
+    checkInterval: ""
+    # How long a dependency must go unobserved before it is reported gone
+    # (default 24h). Long on purpose: this is drift, not outage alerting.
+    goneAfter: ""
     # Suppresses "new dependency" reports for the first hour of history, so
-    # a fresh install does not announce the whole cluster.
-    warmup: 1h
+    # a fresh install does not announce the whole cluster (default 1h; "0s"
+    # disables).
+    warmup: ""
+
+  # Idle spend (v3.1, beta): cleanup candidates - services nothing talks to -
+  # with network evidence and an approximate share of their node's price.
+  # Candidates to verify, not recommendations to delete. No prices are built
+  # in: with nodeMonthly and the rules empty the panel shows evidence only.
+  # Prices are monthly amounts in `currency` (a label; no conversion).
+  # Per-node pricing needs per-node agents: with agent.clusterName set (the
+  # default "Kubernetes") every node reports under one group, and only a
+  # low-confidence cluster-wide split is possible - set it to "" for per-node
+  # attribution. Node rules match the real agent node names either way.
+  # Durations accept a day suffix ("7d").
+  idleCost:
+    # Default monthly cost of one node, e.g. "140".
+    nodeMonthly: ""
+    # Per-node overrides, glob=price, ";"-separated: "gpu-*=1800;db-1=420".
+    nodePrices: ""
+    # Per-service prices (name/ID glob=price), used instead of a node share -
+    # also the only way to price a node-less endpoint such as a managed DB.
+    servicePrices: ""
+    currency: USD
+    # Globs never flagged (known cron jobs, DR standbys): "nightly-*;dr-*".
+    exclude: ""
+    # History consulted (clamped to history.retention), how long without
+    # inbound traffic before a service is flagged, and how long a service
+    # (and history itself) must exist before anything is flagged.
+    window: 720h
+    quietAfter: 72h
+    warmup: 24h
+
+  # MCP (Model Context Protocol) endpoint at /mcp, so AI assistants (Claude
+  # Code, Claude Desktop, Cursor, ...) can query the topology: read-only tools,
+  # Streamable HTTP. When any key is set (auth.apiKey or mcp.apiKey) /mcp
+  # requires one. With neither: if auth.uiPassword is set /mcp refuses every
+  # request (it never bypasses the UI login); otherwise it is open only if
+  # auth.allowNoAuth is true. The UI session cookie never authenticates /mcp.
+  mcp:
+    enabled: true
+    # Read-only key accepted on /mcp only - give this to AI clients instead of
+    # the agents' write-capable auth.apiKey. Stored in the chart's Secret.
+    # Generate one with: openssl rand -hex 32
+    apiKey: ""
+    # Extra browser origins allowed to call /mcp (comma-separated). Loopback
+    # origins and non-browser clients are always allowed.
+    allowedOrigins: ""
 
   # Persistence for the backend's SQLite database. Disabled by default keeps
   # the quick-start single-command, but history does NOT survive a restart
@@ -99,6 +150,30 @@ backend:
     # Only enable it for evaluation or a trusted, isolated network.
     allowNoAuth: false
   
+    # UI login (v3.1). When uiPassword is set, the UI shows a login screen and
+    # every read endpoint and the WebSocket require a session or the apiKey.
+    # Empty keeps v3.0 behaviour: reads are public. Stored in the chart's
+    # Secret. Use a long random value: openssl rand -base64 24
+    uiPassword: ""
+    uiUsername: "admin"
+    # Signs session cookies. Optional with one replica (a random per-process
+    # key is used, so a restart signs everyone out); required for sessions to
+    # survive restarts or work across replicas. At least 32 characters:
+    # openssl rand -hex 32
+    sessionSecret: ""
+    # Absolute session lifetime; users sign in again after it.
+    sessionTTL: 12h
+    # Name of an existing Secret to read the UI credentials from instead of
+    # the values above. Keys: "ui-password" (required) and "session-secret"
+    # (optional). Pods are not restarted when it changes.
+    existingSecret: ""
+    # Whose X-Forwarded-For to believe when throttling logins per client.
+    # Empty (default): connections from loopback/private addresses (the
+    # ingress controller, the frontend's nginx) are proxies, one hop. Set an
+    # explicit CIDR list if untrusted clients can reach the backend directly
+    # from private addresses, or for multi-hop chains; "none" to ignore.
+    trustedProxies: ""
+
   # Demo mode - simulate a live topology without any agents (for evaluation)
   demoMode: false
   
@@ -107,19 +182,19 @@ backend:
     # OpenAI
     openai:
       apiKey: ""
-      model: "gpt-3.5-turbo"
+      model: ""  # empty = backend default (gpt-6-luna)
     # Anthropic
     anthropic:
       apiKey: ""
-      model: "claude-3-haiku-20240307"
+      model: ""  # empty = backend default (claude-haiku-5-5)
     # Google Gemini
     gemini:
       apiKey: ""
-      model: "gemini-pro"
+      model: ""  # empty = backend default (gemini-3.5-flash-lite)
     # Ollama (local)
     ollama:
       url: ""
-      model: "llama2"
+      model: ""  # empty = first installed local model
     # Default provider
     defaultProvider: "openai"
 
@@ -129,6 +204,12 @@ backend:
 frontend:
   enabled: true
   replicaCount: 1
+
+  # Where the frontend's nginx proxies /api/ and /mcp. Empty: this release's
+  # backend Service. Must be http(s)://host[:port] - a host name, IPv4 or
+  # [IPv6] address - with no path (a trailing slash is dropped; anything
+  # else is refused at render time).
+  backendUrl: ""
   
   image:
     repository: ghcr.io/herenn/infralens/frontend
@@ -169,7 +250,28 @@ agent:
   # Cluster name - groups all K8s nodes under this name in the UI
   # If empty, each node appears separately
   clusterName: "Kubernetes"
-  
+
+  # EXPERIMENTAL, off by default: show DNS names (api.stripe.com) instead of
+  # bare IPs for destinations. The agent learns them from DNS queries and
+  # their matching answers seen on the node (AF_PACKET capture, needs
+  # CAP_NET_RAW - granted by privileged mode). Names are only reported for
+  # destinations a workload actually connected to. Names are display labels,
+  # not verified facts: whoever controls a workload's resolver controls its
+  # labels. If capture cannot start, the agent logs once and reports IPs.
+  # Not yet run on a real cluster by the maintainers: run the smoke test in
+  # the README ("DNS Names for External Destinations") on a canary node first.
+  dnsNames: false
+  # Tuning for DNS name capture, used only with dnsNames: true. Empty keeps
+  # the agent's defaults; any other value (0 included) is passed on.
+  dns:
+    # Max captured DNS packets processed per second (agent default 5000; 0
+    # means the default); the excess is dropped by the kernel.
+    maxPPS: ""
+    # Max (client, IP) pairs kept in the name cache (0 means the default).
+    cacheSize: ""
+    # How often to log capture counters, e.g. "5m"; 0 disables the log.
+    statsInterval: ""
+
   # Agent runs with elevated privileges for eBPF
   securityContext:
     privileged: true
@@ -205,6 +307,9 @@ ingress:
           pathType: Prefix
           service: frontend
         - path: /api
+          pathType: Prefix
+          service: backend
+        - path: /mcp
           pathType: Prefix
           service: backend
   tls: []

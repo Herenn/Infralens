@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -483,7 +482,9 @@ func TestE2E_IngestAndQuery(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 
 	var stats map[string]int
-	json.NewDecoder(rr.Body).Decode(&stats)
+	if err := json.NewDecoder(rr.Body).Decode(&stats); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	if stats["services"] != 0 {
 		t.Errorf("Initial services count = %d, want 0", stats["services"])
 	}
@@ -552,7 +553,9 @@ func TestE2E_IngestAndQuery(t *testing.T) {
 	rr = httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 
-	json.NewDecoder(rr.Body).Decode(&stats)
+	if err := json.NewDecoder(rr.Body).Decode(&stats); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	if stats["services"] < 2 {
 		t.Errorf("Stats services = %d, want at least 2", stats["services"])
 	}
@@ -1216,19 +1219,6 @@ func TestHandleGetOrphans_LimitCapsResults(t *testing.T) {
 	if len(resp) != 2 {
 		t.Errorf("expected limit=2 to cap the response at 2, got %d", len(resp))
 	}
-}
-
-// =============================================================================
-// Helper to read response body
-// =============================================================================
-
-func readBody(t *testing.T, body io.Reader) string {
-	t.Helper()
-	data, err := io.ReadAll(body)
-	if err != nil {
-		t.Fatalf("Failed to read body: %v", err)
-	}
-	return string(data)
 }
 
 // TestHandleGetTopology_LivePresentAtNow is the regression guard for the

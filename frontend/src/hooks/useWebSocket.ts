@@ -1,8 +1,17 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Topology, Service, Connection, NodeMetrics } from '../types'
+import { Topology, Service, Connection, NodeMetrics, DriftEvent } from '../types'
 import { wsUrl } from '../lib/api'
+import { emitDriftEvents, emitDriftResync } from '../lib/drift'
+import { checkAfterDisconnect, notifyWebSocketRejected } from '../lib/auth'
 
 const RECONNECT_DELAY = 3000
+
+// Handshakes refused while the API and session are fine (e.g. a proxy
+// breaking the Origin check) are retried with exponential backoff, and after
+// this many in a row the app shows a persistent warning instead of retrying
+// silently forever.
+const REJECTED_WARN_AFTER = 3
+const MAX_RECONNECT_DELAY = 60000
 
 // Deltas are applied to an internal store and flushed to React state at most
 // this often, so high-frequency updates don't cause render storms.
@@ -10,7 +19,7 @@ const FLUSH_INTERVAL = 1000
 
 // Message envelope sent by the backend (v2 delta protocol)
 interface WSMessage {
-  type: 'snapshot' | 'service' | 'service.deleted' | 'connection' | 'connection.deleted' | 'metrics'
+  type: 'snapshot' | 'service' | 'service.deleted' | 'connection' | 'connection.deleted' | 'metrics' | 'drift'
   data: unknown
 }
 
@@ -55,6 +64,8 @@ export function useWebSocket() {
   // Set on unmount so the close handler doesn't schedule a reconnect for a
   // socket we deliberately tore down.
   const closedRef = useRef(false)
+  const everConnectedRef = useRef(false)
+  const rejectedCountRef = useRef(0)
   const storeRef = useRef<TopologyStore>(emptyStore())
   const dirtyRef = useRef(false)
   const flushTimeoutRef = useRef<number | null>(null)
@@ -137,6 +148,16 @@ export function useWebSocket() {
           break
         }
 
+        // Architecture drift just recorded - not topology state, so it is
+        // handed to the Changes feed rather than the store.
+        case 'drift': {
+          const { events, truncated } = msg.data as { events: DriftEvent[]; truncated?: boolean }
+          // A capped message (a large rollout) is a hint, not the data.
+          if (truncated) emitDriftResync()
+          else if (events?.length) emitDriftEvents(events)
+          break
+        }
+
         default:
           console.warn('Unknown WebSocket message type:', msg.type)
       }
@@ -146,15 +167,25 @@ export function useWebSocket() {
 
   const connect = useCallback(() => {
     if (closedRef.current) return
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    const current = wsRef.current
+    if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) return
 
     const url = wsUrl()
     console.log('Connecting to WebSocket:', url)
     const ws = new WebSocket(url)
+    let opened = false
 
     ws.onopen = () => {
       console.log('WebSocket connected')
+      opened = true
+      if (rejectedCountRef.current >= REJECTED_WARN_AFTER) {
+        notifyWebSocketRejected(false)
+      }
+      rejectedCountRef.current = 0
       setIsConnected(true)
+      // Live drift sent while we were away is gone; tell the feed to refetch.
+      if (everConnectedRef.current) emitDriftResync()
+      everConnectedRef.current = true
     }
 
     ws.onmessage = (event) => {
@@ -166,6 +197,9 @@ export function useWebSocket() {
     }
 
     ws.onclose = () => {
+      // A socket this hook has already let go of (see the effect cleanup)
+      // must not touch the state of the one that replaced it.
+      if (wsRef.current !== ws) return
       console.log('WebSocket disconnected')
       setIsConnected(false)
       wsRef.current = null
@@ -173,10 +207,30 @@ export function useWebSocket() {
       // Don't reconnect a socket we closed ourselves on unmount
       if (closedRef.current) return
 
-      // Schedule reconnection
-      reconnectTimeoutRef.current = window.setTimeout(() => {
-        connect()
-      }, RECONNECT_DELAY)
+      // A refused handshake looks like any other close from here (browsers
+      // hide its HTTP status), so ask whether the session is gone before
+      // retrying: if it is, the app drops to the login screen instead of
+      // retrying a doomed handshake every few seconds.
+      void checkAfterDisconnect().then((cause) => {
+        if (cause === 'unauthorized' || closedRef.current) return
+
+        let delay = RECONNECT_DELAY
+        if (!opened && cause === 'ok') {
+          // The server answered and the session is valid, yet the handshake
+          // failed: it is being refused, so back off and say so.
+          rejectedCountRef.current += 1
+          if (rejectedCountRef.current === REJECTED_WARN_AFTER) {
+            console.error('WebSocket handshake keeps being refused although the API is reachable')
+            notifyWebSocketRejected(true)
+          }
+          delay = Math.min(RECONNECT_DELAY * 2 ** (rejectedCountRef.current - 1), MAX_RECONNECT_DELAY)
+        }
+
+        // Schedule reconnection
+        reconnectTimeoutRef.current = window.setTimeout(() => {
+          connect()
+        }, delay)
+      })
     }
 
     ws.onerror = (error) => {
@@ -200,9 +254,20 @@ export function useWebSocket() {
         clearTimeout(flushTimeoutRef.current)
         flushTimeoutRef.current = null
       }
-      if (wsRef.current) {
-        wsRef.current.close()
-        wsRef.current = null
+      const ws = wsRef.current
+      wsRef.current = null
+      if (ws) {
+        // Detach first: a socket closed here never reconnects or reports,
+        // whatever order its events arrive in (React StrictMode mounts,
+        // unmounts and remounts in development).
+        ws.onopen = null
+        ws.onmessage = null
+        ws.onerror = null
+        ws.onclose = null
+        // Closing a socket that is still connecting logs a browser error;
+        // let it finish opening, then close it.
+        if (ws.readyState === WebSocket.CONNECTING) ws.addEventListener('open', () => ws.close())
+        else ws.close()
       }
     }
   }, [connect])

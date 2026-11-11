@@ -74,6 +74,37 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
           env:
+            # Agent/API authentication. Required: the backend refuses to start
+            # without API_KEY (or ALLOW_NO_AUTH=true). Create the Secret first:
+            #      kubectl -n infralens create secret generic infralens-api-key \
+            #        --from-literal=api-key="$(openssl rand -hex 32)"
+            # The agents read the same Secret. Not optional, so a missing
+            # Secret stops the pod (CreateContainerConfigError) instead of the
+            # backend exiting at startup.
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: infralens-api-key
+                  key: api-key
+            # UI login (opt-in; without it reads are public as in v3.0).
+            # 1. Create the Secret:
+            #      kubectl -n infralens create secret generic infralens-ui-auth \
+            #        --from-literal=ui-password="$(openssl rand -base64 24)" \
+            #        --from-literal=session-secret="$(openssl rand -hex 32)"
+            # 2. Uncomment the two entries below. They are deliberately not
+            #    optional: if the Secret or a key is missing (a typo), the pod
+            #    refuses to start (CreateContainerConfigError) instead of
+            #    silently serving the UI without a login.
+            # - name: UI_PASSWORD
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: infralens-ui-auth
+            #       key: ui-password
+            # - name: SESSION_SECRET
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: infralens-ui-auth
+            #       key: session-secret
             # Topology history. Retention is in days and decides how far back
             # the timeline scrubs; unrelated to PRUNE_MAX_AGE (current state).
             - name: HISTORY_ENABLED
@@ -82,6 +113,26 @@ spec:
               value: "720h"
             - name: HISTORY_MAX_GAP
               value: "5m"
+            # Architecture drift detection - the UI's Changes feed (v3.1).
+            # Optional webhook: DRIFT_WEBHOOK_URL.
+            - name: DRIFT_ENABLED
+              value: "true"
+            # MCP endpoint (/mcp) for AI assistants (v3.1). Give AI clients a
+            # read-only key valid on /mcp only (with UI_PASSWORD set and no
+            # key, /mcp refuses every request):
+            #      kubectl -n infralens create secret generic infralens-mcp \
+            #        --from-literal=mcp-api-key="$(openssl rand -hex 32)"
+            - name: MCP_ENABLED
+              value: "true"
+            # - name: MCP_API_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: infralens-mcp
+            #       key: mcp-api-key
+            # Idle spend (v3.1, beta): no prices are built in; set a node
+            # price to see costs. See deploy/docker-compose/env.example.
+            # - name: IDLE_COST_NODE_MONTHLY
+            #   value: "140"
           volumeMounts:
             # The backend's SQLite database lives in the image WORKDIR (/data).
             # Without this the container root is not writable by the nonroot

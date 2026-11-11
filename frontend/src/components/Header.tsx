@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image, Search, X, FileCode, Share2 } from 'lucide-react'
+import { Activity, Wifi, WifiOff, Server, GitBranch, Eye, EyeOff, Filter, Download, ChevronDown, FileJson, Image, Search, X, FileCode, Share2, Layers, History } from 'lucide-react'
 import { Stats } from '../types'
+import { LogOut } from 'lucide-react'
+import { useAuth } from '../lib/auth'
 
 interface FilterState {
   hideLocalhost: boolean
@@ -22,14 +24,19 @@ interface HeaderProps {
   onExportJson?: () => void
   onExportMermaid?: () => void
   onExportDot?: () => void
+  // Set while time travel shows a past instant.
+  viewingPast?: boolean
+  // Before the first live connection: neither "Live" nor "Disconnected".
+  connecting?: boolean
 }
 
-export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot }: HeaderProps) {
+export default function Header({ isConnected, stats, filters, onFiltersChange, filteredStats, searchQuery, onSearchChange, searchMatchCount, onExportPng, onExportJson, onExportMermaid, onExportDot, viewingPast, connecting }: HeaderProps) {
   const [filterDropdownOpen, setFilterDropdownOpen] = useState(false)
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false)
   const filterButtonRef = useRef<HTMLButtonElement>(null)
   const exportButtonRef = useRef<HTMLButtonElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const auth = useAuth()
   
   const displayStats = filteredStats || stats
   const hasFilters = filters.hideLocalhost || filters.minConnections > 1 || filters.collapseExternal
@@ -98,7 +105,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
   const exportPos = getDropdownPosition(exportButtonRef)
 
   return (
-    <header className="h-14 px-6 flex items-center justify-between border-b border-dark-800 bg-dark-900/80 backdrop-blur-sm relative z-50">
+    <header className="h-14 px-6 flex items-center justify-between gap-4 border-b border-dark-800 bg-dark-900/80 backdrop-blur-sm relative z-50">
       {/* Logo */}
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-lens-500 to-lens-600 flex items-center justify-center">
@@ -120,8 +127,9 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search services...  ( / )"
-            className="w-56 pl-9 pr-8 py-1.5 rounded-lg text-xs bg-dark-800 text-dark-200 border border-dark-700 
+            placeholder="Search services…  ( / )"
+            aria-label="Search services"
+            className="w-48 min-[1440px]:w-56 pl-9 pr-8 py-1.5 rounded-lg text-xs bg-dark-800 text-dark-200 border border-dark-700 
               placeholder:text-dark-500 focus:outline-none focus:border-lens-500/50 focus:ring-1 focus:ring-lens-500/30 transition-all"
           />
           {searchQuery && (
@@ -147,7 +155,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
         <button
           onClick={() => onFiltersChange({ ...filters, hideLocalhost: !filters.hideLocalhost })}
           className={`
-            flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+            flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all
             ${filters.hideLocalhost 
               ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' 
               : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
@@ -167,7 +175,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             setExportDropdownOpen(false)
           }}
           className={`
-            flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+            flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all
             ${filters.minConnections > 1 
               ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' 
               : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
@@ -214,7 +222,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
         <button
           onClick={() => onFiltersChange({ ...filters, collapseExternal: !filters.collapseExternal })}
           className={`
-            flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+            flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all
             ${filters.collapseExternal 
               ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' 
               : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
@@ -222,7 +230,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           `}
           title="Collapse external endpoints by type"
         >
-          <span>🗂️</span>
+          <Layers size={14} />
           <span>Collapse</span>
         </button>
 
@@ -233,7 +241,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             setExportDropdownOpen(!exportDropdownOpen)
             setFilterDropdownOpen(false)
           }}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300 hover:bg-dark-700"
+          className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300 hover:bg-dark-700"
           title="Export topology"
         >
           <Download size={14} />
@@ -302,15 +310,17 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             onClick={() => onFiltersChange({ hideLocalhost: false, minConnections: 1, collapseExternal: false })}
             className="px-2 py-1.5 rounded-lg text-xs text-dark-500 hover:text-dark-300 hover:bg-dark-800 transition-colors"
             title="Clear all filters"
+            aria-label="Clear all filters"
           >
-            ✕
+            <X size={14} />
           </button>
         )}
       </div>
 
-      {/* Stats */}
-      <div className="flex items-center gap-6">
-        <div className="flex items-center gap-2 text-sm">
+      {/* Stats and connection status. Secondary panels open from the rail on
+          the map's left (SideRail), which keeps this to one line at 1280px. */}
+      <div className="flex items-center gap-4 min-[1440px]:gap-6">
+        <div className="flex items-center gap-2 text-sm" title={`${displayStats.services} services`}>
           <Server size={16} className="text-dark-400" />
           <span className="text-dark-300">{displayStats.services}</span>
           <span className="text-dark-500">services</span>
@@ -319,7 +329,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           )}
         </div>
         
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-2 text-sm" title={`${displayStats.connections} connections`}>
           <GitBranch size={16} className="text-dark-400" />
           <span className="text-dark-300">{displayStats.connections}</span>
           <span className="text-dark-500">connections</span>
@@ -330,13 +340,27 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
 
         {/* Connection status */}
         <div className={`
-          flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium
-          ${isConnected 
+          flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap
+          ${viewingPast
+            ? 'bg-amber-500/10 text-amber-300 border border-amber-500/25'
+            : connecting && !isConnected
+            ? 'bg-dark-800 text-dark-400 border border-dark-700'
+            : isConnected
             ? 'bg-lens-500/10 text-lens-400 border border-lens-500/20' 
             : 'bg-red-500/10 text-red-400 border border-red-500/20'
           }
-        `}>
-          {isConnected ? (
+        `} data-testid="connection-status">
+          {viewingPast ? (
+            <>
+              <History size={14} />
+              <span>History</span>
+            </>
+          ) : connecting && !isConnected ? (
+            <>
+              <Wifi size={14} />
+              <span>Connecting</span>
+            </>
+          ) : isConnected ? (
             <>
               <Wifi size={14} />
               <span>Live</span>
@@ -348,6 +372,18 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             </>
           )}
         </div>
+
+        {/* Sign out (only when UI login is enabled) */}
+        {auth.loginRequired && (
+          <button
+            onClick={auth.logout}
+            className="shrink-0 flex items-center p-1.5 rounded-lg transition-all bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-200 hover:bg-dark-700"
+            title={auth.username ? `Signed in as ${auth.username} - sign out` : 'Sign out'}
+            aria-label="Sign out"
+          >
+            <LogOut size={14} />
+          </button>
+        )}
       </div>
     </header>
   )

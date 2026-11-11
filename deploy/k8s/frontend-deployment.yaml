@@ -23,9 +23,14 @@ spec:
           image: ghcr.io/herenn/infralens/frontend:latest
           imagePullPolicy: IfNotPresent
           ports:
+            # The image's nginx listens on 3000 (frontend/nginx.conf).
             - name: http
-              containerPort: 80
+              containerPort: 3000
               protocol: TCP
+          env:
+            # Where nginx proxies /api/ and /mcp: the backend Service.
+            - name: INFRALENS_BACKEND_URL
+              value: "http://infralens-backend:8080"
           livenessProbe:
             httpGet:
               path: /
@@ -73,8 +78,6 @@ metadata:
   labels:
     app.kubernetes.io/name: infralens
     app.kubernetes.io/component: frontend
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   ingressClassName: nginx
   rules:
@@ -88,7 +91,16 @@ spec:
                 name: infralens-frontend
                 port:
                   name: http
+          # No rewrite-target: the backend serves /api/... and /mcp as-is
+          # (rewriting to / broke every API call).
           - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: infralens-backend
+                port:
+                  name: http
+          - path: /mcp
             pathType: Prefix
             backend:
               service:

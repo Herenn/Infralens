@@ -41,6 +41,7 @@ type Store struct {
 	connections *ConnectionRepo
 	metrics     *MetricsRepo
 	history     *HistoryRepo
+	drift       *DriftRepo
 	pruneStop   chan struct{}
 	pruneWg     sync.WaitGroup
 }
@@ -101,13 +102,43 @@ func New(cfg storage.Config) (*Store, error) {
 	store.connections = &ConnectionRepo{db: db}
 	store.metrics = &MetricsRepo{db: db}
 	store.history = &HistoryRepo{db: db}
+	store.drift = &DriftRepo{db: db}
 
-	// Run migrations if enabled
+	// Run migrations if enabled; otherwise the schema must already be
+	// current (see storage.CheckSchema). A schema newer than this binary is
+	// refused either way (downgrades are unsupported).
+	if version, _, ok := store.schemaVersion(ctx); ok {
+		if err := storage.CheckSchemaNotNewer(migrations.FS, version, ok); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if cfg.AutoMigrate {
 		if err := store.migrate(ctx); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("running migrations: %w", err)
 		}
+	} else {
+		version, dirty, ok := store.schemaVersion(ctx)
+		if err := storage.CheckSchema(migrations.FS, version, dirty, ok); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("DB_AUTO_MIGRATE=false: %w", err)
+		}
+	}
+	if err := store.checkNodeIntervals(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	// Rows written before v3.1 store local-zone text; see dbTime. The schema
+	// is current here (migrated above or checked), so the code expects UTC -
+	// also when migrations are run out of band, which would otherwise leave
+	// v3.0 rows mis-comparing forever. Not bounded by the 5s connect timeout
+	// above - a large database takes longer - and not fatal: an unconverted
+	// row only mis-compares, and the next start resumes where this one
+	// stopped.
+	if _, err := store.NormalizeTimestamps(context.Background()); err != nil {
+		log.WithError(err).Warn("Could not normalize stored timestamps to UTC; will retry on next start")
 	}
 
 	// Start pruning goroutine if enabled.
@@ -127,6 +158,79 @@ func New(cfg storage.Config) (*Store, error) {
 	}).Info("SQLite store initialized")
 
 	return store, nil
+}
+
+// schemaVersion reads golang-migrate's bookkeeping. ok is false when the
+// table does not exist or holds no version.
+func (s *Store) schemaVersion(ctx context.Context) (version int, dirty, ok bool) {
+	err := s.db.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations LIMIT 1`).Scan(&version, &dirty)
+	if err != nil {
+		return 0, false, false
+	}
+	return version, dirty, true
+}
+
+// checkNodeIntervals: see storage.CheckNodeIntervals.
+func (s *Store) checkNodeIntervals(ctx context.Context) error {
+	version, _, ok := s.schemaVersion(ctx)
+	if !ok {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM pragma_table_info('node_intervals')`)
+	if err != nil {
+		return fmt.Errorf("checking node_intervals: %w", err)
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return fmt.Errorf("checking node_intervals: %w", err)
+		}
+		cols = append(cols, c)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("checking node_intervals: %w", err)
+	}
+	irows, err := s.db.QueryContext(ctx, `SELECT name FROM pragma_index_info(?) ORDER BY seqno`, storage.NodeIntervalsLookupIndex)
+	if err != nil {
+		return fmt.Errorf("checking node_intervals index: %w", err)
+	}
+	defer irows.Close()
+	var lookup []string
+	for irows.Next() {
+		var c string
+		if err := irows.Scan(&c); err != nil {
+			return fmt.Errorf("checking node_intervals index: %w", err)
+		}
+		lookup = append(lookup, c)
+	}
+	if err := irows.Err(); err != nil {
+		return fmt.Errorf("checking node_intervals index: %w", err)
+	}
+	return storage.CheckNodeIntervals(version, cols, lookup)
+}
+
+// MigrateTo moves the schema to exactly version, applying up or down
+// migrations as needed. For operators and the migration round-trip tests;
+// startup only ever migrates up (see migrate).
+func (s *Store) MigrateTo(version uint) error {
+	source, err := iofs.New(migrations.FS, ".")
+	if err != nil {
+		return fmt.Errorf("creating migration source: %w", err)
+	}
+	driver, err := sqlite.WithInstance(s.db, &sqlite.Config{})
+	if err != nil {
+		return fmt.Errorf("creating migration driver: %w", err)
+	}
+	m, err := migrate.NewWithInstance("iofs", source, "sqlite", driver)
+	if err != nil {
+		return fmt.Errorf("creating migrator: %w", err)
+	}
+	if err := m.Migrate(version); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("migrating to version %d: %w", version, err)
+	}
+	return nil
 }
 
 // migrate runs database migrations using golang-migrate with embedded SQL files.
@@ -198,6 +302,13 @@ func (s *Store) startPruning() {
 				} else {
 					pruned, err = s.pruneHistory(ctx)
 				}
+				// UI logouts are only needed until the session would have
+				// expired anyway.
+				if n, rerr := s.SessionRevocations().DeleteExpired(ctx, time.Now()); rerr != nil {
+					log.WithError(rerr).Error("Pruning UI session revocations failed")
+				} else {
+					pruned += n
+				}
 				cancel()
 				if err != nil {
 					log.WithError(err).Error("Pruning failed")
@@ -229,6 +340,11 @@ func (s *Store) Metrics() storage.MetricsRepository {
 // History returns the topology history repository.
 func (s *Store) History() storage.HistoryRepository {
 	return s.history
+}
+
+// Drift returns the architecture drift feed repository.
+func (s *Store) Drift() storage.DriftRepository {
+	return s.drift
 }
 
 // GetTopology returns the complete topology snapshot.
@@ -347,11 +463,18 @@ func (s *Store) pruneHistory(ctx context.Context) (int64, error) {
 	if retention <= 0 {
 		retention = storage.DefaultHistoryRetention
 	}
-	n, err := s.history.DeleteStale(ctx, time.Now().Add(-retention))
+	cutoff := time.Now().Add(-retention)
+	n, err := s.history.DeleteStale(ctx, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("pruning history: %w", err)
 	}
-	return n, nil
+	// The drift feed shares history's window: an event is only worth keeping
+	// while the topology it refers to can still be reconstructed.
+	events, err := s.drift.DeleteBefore(ctx, cutoff)
+	if err != nil {
+		return n, err
+	}
+	return n + events, nil
 }
 
 // Close closes the store and releases resources.
@@ -389,7 +512,7 @@ func (r *ServiceRepo) executor(ctx context.Context) interface {
 }
 
 func (r *ServiceRepo) Upsert(ctx context.Context, svc *storage.Service) error {
-	now := time.Now()
+	now := dbTime(time.Now())
 	labelsJSON, _ := json.Marshal(svc.Labels)
 
 	query := `
@@ -438,7 +561,9 @@ func (r *ServiceRepo) Get(ctx context.Context, id string) (*storage.Service, err
 	}
 
 	if labelsJSON != "" {
-		json.Unmarshal([]byte(labelsJSON), &svc.Labels)
+		// Malformed labels are tolerated, as before: a bad labels blob must
+		// not fail the whole read (same leniency as DecodeHostnames).
+		_ = json.Unmarshal([]byte(labelsJSON), &svc.Labels)
 	}
 	return &svc, nil
 }
@@ -463,7 +588,7 @@ func (r *ServiceRepo) List(ctx context.Context, filter storage.ServiceFilter) ([
 	}
 	if filter.LastSeenAfter != nil {
 		query += " AND last_seen > ?"
-		args = append(args, *filter.LastSeenAfter)
+		args = append(args, dbTime(*filter.LastSeenAfter))
 	}
 
 	query += " ORDER BY name"
@@ -492,7 +617,9 @@ func (r *ServiceRepo) List(ctx context.Context, filter storage.ServiceFilter) ([
 			return nil, err
 		}
 		if labelsJSON != "" {
-			json.Unmarshal([]byte(labelsJSON), &svc.Labels)
+			// Malformed labels are tolerated, as before: a bad labels blob must
+			// not fail the whole read (same leniency as DecodeHostnames).
+			_ = json.Unmarshal([]byte(labelsJSON), &svc.Labels)
 		}
 		services = append(services, svc)
 	}
@@ -505,7 +632,7 @@ func (r *ServiceRepo) Delete(ctx context.Context, id string) error {
 }
 
 func (r *ServiceRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
-	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM services WHERE last_seen < ?", before)
+	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM services WHERE last_seen < ?", dbTime(before))
 	if err != nil {
 		return 0, err
 	}
@@ -542,7 +669,7 @@ func (r *ServiceRepo) UpsertInspection(ctx context.Context, insp *storage.Servic
 	_, err := r.executor(ctx).ExecContext(ctx, query,
 		insp.ServiceID, insp.PID, insp.ProcessName, insp.CommandLine, insp.WorkingDir,
 		insp.EnvVarNames, insp.ListenPorts, insp.ConfigFiles, insp.Dependencies,
-		insp.HTTPInfo, insp.DBInfo, insp.K8sMetadata, insp.CodeContext, insp.InspectedAt)
+		insp.HTTPInfo, insp.DBInfo, insp.K8sMetadata, insp.CodeContext, dbTime(insp.InspectedAt))
 	return err
 }
 
@@ -584,18 +711,19 @@ func (r *ConnectionRepo) executor(ctx context.Context) interface {
 }
 
 func (r *ConnectionRepo) Upsert(ctx context.Context, conn *storage.Connection) error {
-	now := time.Now()
+	now := dbTime(time.Now())
 	if conn.Protocol == "" {
 		conn.Protocol = "tcp"
 	}
 	query := `
 		INSERT INTO connections (id, source_id, target_id, port, protocol, count, bytes_sent, bytes_recv,
 			bytes_sent_rate, bytes_recv_rate, packets_sent, packets_recv, last_seen, latency_ms,
-			created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			created_at, updated_at, hostnames)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			count = connections.count + 1,
 			protocol = excluded.protocol,
+			hostnames = CASE WHEN excluded.hostnames != '' THEN excluded.hostnames ELSE connections.hostnames END,
 			bytes_sent = CASE WHEN excluded.bytes_sent > 0 THEN excluded.bytes_sent ELSE connections.bytes_sent END,
 			bytes_recv = CASE WHEN excluded.bytes_recv > 0 THEN excluded.bytes_recv ELSE connections.bytes_recv END,
 			bytes_sent_rate = excluded.bytes_sent_rate,
@@ -609,31 +737,34 @@ func (r *ConnectionRepo) Upsert(ctx context.Context, conn *storage.Connection) e
 	_, err := r.executor(ctx).ExecContext(ctx, query,
 		conn.ID, conn.SourceID, conn.TargetID, conn.Port, conn.Protocol, conn.Count,
 		conn.BytesSent, conn.BytesRecv, conn.BytesSentRate, conn.BytesRecvRate,
-		conn.PacketsSent, conn.PacketsRecv, now, conn.Latency, now, now)
+		conn.PacketsSent, conn.PacketsRecv, now, conn.Latency, now, now,
+		storage.EncodeHostnames(conn.Hostnames))
 	return err
 }
 
 func (r *ConnectionRepo) Get(ctx context.Context, id string) (*storage.Connection, error) {
 	query := `SELECT id, source_id, target_id, port, protocol, count, bytes_sent, bytes_recv,
 		bytes_sent_rate, bytes_recv_rate, packets_sent, packets_recv, last_seen, latency_ms,
-		created_at, updated_at FROM connections WHERE id = ?`
+		created_at, updated_at, hostnames FROM connections WHERE id = ?`
 
 	var conn storage.Connection
+	var hostnames string
 	err := r.executor(ctx).QueryRowContext(ctx, query, id).Scan(
 		&conn.ID, &conn.SourceID, &conn.TargetID, &conn.Port, &conn.Protocol, &conn.Count,
 		&conn.BytesSent, &conn.BytesRecv, &conn.BytesSentRate, &conn.BytesRecvRate,
 		&conn.PacketsSent, &conn.PacketsRecv, &conn.LastSeen, &conn.Latency,
-		&conn.CreatedAt, &conn.UpdatedAt)
+		&conn.CreatedAt, &conn.UpdatedAt, &hostnames)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+	conn.Hostnames = storage.DecodeHostnames(hostnames)
 	return &conn, err
 }
 
 func (r *ConnectionRepo) List(ctx context.Context, filter storage.ConnectionFilter) ([]storage.Connection, error) {
 	query := `SELECT id, source_id, target_id, port, protocol, count, bytes_sent, bytes_recv,
 		bytes_sent_rate, bytes_recv_rate, packets_sent, packets_recv, last_seen, latency_ms,
-		created_at, updated_at FROM connections WHERE 1=1`
+		created_at, updated_at, hostnames FROM connections WHERE 1=1`
 	args := []interface{}{}
 
 	if filter.SourceID != "" {
@@ -650,7 +781,7 @@ func (r *ConnectionRepo) List(ctx context.Context, filter storage.ConnectionFilt
 	}
 	if filter.LastSeenAfter != nil {
 		query += " AND last_seen > ?"
-		args = append(args, *filter.LastSeenAfter)
+		args = append(args, dbTime(*filter.LastSeenAfter))
 	}
 
 	if filter.Limit > 0 {
@@ -669,13 +800,15 @@ func (r *ConnectionRepo) List(ctx context.Context, filter storage.ConnectionFilt
 	var connections []storage.Connection
 	for rows.Next() {
 		var conn storage.Connection
+		var hostnames string
 		err := rows.Scan(&conn.ID, &conn.SourceID, &conn.TargetID, &conn.Port, &conn.Protocol, &conn.Count,
 			&conn.BytesSent, &conn.BytesRecv, &conn.BytesSentRate, &conn.BytesRecvRate,
 			&conn.PacketsSent, &conn.PacketsRecv, &conn.LastSeen, &conn.Latency,
-			&conn.CreatedAt, &conn.UpdatedAt)
+			&conn.CreatedAt, &conn.UpdatedAt, &hostnames)
 		if err != nil {
 			return nil, err
 		}
+		conn.Hostnames = storage.DecodeHostnames(hostnames)
 		connections = append(connections, conn)
 	}
 	return connections, rows.Err()
@@ -687,7 +820,7 @@ func (r *ConnectionRepo) Delete(ctx context.Context, id string) error {
 }
 
 func (r *ConnectionRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
-	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM connections WHERE last_seen < ?", before)
+	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM connections WHERE last_seen < ?", dbTime(before))
 	if err != nil {
 		return 0, err
 	}
@@ -703,13 +836,13 @@ func (r *ConnectionRepo) Count(ctx context.Context) (int64, error) {
 func (r *ConnectionRepo) IncrementCount(ctx context.Context, id string) error {
 	_, err := r.executor(ctx).ExecContext(ctx,
 		"UPDATE connections SET count = count + 1, last_seen = ?, updated_at = ? WHERE id = ?",
-		time.Now(), time.Now(), id)
+		dbTime(time.Now()), dbTime(time.Now()), id)
 	return err
 }
 
 func (r *ConnectionRepo) UpdateStats(ctx context.Context, id string, bytesSent, bytesRecv uint64,
 	bytesSentRate, bytesRecvRate float64, packetsSent, packetsRecv uint64) error {
-	now := time.Now()
+	now := dbTime(time.Now())
 	_, err := r.executor(ctx).ExecContext(ctx,
 		`UPDATE connections SET 
 			bytes_sent = ?, bytes_recv = ?, 
@@ -718,6 +851,15 @@ func (r *ConnectionRepo) UpdateStats(ctx context.Context, id string, bytesSent, 
 			last_seen = ?, updated_at = ?
 		WHERE id = ?`,
 		bytesSent, bytesRecv, bytesSentRate, bytesRecvRate, packetsSent, packetsRecv, now, now, id)
+	return err
+}
+
+// SetHostnames replaces a connection's DNS names. Deliberately leaves count,
+// stats, last_seen and updated_at alone: learning a name is not a sighting.
+func (r *ConnectionRepo) SetHostnames(ctx context.Context, id string, hostnames []storage.Hostname) error {
+	_, err := r.executor(ctx).ExecContext(ctx,
+		"UPDATE connections SET hostnames = ? WHERE id = ?",
+		storage.EncodeHostnames(hostnames), id)
 	return err
 }
 
@@ -742,7 +884,7 @@ func (r *MetricsRepo) executor(ctx context.Context) interface {
 }
 
 func (r *MetricsRepo) Upsert(ctx context.Context, metrics *storage.NodeMetrics) error {
-	now := time.Now()
+	now := dbTime(time.Now())
 	query := `
 		INSERT INTO node_metrics (node_name, cpu_percent, mem_percent, mem_used, mem_total, last_seen, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -798,7 +940,7 @@ func (r *MetricsRepo) Delete(ctx context.Context, nodeName string) error {
 }
 
 func (r *MetricsRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
-	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM node_metrics WHERE last_seen < ?", before)
+	result, err := r.executor(ctx).ExecContext(ctx, "DELETE FROM node_metrics WHERE last_seen < ?", dbTime(before))
 	if err != nil {
 		return 0, err
 	}

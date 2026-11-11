@@ -13,12 +13,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Herenn/Infralens/agent/collector"
+	"github.com/Herenn/Infralens/agent/dnscache"
 	"github.com/Herenn/Infralens/agent/inspector"
 	"github.com/Herenn/Infralens/agent/metrics"
 	"github.com/Herenn/Infralens/agent/updater"
@@ -39,7 +41,29 @@ var (
 	autoUpdate          = flag.Bool("auto-update", true, "Enable automatic self-updates")
 	updateCheckInterval = flag.Duration("update-interval", 1*time.Hour, "Interval to check for updates")
 	showVersion         = flag.Bool("version", false, "Show version and exit")
+	dnsNames            = flag.Bool("dns-names", envBool("INFRALENS_DNS_NAMES", false), "EXPERIMENTAL: learn destination DNS names from DNS traffic seen on this host (or INFRALENS_DNS_NAMES env). Off by default")
+	dnsCacheSize        = flag.Int("dns-cache-size", dnscache.DefaultMaxEntries, "Max (client, IP) pairs kept in the DNS name cache")
+	dnsMaxPPS           = flag.Int("dns-max-pps", dnscache.DefaultMaxPPS, "Max captured DNS packets processed per second; excess is dropped by the kernel")
+	dnsStatsInterval    = flag.Duration("dns-stats-interval", 5*time.Minute, "Interval to log DNS capture counters (0 disables)")
 )
+
+// envBool reads a boolean environment variable, falling back to def when it is
+// unset or unparseable.
+func envBool(name string, def bool) bool {
+	if v, err := strconv.ParseBool(os.Getenv(name)); err == nil {
+		return v
+	}
+	return def
+}
+
+// dnsTracker learns destination hostnames from observed DNS answers. Nil when
+// disabled or unavailable; a nil tracker knows no names.
+var dnsTracker *dnscache.Tracker
+
+// outboundFlows remembers flows this host opened, so throughput samples
+// (which carry no direction) only look names up for outbound flows. Nil when
+// DNS names are off.
+var outboundFlows *dnscache.OutboundFlows
 
 // maxTrackedPIDs is the size at which shouldInspect sweeps expired entries out
 // of inspectedPIDs. It only bounds bookkeeping, not inspection itself.
@@ -93,6 +117,28 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	// DNS names for destinations. Fail-open: without it everything works as
+	// before and destinations are reported by IP only.
+	if *dnsNames {
+		tracker := dnscache.NewTracker(dnscache.Config{MaxEntries: *dnsCacheSize, MaxPPS: *dnsMaxPPS})
+		logf := func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "⚠ "+format+"\n", args...)
+		}
+		if err := tracker.Start(ctx, logf); err != nil {
+			fmt.Printf("⚠ DNS name capture unavailable: %v\n", err)
+			fmt.Println("  (destinations are reported by IP only)")
+		} else {
+			dnsTracker = tracker
+			outboundFlows = dnscache.NewOutboundFlows(0)
+			fmt.Println("✓ DNS name capture enabled (EXPERIMENTAL; destination hostnames from DNS answers matched to their queries)")
+			if *dnsStatsInterval > 0 {
+				go logDNSStats(ctx, tracker, *dnsStatsInterval)
+			}
+		}
+	} else {
+		fmt.Println("ℹ DNS name capture off (enable with --dns-names=true)")
+	}
 
 	fmt.Println("\nListening for TCP connections... (Press Ctrl+C to stop)")
 	fmt.Println("─────────────────────────────────────────────────────────")
@@ -226,6 +272,9 @@ type EventPayload struct {
 	DstPort   uint16 `json:"dst_port"`
 	Direction uint8  `json:"direction"`
 	Protocol  string `json:"protocol,omitempty"` // "tcp" or "udp"
+	// DstHostname is the DNS name this process's host/pod resolved DstAddr
+	// from, if observed. Outbound only. Older backends ignore it.
+	DstHostname string `json:"dst_hostname,omitempty"`
 }
 
 // EventBatch represents a batch of events sent to the backend
@@ -260,6 +309,10 @@ type ConnectionThroughput struct {
 	BytesRecvRate float64 `json:"bytes_recv_rate"`
 	PacketsSent   uint64  `json:"packets_sent"`
 	PacketsRecv   uint64  `json:"packets_recv"`
+	// DstHostname is the DNS name SrcAddr resolved DstAddr from, if observed.
+	// Re-sent on throughput reports so a name learned just after the connect
+	// event (or after a dropped event) still reaches the backend.
+	DstHostname string `json:"dst_hostname,omitempty"`
 }
 
 // InspectionReport is the JSON structure sent to the backend
@@ -276,7 +329,7 @@ type InspectionReport struct {
 // =============================================================================
 
 func eventToPayload(event *collector.Event) EventPayload {
-	return EventPayload{
+	p := EventPayload{
 		PID:       event.Pid,
 		Comm:      event.Comm,
 		SrcAddr:   event.SrcAddr.String(),
@@ -284,6 +337,38 @@ func eventToPayload(event *collector.Event) EventPayload {
 		DstPort:   event.DstPort,
 		Direction: event.Direction,
 		Protocol:  event.ProtocolString(),
+	}
+	// Only outbound: for an accepted connection the destination is us.
+	if event.Direction == collector.DirectionOutbound && dnsTracker != nil {
+		outboundFlows.Add(p.SrcAddr, p.DstAddr, p.DstPort, event.Protocol == collector.ProtocolUDP, time.Now())
+		p.DstHostname = dnsTracker.Hostname(p.SrcAddr, p.DstAddr)
+	}
+	return p
+}
+
+// throughputHostname looks a name up only for flows this host opened:
+// samples carry no direction, and a lookup both labels the sample and keeps
+// the cache entry alive, which an inbound flow must do neither of.
+func throughputHostname(t collector.Throughput) string {
+	if dnsTracker == nil || !outboundFlows.Contains(t.SrcAddr, t.DstAddr, t.DstPort, t.Protocol == collector.ProtocolUDP, time.Now()) {
+		return ""
+	}
+	return dnsTracker.Hostname(t.SrcAddr, t.DstAddr)
+}
+
+// logDNSStats logs the capture counters periodically, so an operator can see
+// it working (learned), being probed (unmatched), or overloaded
+// (budget_waits, kernel_drops).
+func logDNSStats(ctx context.Context, t *dnscache.Tracker, every time.Duration) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			fmt.Printf("ℹ DNS capture: %s flows=%d\n", t.Stats(), outboundFlows.Len())
+		}
 	}
 }
 
@@ -302,6 +387,7 @@ func throughputToPayload(t collector.Throughput) ConnectionThroughput {
 		BytesRecvRate: t.BytesRecvRate,
 		PacketsSent:   t.PacketsSent,
 		PacketsRecv:   t.PacketsRecv,
+		DstHostname:   throughputHostname(t),
 	}
 }
 
@@ -316,8 +402,12 @@ func printEvent(payload EventPayload) {
 		dirStr = "←"
 		dirLabel = "IN"
 	}
-	fmt.Printf("[%s] [%d] %s %s %s %s:%d\n",
-		dirLabel, payload.PID, payload.Comm, payload.SrcAddr, dirStr, payload.DstAddr, payload.DstPort)
+	host := ""
+	if payload.DstHostname != "" {
+		host = " (" + payload.DstHostname + ")"
+	}
+	fmt.Printf("[%s] [%d] %s %s %s %s:%d%s\n",
+		dirLabel, payload.PID, payload.Comm, payload.SrcAddr, dirStr, payload.DstAddr, payload.DstPort, host)
 }
 
 func printThroughput(stats []collector.Throughput) {

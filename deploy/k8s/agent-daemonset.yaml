@@ -20,18 +20,29 @@ spec:
       serviceAccountName: infralens-agent
       hostPID: true
       hostNetwork: true
+      # Resolve the backend Service name despite hostNetwork.
+      dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: agent
           image: ghcr.io/herenn/infralens/agent:latest
-          imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
           args:
-            - --backend=infralens-backend.infralens.svc.cluster.local:8080
-            - --poll-interval=1s
+            - --backend=http://infralens-backend.infralens.svc.cluster.local:8080
+            - --node=$(NODE_NAME)
+            # EXPERIMENTAL (v3.1): label external destinations with DNS names
+            # learned from DNS answers on the node. Off by default.
+            # - --dns-names=true
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            # Same key as the backend's API_KEY (see backend-deployment.yaml).
+            - name: INFRALENS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: infralens-api-key
+                  key: api-key
           securityContext:
             privileged: true
             capabilities:

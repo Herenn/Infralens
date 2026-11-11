@@ -4,9 +4,11 @@ package middleware
 import (
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
 	stdpath "path"
 	"strings"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -31,7 +33,39 @@ type AuthConfig struct {
 	// AllowNoAuth permits running with no APIKey configured. Without it, an
 	// empty APIKey is a startup error rather than a silently open server.
 	AllowNoAuth bool
+
+	// UIPassword enables UI login. When set, every route that is not
+	// explicitly public requires a session cookie or the API key - see
+	// UIAuth. When empty, the v3.0 rules above apply unchanged.
+	UIPassword string
+
+	// UIUsername is the single admin account's name (default "admin").
+	UIUsername string
+
+	// SessionSecret signs session cookies. Optional: when empty a random
+	// per-process key is used, so sessions end on restart and are not
+	// shared between replicas.
+	SessionSecret string
+
+	// SessionTTL is the absolute lifetime of a session (default 12h).
+	SessionTTL time.Duration
+
+	// TrustedProxies says whose X-Forwarded-For to believe when identifying
+	// clients for login throttling: "" (default: loopback and private
+	// ranges, one hop), "none", or a CIDR/IP list. See ratelimit.go.
+	TrustedProxies string
 }
+
+// minUIPasswordLen is the shortest UI_PASSWORD accepted at all; below
+// recommendedUIPasswordLen a warning is logged.
+const (
+	minUIPasswordLen         = 8
+	recommendedUIPasswordLen = 12
+)
+
+// minSessionSecretLen is the shortest SESSION_SECRET accepted. It is an HMAC
+// key, so anything guessable lets an attacker mint sessions offline.
+const minSessionSecretLen = 32
 
 // Validate reports whether the configuration is safe to serve with.
 func (cfg AuthConfig) Validate() error {
@@ -40,6 +74,20 @@ func (cfg AuthConfig) Validate() error {
 			"no API_KEY configured: event ingestion and AI endpoints would accept " +
 				"unauthenticated requests. Set API_KEY, or set ALLOW_NO_AUTH=true to " +
 				"run without authentication deliberately")
+	}
+	if cfg.SessionSecret != "" && len(cfg.SessionSecret) < minSessionSecretLen {
+		return fmt.Errorf("SESSION_SECRET must be at least %d characters "+
+			"(generate one with: openssl rand -hex 32)", minSessionSecretLen)
+	}
+	if cfg.SessionTTL < 0 {
+		return errors.New("SESSION_TTL must be a positive duration")
+	}
+	if cfg.UIPassword != "" && len(cfg.UIPassword) < minUIPasswordLen {
+		return fmt.Errorf("UI_PASSWORD must be at least %d characters "+
+			"(generate one with: openssl rand -base64 24)", minUIPasswordLen)
+	}
+	if _, err := parseTrustedProxies(cfg.TrustedProxies); err != nil {
+		return err
 	}
 	return nil
 }
@@ -66,7 +114,12 @@ func DefaultAuthConfig() AuthConfig {
 			"/api/v1/graph/stats",
 			"/api/v1/graph/criticality",
 			"/api/v1/graph/orphans",
+			"/api/v1/graph/idle-cost", // public read like orphans; cached server-side (TopologyService.GetIdleSpend)
 			"/api/v1/graph/impact",
+			// The drift feed is topology history in another shape, already
+			// pushed over the (public) WebSocket - same rule as the reads above.
+			"/api/v1/drift/events",
+			"/api/v1/drift/summary",
 			"/api/v1/k8s/status",
 			"/api/v1/ai/status",
 			"/api/v1/ai/providers",

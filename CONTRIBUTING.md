@@ -21,7 +21,7 @@ This project and everyone participating in it is governed by our commitment to p
 
 - **Linux** with kernel 5.8+ (for eBPF support)
 - **Go 1.24+**
-- **Node.js 18+**
+- **Node.js 20+** (what CI uses)
 - **clang/LLVM** (for compiling eBPF programs)
 - **Docker** (optional, for containerized development)
 
@@ -30,7 +30,7 @@ This project and everyone participating in it is governed by our commitment to p
 1. **Fork and clone the repository**
    ```bash
    git clone https://github.com/YOUR_USERNAME/Infralens.git
-   cd infralens
+   cd Infralens
    ```
 
 2. **Install Go dependencies**
@@ -64,6 +64,37 @@ This project and everyone participating in it is governed by our commitment to p
    # Frontend
    cd frontend && npm install && npm run dev
    ```
+
+### Working on the UI without Linux (demo mode)
+
+The backend's demo mode simulates a multi-node topology with two weeks of
+history, a Changes feed, idle-spend candidates and named external services —
+no agents, no eBPF:
+
+```bash
+# Terminal 1: backend on :8080 (from the repository root)
+DEMO_MODE=true ALLOW_NO_AUTH=true go run ./backend
+
+# Terminal 2: frontend on :3000
+cd frontend && npm install && npm run dev
+```
+
+- Demo mode writes to its own SQLite file, `infralens-demo.db`, unless
+  `DB_DSN` is set, so it never mixes simulated history into a real database.
+  Delete the file to start the story from scratch.
+- The Vite dev server proxies `/api` (including the WebSocket) and exactly
+  `/mcp` to `localhost:8080`. It keeps the browser's `Host` header on purpose:
+  with UI login on, the backend compares the WebSocket's `Origin` with it.
+  To try the login screen, add `UI_PASSWORD=<at least 8 characters>` to the
+  backend's environment.
+
+### Re-recording the README GIF
+
+`docs/demo.gif` is recorded by a script, not by hand: see
+[`scripts/demo-gif/README.md`](scripts/demo-gif/README.md)
+(`cd scripts/demo-gif && npm ci && npm run record -- --install`; needs Chrome,
+`ffmpeg` and `gifski`). Edit `scripts/demo-gif/storyboard.mjs` to change what
+it shows.
 
 ## How to Contribute
 

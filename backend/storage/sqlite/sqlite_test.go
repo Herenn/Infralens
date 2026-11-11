@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -273,7 +275,7 @@ func TestServiceRepo_DeleteStale(t *testing.T) {
 	// Manually update last_seen for stale service
 	_, err := store.db.ExecContext(ctx,
 		"UPDATE services SET last_seen = ? WHERE id = ?",
-		now.Add(-1*time.Hour), "stale-1")
+		dbTime(now.Add(-1*time.Hour)), "stale-1") // the form the store writes
 	if err != nil {
 		t.Fatalf("Failed to update last_seen: %v", err)
 	}
@@ -316,7 +318,9 @@ func TestServiceRepo_Count(t *testing.T) {
 	// Add services
 	for i := 0; i < 5; i++ {
 		svc := &storage.Service{ID: string(rune('a' + i)), Name: "test", Healthy: true}
-		store.Services().Upsert(ctx, svc)
+		if err := store.Services().Upsert(ctx, svc); err != nil {
+			t.Fatalf("setup: Services().Upsert: %v", err)
+		}
 	}
 
 	count, err = store.Services().Count(ctx)
@@ -408,7 +412,9 @@ func TestConnectionRepo_List(t *testing.T) {
 		{ID: "c3", SourceID: "b", TargetID: "c", Port: 80},
 	}
 	for _, c := range conns {
-		store.Connections().Upsert(ctx, c)
+		if err := store.Connections().Upsert(ctx, c); err != nil {
+			t.Fatalf("setup: Connections().Upsert: %v", err)
+		}
 	}
 
 	tests := []struct {
@@ -446,7 +452,9 @@ func TestConnectionRepo_UpdateStats(t *testing.T) {
 		TargetID: "b",
 		Port:     80,
 	}
-	store.Connections().Upsert(ctx, conn)
+	if err := store.Connections().Upsert(ctx, conn); err != nil {
+		t.Fatalf("setup: Connections().Upsert: %v", err)
+	}
 
 	// Update stats
 	err := store.Connections().UpdateStats(ctx, conn.ID, 5000, 10000, 500.0, 1000.0, 50, 100)
@@ -500,7 +508,9 @@ func TestMetricsRepo_List(t *testing.T) {
 	// Insert metrics
 	nodes := []string{"node-1", "node-2", "node-3"}
 	for _, n := range nodes {
-		store.Metrics().Upsert(ctx, &storage.NodeMetrics{NodeName: n, CPUPercent: 50.0})
+		if err := store.Metrics().Upsert(ctx, &storage.NodeMetrics{NodeName: n, CPUPercent: 50.0}); err != nil {
+			t.Fatalf("setup: Metrics().Upsert: %v", err)
+		}
 	}
 
 	got, err := store.Metrics().List(ctx)
@@ -521,10 +531,18 @@ func TestStore_GetTopology(t *testing.T) {
 	ctx := context.Background()
 
 	// Populate data
-	store.Services().Upsert(ctx, &storage.Service{ID: "svc-1", Name: "a", Healthy: true})
-	store.Services().Upsert(ctx, &storage.Service{ID: "svc-2", Name: "b", Healthy: true})
-	store.Connections().Upsert(ctx, &storage.Connection{ID: "c1", SourceID: "svc-1", TargetID: "svc-2", Port: 80})
-	store.Metrics().Upsert(ctx, &storage.NodeMetrics{NodeName: "node-1", CPUPercent: 50.0})
+	if err := store.Services().Upsert(ctx, &storage.Service{ID: "svc-1", Name: "a", Healthy: true}); err != nil {
+		t.Fatalf("setup: Services().Upsert: %v", err)
+	}
+	if err := store.Services().Upsert(ctx, &storage.Service{ID: "svc-2", Name: "b", Healthy: true}); err != nil {
+		t.Fatalf("setup: Services().Upsert: %v", err)
+	}
+	if err := store.Connections().Upsert(ctx, &storage.Connection{ID: "c1", SourceID: "svc-1", TargetID: "svc-2", Port: 80}); err != nil {
+		t.Fatalf("setup: Connections().Upsert: %v", err)
+	}
+	if err := store.Metrics().Upsert(ctx, &storage.NodeMetrics{NodeName: "node-1", CPUPercent: 50.0}); err != nil {
+		t.Fatalf("setup: Metrics().Upsert: %v", err)
+	}
 
 	// Get topology
 	topo, err := store.GetTopology(ctx)
@@ -548,19 +566,37 @@ func TestStore_Prune(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert data
-	store.Services().Upsert(ctx, &storage.Service{ID: "fresh", Name: "fresh", Healthy: true})
-	store.Services().Upsert(ctx, &storage.Service{ID: "stale", Name: "stale", Healthy: true})
-	store.Connections().Upsert(ctx, &storage.Connection{ID: "c-fresh", SourceID: "a", TargetID: "b", Port: 80})
-	store.Connections().Upsert(ctx, &storage.Connection{ID: "c-stale", SourceID: "x", TargetID: "y", Port: 80})
-	store.Metrics().Upsert(ctx, &storage.NodeMetrics{NodeName: "fresh-node", CPUPercent: 50.0})
-	store.Metrics().Upsert(ctx, &storage.NodeMetrics{NodeName: "stale-node", CPUPercent: 50.0})
+	if err := store.Services().Upsert(ctx, &storage.Service{ID: "fresh", Name: "fresh", Healthy: true}); err != nil {
+		t.Fatalf("setup: Services().Upsert: %v", err)
+	}
+	if err := store.Services().Upsert(ctx, &storage.Service{ID: "stale", Name: "stale", Healthy: true}); err != nil {
+		t.Fatalf("setup: Services().Upsert: %v", err)
+	}
+	if err := store.Connections().Upsert(ctx, &storage.Connection{ID: "c-fresh", SourceID: "a", TargetID: "b", Port: 80}); err != nil {
+		t.Fatalf("setup: Connections().Upsert: %v", err)
+	}
+	if err := store.Connections().Upsert(ctx, &storage.Connection{ID: "c-stale", SourceID: "x", TargetID: "y", Port: 80}); err != nil {
+		t.Fatalf("setup: Connections().Upsert: %v", err)
+	}
+	if err := store.Metrics().Upsert(ctx, &storage.NodeMetrics{NodeName: "fresh-node", CPUPercent: 50.0}); err != nil {
+		t.Fatalf("setup: Metrics().Upsert: %v", err)
+	}
+	if err := store.Metrics().Upsert(ctx, &storage.NodeMetrics{NodeName: "stale-node", CPUPercent: 50.0}); err != nil {
+		t.Fatalf("setup: Metrics().Upsert: %v", err)
+	}
 
 	// Make some data stale
 	now := time.Now()
 	oldTime := now.Add(-1 * time.Hour)
-	store.db.ExecContext(ctx, "UPDATE services SET last_seen = ? WHERE id = ?", oldTime, "stale")
-	store.db.ExecContext(ctx, "UPDATE connections SET last_seen = ? WHERE id = ?", oldTime, "c-stale")
-	store.db.ExecContext(ctx, "UPDATE node_metrics SET last_seen = ? WHERE node_name = ?", oldTime, "stale-node")
+	if _, err := store.db.ExecContext(ctx, "UPDATE services SET last_seen = ? WHERE id = ?", dbTime(oldTime), "stale"); err != nil {
+		t.Fatalf("setup: db.ExecContext: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE connections SET last_seen = ? WHERE id = ?", dbTime(oldTime), "c-stale"); err != nil {
+		t.Fatalf("setup: db.ExecContext: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE node_metrics SET last_seen = ? WHERE node_name = ?", dbTime(oldTime), "stale-node"); err != nil {
+		t.Fatalf("setup: db.ExecContext: %v", err)
+	}
 
 	// Prune
 	pruned, err := store.Prune(ctx, 30*time.Minute)
@@ -592,8 +628,7 @@ func TestStore_RunInTransaction(t *testing.T) {
 
 	// Successful transaction
 	err := store.RunInTransaction(ctx, func(txCtx context.Context) error {
-		store.Services().Upsert(txCtx, &storage.Service{ID: "tx-svc", Name: "tx", Healthy: true})
-		return nil
+		return store.Services().Upsert(txCtx, &storage.Service{ID: "tx-svc", Name: "tx", Healthy: true})
 	})
 	if err != nil {
 		t.Fatalf("Transaction failed: %v", err)
@@ -613,7 +648,9 @@ func TestStore_RunInTransaction_Rollback(t *testing.T) {
 	// Transaction that returns error (should rollback)
 	testErr := storage.ErrNotFound
 	err := store.RunInTransaction(ctx, func(txCtx context.Context) error {
-		store.Services().Upsert(txCtx, &storage.Service{ID: "rollback-svc", Name: "rollback", Healthy: true})
+		if err := store.Services().Upsert(txCtx, &storage.Service{ID: "rollback-svc", Name: "rollback", Healthy: true}); err != nil {
+			t.Errorf("Upsert inside transaction failed: %v", err)
+		}
 		return testErr // Return error to trigger rollback
 	})
 	if err != testErr {
@@ -634,4 +671,150 @@ func TestStore_Ping(t *testing.T) {
 	if err := store.Ping(ctx); err != nil {
 		t.Errorf("Ping failed: %v", err)
 	}
+}
+
+func TestSQLiteMigrationsRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	storage.MigrationRoundTripSuite(t, store, store, 7)
+}
+
+// With DB_AUTO_MIGRATE=false the store refuses to open a schema older than
+// this binary's newest migration, naming what is missing, instead of
+// half-working ("no such table" on every request).
+func TestOutdatedSchemaWithoutAutoMigrateFailsFast(t *testing.T) {
+	dsn := t.TempDir() + "/old.db"
+	s, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MigrateTo(6); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+
+	_, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: false})
+	if err == nil || !strings.Contains(err.Error(), "000007_add_node_intervals") || !strings.Contains(err.Error(), "version 6") {
+		t.Fatalf("opening a version-6 schema without auto-migrate: %v, want a clear error naming 000007", err)
+	}
+	// An empty database is "version 0": everything is missing.
+	_, err = New(storage.Config{Driver: "sqlite", DSN: t.TempDir() + "/empty.db", AutoMigrate: false})
+	if err == nil || !strings.Contains(err.Error(), "000001_init_schema") {
+		t.Fatalf("empty database without auto-migrate: %v", err)
+	}
+	// Current: opens.
+	s, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	s, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: false})
+	if err != nil {
+		t.Fatalf("current schema without auto-migrate: %v", err)
+	}
+	_ = s.Close()
+}
+
+// A schema newer than this binary (migrated by a newer InfraLens) is refused
+// in both DB_AUTO_MIGRATE modes: downgrades are unsupported.
+func TestNewerSchemaIsRefused(t *testing.T) {
+	dsn := t.TempDir() + "/newer.db"
+	s, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE schema_migrations SET version = 99`); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	for _, auto := range []bool{true, false} {
+		_, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: auto})
+		if err == nil || !strings.Contains(err.Error(), "version 99, newer than this backend knows (7)") || !strings.Contains(err.Error(), "Downgrades are not supported") {
+			t.Errorf("auto-migrate=%v: %v, want a clear refusal", auto, err)
+		}
+	}
+}
+
+// A database migrated by a development build whose migration 7 created
+// node_intervals without group_name is refused at startup with recovery
+// instructions; following them recovers it.
+func TestDevBuildNodeIntervalsAreRefused(t *testing.T) {
+	dsn := t.TempDir() + "/dev.db"
+	s, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`DROP TABLE node_intervals`,
+		`CREATE TABLE node_intervals (id INTEGER PRIMARY KEY AUTOINCREMENT, node_name TEXT NOT NULL, first_seen TIMESTAMP NOT NULL, last_seen TIMESTAMP NOT NULL)`,
+	} {
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.Close()
+	for _, auto := range []bool{true, false} {
+		_, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: auto})
+		if err == nil || !strings.Contains(err.Error(), "lacks column(s) group_name") || !strings.Contains(err.Error(), "unreleased development build") ||
+			!strings.Contains(err.Error(), "UPDATE schema_migrations SET version = 6") {
+			t.Fatalf("auto-migrate=%v: %v, want a refusal with recovery steps", auto, err)
+		}
+	}
+	// The documented recovery.
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{`DROP TABLE IF EXISTS node_intervals`, `UPDATE schema_migrations SET version = 6, dirty = false`} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = db.Close()
+	s, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatalf("after recovery: %v", err)
+	}
+	_ = s.Close()
+}
+
+// A database from the release candidate (node_intervals with group_name,
+// but the lookup index on (node_name, last_seen)) gets the same refusal.
+func TestReleaseCandidateNodeIntervalsIndexIsRefused(t *testing.T) {
+	dsn := t.TempDir() + "/rc.db"
+	s, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`DROP INDEX idx_node_intervals_lookup`,
+		`CREATE INDEX idx_node_intervals_lookup ON node_intervals(node_name, last_seen)`,
+		`CREATE INDEX idx_node_intervals_group ON node_intervals(group_name)`,
+	} {
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.Close()
+	for _, auto := range []bool{true, false} {
+		_, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: auto})
+		if err == nil || !strings.Contains(err.Error(), "lookup index idx_node_intervals_lookup on (node_name, last_seen)") ||
+			!strings.Contains(err.Error(), "UPDATE schema_migrations SET version = 6") {
+			t.Fatalf("auto-migrate=%v: %v, want a refusal with recovery steps", auto, err)
+		}
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{`DROP TABLE IF EXISTS node_intervals`, `UPDATE schema_migrations SET version = 6, dirty = false`} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = db.Close()
+	s, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatalf("after recovery: %v", err)
+	}
+	_ = s.Close()
 }

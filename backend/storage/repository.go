@@ -39,6 +39,11 @@ type Service struct {
 	Healthy      bool              `json:"healthy"`
 	CreatedAt    time.Time         `json:"created_at"`
 	UpdatedAt    time.Time         `json:"updated_at"`
+
+	// Hostnames are the DNS names callers used to reach this service, most
+	// recently seen first. Derived on read from the Hostnames of its incoming
+	// connections (see service.AnnotateHostnames) - not a stored column.
+	Hostnames []string `json:"hostnames,omitempty"`
 }
 
 // ServiceInspection contains deep inspection data for a service.
@@ -77,6 +82,13 @@ type Connection struct {
 	Latency       float64   `json:"latency_ms,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+
+	// Hostnames are the DNS names the source resolved the target's address
+	// from, each with when it was last observed, most recent first (at most
+	// MaxHostnames; names unseen for HostnameMaxAge are dropped). Per edge,
+	// because one address can serve many names and each caller asked for its
+	// own. Empty when the agent saw no DNS answer for it.
+	Hostnames []Hostname `json:"hostnames,omitempty"`
 }
 
 // NodeMetrics represents resource usage for a physical/virtual node.
@@ -171,6 +183,10 @@ type ConnectionRepository interface {
 	// UpdateStats updates throughput statistics for a connection.
 	UpdateStats(ctx context.Context, id string, bytesSent, bytesRecv uint64,
 		bytesSentRate, bytesRecvRate float64, packetsSent, packetsRecv uint64) error
+
+	// SetHostnames replaces a connection's DNS names without touching its
+	// count, stats or last_seen. Updating an ID that does not exist is a no-op.
+	SetHostnames(ctx context.Context, id string, hostnames []Hostname) error
 }
 
 // MetricsRepository defines the interface for node metrics persistence.
@@ -205,6 +221,9 @@ type Store interface {
 	// History returns the topology history repository, which records when
 	// services and edges existed rather than only their current state.
 	History() HistoryRepository
+
+	// Drift returns the architecture drift feed repository.
+	Drift() DriftRepository
 
 	// GetTopology returns the complete topology snapshot.
 	GetTopology(ctx context.Context) (*Topology, error)

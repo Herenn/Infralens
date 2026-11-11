@@ -7,31 +7,45 @@ import {
   MiniMap,
   useNodesState,
   useEdgesState,
-  addEdge,
-  Connection,
   Node,
   Edge,
+  NodeChange,
   BackgroundVariant,
+  Viewport,
   getNodesBounds,
-  getViewportForBounds,
 } from '@xyflow/react'
 import { toPng } from 'html-to-image'
+import { Loader2, Radio } from 'lucide-react'
 import '@xyflow/react/dist/style.css'
 
 import ServiceNode from './components/ServiceNode'
 import ServerNode from './components/ServerNode'
-import ConnectionEdge from './components/ConnectionEdge'
+import ConnectionEdge, { EdgeFocus } from './components/ConnectionEdge'
+import { EdgeSettingsContext } from './components/edgeSettings'
 import ServiceDrawer from './components/ServiceDrawer'
 import Header from './components/Header'
+import SideRail from './components/SideRail'
 import TimelineScrubber, { HistoryRange } from './components/TimelineScrubber'
 import DecommissionPanel from './components/DecommissionPanel'
 import OrphansPanel from './components/OrphansPanel'
 import CriticalityPanel from './components/CriticalityPanel'
 import DiffPanel from './components/DiffPanel'
+import ChangesPanel from './components/ChangesPanel'
+import IdleSpendPanel from './components/IdleSpendPanel'
+import { HistoryBanner, ImpactPill } from './components/MapOverlays'
+import { DOCK_WIDTH, PanelId } from './components/dock'
 import { Service, Topology } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
+import { useDriftFeed } from './hooks/useDriftFeed'
+import { useDriftFocus } from './hooks/useDriftFocus'
+import { usePrefersReducedMotion } from './hooks/usePrefersReducedMotion'
 import { apiUrl } from './lib/api'
-import { layoutGraph, updateNodeData, updateEdgeData } from './utils/layout'
+import {
+  CARD_H, CARD_W, assignGroups, layoutGraph, structureKey, updateNodeData, updateEdgeData,
+} from './utils/layout'
+import { routeEdge } from './utils/edgeRoute'
+import { labelWidth, placeLabels, Rect } from './utils/edgeLabels'
+import { nameFromServiceId, serviceLabel, unionHostnames } from './utils/hostnames'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AppNode = Node<any>
@@ -49,6 +63,23 @@ const IMPACT_DEPTH = 20
 // How often the recorded-history window is refreshed. Slow: it only bounds a
 // timeline control, and the data behind it moves on the scale of minutes.
 const HISTORY_RANGE_POLL_INTERVAL = 30000
+
+// Live updates that add or remove services re-lay the graph out at most this
+// often; in between, only data is updated.
+const MIN_LAYOUT_INTERVAL = 5000
+
+// Flow animation on edges costs a repaint per animated edge per frame; past
+// this many edges it is off (measured: see the v3.1 UI notes in the PR).
+const FLOW_ANIMATION_MAX_EDGES = 250
+// Past this many nodes, only what is in the viewport is rendered.
+const VISIBLE_ONLY_MIN_NODES = 300
+// Most edge labels shown at once (hover or selection of a busy service).
+const MAX_LABELS = 32
+
+const DRAWER_WIDTH = 400
+const MINIMAP_W = 168
+const MINIMAP_H = 108
+const EDGE = 12 // margin of the map's floating controls
 
 const nodeTypes = {
   service: ServiceNode,
@@ -174,6 +205,9 @@ function filterTopology(topology: Topology | null, filters: FilterState): Topolo
           display_name: `${displayTech} (${svcs.length})`,
           original_id: svcs[0].id,  // Keep first service's ID for backend lookups
           aggregated_count: svcs.length,
+          // Not one destination's name: keep every name searchable, label none.
+          hostname: undefined,
+          hostnames: unionHostnames(svcs),
         }
         aggregatedExternal.push(aggregatedSvc)
         
@@ -224,6 +258,16 @@ function filterTopology(topology: Topology | null, filters: FilterState): Topolo
   }
 }
 
+function formatRate(bytesPerSec: number): string {
+  const k = 1024
+  const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+  const i = Math.min(Math.floor(Math.log(bytesPerSec) / Math.log(k)), sizes.length - 1)
+  const v = bytesPerSec / Math.pow(k, i)
+  return `${v >= 10 ? Math.round(v) : parseFloat(v.toFixed(1))} ${sizes[i]}`
+}
+
+type ImpactDirection = 'upstream' | 'downstream'
+
 function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState<AppNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<AppEdge>([])
@@ -237,10 +281,14 @@ function App() {
   })
   const [stats, setStats] = useState({ services: 0, connections: 0 })
   const [searchQuery, setSearchQuery] = useState('')
+  const [hoverNodeId, setHoverNodeId] = useState<string | null>(null)
+  const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null)
 
   // Blast radius: which service is the current root, and the resulting set
-  // of service IDs to highlight (null = no impact view active).
-  const [impactRoot, setImpactRoot] = useState<{ id: string; direction: 'upstream' | 'downstream' } | null>(null)
+  // of service IDs to highlight (null = no impact view active). It stays on
+  // until cleared explicitly (the pill's Clear, or Esc) - closing the drawer
+  // or clicking the canvas leaves it, so it can be looked at.
+  const [impactRoot, setImpactRoot] = useState<{ id: string; direction: ImpactDirection } | null>(null)
   const [impactIds, setImpactIds] = useState<Set<string> | null>(null)
   const [filters, setFilters] = useState<FilterState>({
     hideLocalhost: false,
@@ -248,22 +296,19 @@ function App() {
     collapseExternal: false,
   })
   const reactFlowInstanceRef = useRef<ReactFlowInstance<AppNode, AppEdge> | null>(null)
-  
-  // Track node IDs to detect structural changes (only services, not connections)
-  const prevNodeIdsRef = useRef<Set<string>>(new Set())
-  const prevFiltersRef = useRef<FilterState>(filters)
-  const lastLayoutTimeRef = useRef<number>(0)
-  const storedPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map())
-  const MIN_LAYOUT_INTERVAL = 5000 // Minimum 5 seconds between layouts
-  // Which instant the last layout was built from, so a switch between live
-  // and historical topology can bypass the debounce above.
-  const prevTimelineAtRef = useRef<string | null>(null)
+  const reducedMotion = usePrefersReducedMotion()
+
+  // The one secondary panel open in the dock (see components/dock.ts), and
+  // the service it focused on the graph, if any.
+  const [panel, setPanel] = useState<PanelId | null>(null)
+  const [panelFocusId, setPanelFocusId] = useState<string | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   const { topology, isConnected } = useWebSocket()
 
   // Topology history: viewing a past instant (timelineAt set) replaces the
   // live WebSocket-driven topology with a one-off fetch. historyRange is
-  // null (hiding the scrubber entirely) unless the backend has both history
+  // null (hiding every history control) unless the backend has both history
   // enabled and at least one recorded interval.
   const [timelineAt, setTimelineAt] = useState<string | null>(null)
   const [historicalTopology, setHistoricalTopology] = useState<Topology | null>(null)
@@ -334,6 +379,15 @@ function App() {
     [activeTopology, filters]
   )
 
+  const serviceById = useMemo(
+    () => new Map((filteredTopology?.services || []).map(s => [s.id, s])),
+    [filteredTopology]
+  )
+  const liveServiceById = useMemo(
+    () => new Map((topology?.services || []).map(s => [s.id, s])),
+    [topology]
+  )
+
   // Calculate filtered stats
   const filteredStats = useMemo(() => ({
     services: filteredTopology?.services.length || 0,
@@ -347,7 +401,7 @@ function App() {
 
     const matches = new Set<string>()
     filteredTopology.services.forEach(svc => {
-      const haystack = [svc.id, svc.name, svc.display_name, svc.resolved_name, svc.tech, svc.type, svc.pod_ip, svc.node]
+      const haystack = [svc.id, svc.name, svc.display_name, svc.resolved_name, svc.tech, svc.type, svc.pod_ip, svc.node, ...(svc.hostnames || []), svc.hostname]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -358,15 +412,15 @@ function App() {
     return matches
   }, [searchQuery, filteredTopology])
 
-  // Fetch the blast radius whenever the root/direction changes. An active
-  // impact view takes priority over search highlighting - it's a more
-  // specific, explicitly-requested intent.
+  // Fetch the blast radius whenever the root/direction changes.
+  const [impactLoading, setImpactLoading] = useState(false)
   useEffect(() => {
     if (!impactRoot) {
       setImpactIds(null)
       return
     }
     let cancelled = false
+    setImpactLoading(true)
     // Carry the viewed instant through: a blast radius asked for while scrubbed
     // to a past moment must be traversed over that graph, not today's.
     const at = timelineAt ? `&at=${encodeURIComponent(timelineAt)}` : ''
@@ -377,158 +431,158 @@ function App() {
       })
       .then((data: Topology) => {
         if (cancelled) return
-        setImpactIds(new Set(data.services.map(s => s.id)))
+        const ids = new Set(data.services.map(s => s.id))
+        ids.add(impactRoot.id)
+        setImpactIds(ids)
       })
       .catch(err => {
         console.error('Failed to load impact:', err)
-        if (!cancelled) setImpactIds(null)
+        if (!cancelled) setImpactRoot(null)
+      })
+      .finally(() => {
+        if (!cancelled) setImpactLoading(false)
       })
     return () => { cancelled = true }
   }, [impactRoot, timelineAt])
 
-  const handleShowImpact = useCallback((serviceId: string, direction: 'upstream' | 'downstream') => {
-    setImpactRoot({ id: serviceId, direction })
-  }, [])
+  // Architecture drift feed ("Changes"): unread badge, and focusing a change
+  // on the graph. When the feed becomes unavailable its panel goes, and with
+  // it any focus it held.
+  const driftFeed = useDriftFeed(panel === 'changes')
+  const changesOpen = panel === 'changes' && driftFeed.available
+  const driftFocus = useDriftFocus(nodes, changesOpen)
+  const { clear: clearDriftFocus, setFocus: setDriftFocusRaw } = driftFocus
+  useEffect(() => {
+    if (!driftFeed.available && panel === 'changes') setPanel(null)
+  }, [driftFeed.available, panel])
 
+  // One highlight at a time. Four things can light up part of the graph: a
+  // service picked in a panel (Idle spend, Orphans), a blast radius, a change
+  // focused in the Changes feed, and search matches. Each is an explicit
+  // request, and the latest one wins: starting any of them clears the
+  // others, so no stale state is left behind to mask or outlive it.
+  const startPanelFocus = useCallback((id: string | null) => {
+    setPanelFocusId(id)
+    if (id) { setImpactRoot(null); clearDriftFocus(); setSearchQuery('') }
+  }, [clearDriftFocus])
+  const handleShowImpact = useCallback((serviceId: string, direction: ImpactDirection) => {
+    setImpactRoot({ id: serviceId, direction })
+    setPanelFocusId(null); clearDriftFocus(); setSearchQuery('')
+  }, [clearDriftFocus])
   const handleClearImpact = useCallback(() => {
     setImpactRoot(null)
   }, [])
+  const setDriftFocus = useCallback((ev: Parameters<typeof setDriftFocusRaw>[0]) => {
+    setDriftFocusRaw(ev)
+    if (ev) { setImpactRoot(null); setPanelFocusId(null); setSearchQuery('') }
+  }, [setDriftFocusRaw])
+  const handleSearchChange = useCallback((q: string) => {
+    setSearchQuery(q)
+    if (q.trim()) { setImpactRoot(null); setPanelFocusId(null); clearDriftFocus() }
+  }, [clearDriftFocus])
 
-  const highlightIds = impactIds || searchMatchIds
+  const panelFocusIds = useMemo(() => (panelFocusId ? new Set([panelFocusId]) : null), [panelFocusId])
 
-  // Apply highlighting: dim everything outside the active impact view or
-  // search match, whichever is active.
-  const displayNodes = useMemo(() => {
-    if (!highlightIds) return nodes
-    return nodes.map(node => {
-      if (node.type !== 'service') return node
-      const matched = highlightIds.has(node.id)
-      return {
-        ...node,
-        style: { ...node.style, opacity: matched ? 1 : 0.2 },
-      }
-    })
-  }, [nodes, highlightIds])
+  // Normally only one is set (see above); the order only settles the moment
+  // between a request and its data arriving.
+  const highlightIds = panelFocusIds || impactIds || driftFocus.highlightIds || searchMatchIds
+  const highlightKind: 'panel' | 'impact' | 'drift' | 'search' | null =
+    panelFocusIds ? 'panel' : impactIds ? 'impact' : driftFocus.highlightIds ? 'drift' : searchMatchIds ? 'search' : null
 
-  const displayEdges = useMemo(() => {
-    if (!highlightIds) return edges
-    return edges.map(edge => {
-      const matched = highlightIds.has(edge.source) || highlightIds.has(edge.target)
-      return {
-        ...edge,
-        style: { ...edge.style, opacity: matched ? 1 : 0.1 },
-      }
-    })
-  }, [edges, highlightIds])
+  const togglePanel = useCallback((id: PanelId) => {
+    setPanel(cur => (cur === id ? null : id))
+    setPanelFocusId(null)
+  }, [])
+  const closePanel = useCallback(() => {
+    setPanel(null)
+    setPanelFocusId(null)
+  }, [])
 
-  // Zoom to the active highlight set (impact view or search match)
-  useEffect(() => {
-    if (!highlightIds || highlightIds.size === 0) return
+  // ------------------------------------------------------------------------
+  // Viewport: the map frames what it shows in the space panels leave free.
+  // ------------------------------------------------------------------------
+
+  const leftInset = panel ? DOCK_WIDTH + EDGE : 0
+  const rightInset = drawerOpen ? DRAWER_WIDTH : 0
+  const topInset = (timelineAt ? 52 : 0) + (impactRoot ? 52 : 0)
+  const bottomInset = historyOpen && historyRange ? 110 : 0
+  const padding = useMemo(() => ({
+    top: `${24 + topInset}px`,
+    left: `${24 + leftInset}px`,
+    right: `${24 + rightInset}px`,
+    bottom: `${24 + bottomInset}px`,
+  }), [topInset, leftInset, rightInset, bottomInset]) as { top: `${number}px`; left: `${number}px`; right: `${number}px`; bottom: `${number}px` }
+  const paddingRef = useRef(padding)
+  paddingRef.current = padding
+
+  // Whether the user has panned or zoomed since the map was last framed
+  // automatically: then the map stops reframing itself on live changes.
+  const userMovedRef = useRef(false)
+  const [mapReady, setMapReady] = useState(false)
+
+  const fitAll = useCallback((duration = 350) => {
     const instance = reactFlowInstanceRef.current
     if (!instance) return
+    instance.fitView({ padding: paddingRef.current, duration, maxZoom: 1, minZoom: 0.05 })
+    userMovedRef.current = false
+  }, [])
 
-    const timeout = window.setTimeout(() => {
-      instance.fitView({
-        nodes: [...highlightIds].map(id => ({ id })),
-        duration: 400,
-        padding: 0.4,
-        maxZoom: 1.2,
-      })
-    }, 250) // debounce while typing
-    return () => window.clearTimeout(timeout)
-  }, [highlightIds])
+  // ------------------------------------------------------------------------
+  // Layout
+  // ------------------------------------------------------------------------
 
-  // Update graph when topology changes - ONLY re-layout on structural changes
+  const prevStructureRef = useRef<string | null>(null)
+  const prevFiltersRef = useRef<FilterState>(filters)
+  const lastLayoutTimeRef = useRef<number>(0)
+  // Which instant the last layout was built from, so a switch between live
+  // and historical topology can bypass the debounce.
+  const prevTimelineAtRef = useRef<string | null>(null)
+  // Cards the user dragged: kept where they were put across re-layouts, as
+  // long as they stay in the same group.
+  const draggedRef = useRef<Map<string, { parentId?: string; position: { x: number; y: number } }>>(new Map())
+  const [fitRequest, setFitRequest] = useState(0)
+
   useEffect(() => {
     if (!filteredTopology) return
 
-    console.log('🔍 Topology received:', {
-      services: filteredTopology.services.length,
-      connections: filteredTopology.connections.length,
-    })
-
-    // Get current service IDs (only services, NOT connections - connections change too often)
-    const currentServiceIds = new Set(filteredTopology.services.map(s => s.id))
-    
-    // Also count unique server nodes
-    const currentServerIds = new Set(filteredTopology.services.map(s => `server-${s.node || 'External Network'}`))
-    const allCurrentNodeIds = new Set([...currentServiceIds, ...currentServerIds])
-
-    // Check if SERVICE structure changed (ignore connection changes - they're too volatile)
-    const filtersChanged = JSON.stringify(filters) !== JSON.stringify(prevFiltersRef.current)
-    const nodesAdded = [...allCurrentNodeIds].some(id => !prevNodeIdsRef.current.has(id))
-    const nodesRemoved = [...prevNodeIdsRef.current].some(id => !allCurrentNodeIds.has(id))
-    const structureChanged = filtersChanged || nodesAdded || nodesRemoved
-    
-    // Also check minimum time since last layout (debounce)
+    const groups = assignGroups(filteredTopology)
+    const structure = structureKey(filteredTopology, groups)
+    const filtersChanged = filters !== prevFiltersRef.current
+    const structureChanged = structure !== prevStructureRef.current
     const now = Date.now()
     // The debounce exists to stop live WebSocket churn re-laying out the graph
     // constantly. It must not apply when the topology *source* changes (live
     // <-> historical, or a different instant): those produce a wholly
-    // different node set exactly once, and the fallback path below only
-    // updates data on existing nodes - it can neither add nor remove any. In
-    // live mode a dropped layout self-heals on the next flush a second later;
-    // in historical mode nothing further arrives, so it would stay wrong until
-    // the user changed something else.
+    // different node set exactly once, and nothing further arrives after a
+    // historical fetch to trigger a later layout.
     const sourceChanged = timelineAt !== prevTimelineAtRef.current
-    const canLayout = sourceChanged || now - lastLayoutTimeRef.current > MIN_LAYOUT_INTERVAL
-    prevTimelineAtRef.current = timelineAt
+    const firstLayout = prevStructureRef.current === null
+    const canLayout = firstLayout || sourceChanged || filtersChanged || now - lastLayoutTimeRef.current > MIN_LAYOUT_INTERVAL
 
     if (structureChanged && canLayout) {
-      // Structure changed - run full layout
-      console.log('🔄 Structure changed, running layout...', { 
-        filtersChanged, 
-        nodesAdded, 
-        nodesRemoved,
-        nodeCount: allCurrentNodeIds.size
+      const { nodes: newNodes, edges: newEdges } = layoutGraph(filteredTopology, groups)
+      const restored = newNodes.map(node => {
+        const dragged = draggedRef.current.get(node.id)
+        return dragged && dragged.parentId === node.parentId ? { ...node, position: dragged.position } : node
       })
-      try {
-        const { nodes: newNodes, edges: newEdges } = layoutGraph(filteredTopology)
-        
-        // Restore saved positions for existing nodes to minimize jumping
-        const restoredNodes = newNodes.map(node => {
-          const savedPos = storedPositionsRef.current.get(node.id)
-          if (savedPos && !nodesAdded) {
-            // Only restore positions if no new nodes were added
-            // (new nodes need fresh layout to find good spots)
-            return { ...node, position: savedPos }
-          }
-          return node
-        })
-        
-        console.log('✅ Layout result:', { nodes: restoredNodes.length, edges: newEdges.length })
-        setNodes(restoredNodes)
-        setEdges(newEdges)
-        prevNodeIdsRef.current = allCurrentNodeIds
-        prevFiltersRef.current = filters
-        lastLayoutTimeRef.current = now
-        
-        // Save new positions
-        restoredNodes.forEach(node => {
-          storedPositionsRef.current.set(node.id, node.position)
-        })
-      } catch (err) {
-        console.error('❌ Layout error:', err)
-      }
-    } else if (structureChanged && !canLayout) {
-      // Structure changed but too soon - just update data, layout will happen later
-      console.log('⏳ Structure changed but debouncing...')
+      setNodes(restored)
+      setEdges(newEdges)
+      prevStructureRef.current = structure
+      prevFiltersRef.current = filters
+      prevTimelineAtRef.current = timelineAt
+      lastLayoutTimeRef.current = now
+      // Reframe: always on a new source or filter; on live changes only if
+      // the user has not moved the map themselves.
+      if (firstLayout || sourceChanged || filtersChanged || !userMovedRef.current) setFitRequest(r => r + 1)
+    } else {
       setNodes(currentNodes => updateNodeData(currentNodes, filteredTopology))
       setEdges(currentEdges => updateEdgeData(currentEdges, filteredTopology))
-    } else {
-      // Only data changed - update node/edge data without changing positions
-      setNodes(currentNodes => {
-        const updated = updateNodeData(currentNodes, filteredTopology)
-        // Save current positions
-        updated.forEach(node => {
-          storedPositionsRef.current.set(node.id, node.position)
-        })
-        return updated
-      })
-      setEdges(currentEdges => updateEdgeData(currentEdges, filteredTopology))
+      if (!structureChanged) {
+        prevTimelineAtRef.current = timelineAt
+        prevFiltersRef.current = filters
+      }
     }
 
-    // Update raw stats (unfiltered)
     if (activeTopology) {
       setStats({
         services: activeTopology.services.length,
@@ -537,109 +591,312 @@ function App() {
     }
   }, [filteredTopology, filters, activeTopology, timelineAt, setNodes, setEdges])
 
-  // Custom nodes change handler that saves positions when dragged
-  const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
+  // Frame the graph once React Flow has the new nodes. The very first frame
+  // is hidden until then, so the page never shows an unframed map.
+  const mapReadyRef = useRef(false)
+  useEffect(() => {
+    if (fitRequest === 0) return
+    const first = !mapReadyRef.current
+    const t = window.setTimeout(() => {
+      fitAll(first ? 0 : 350)
+      if (first) {
+        mapReadyRef.current = true
+        window.requestAnimationFrame(() => setMapReady(true))
+      }
+    }, first ? 30 : 60)
+    return () => window.clearTimeout(t)
+  }, [fitRequest, fitAll])
+
+  // Opening or closing a panel reframes the overview into the space left
+  // free - unless the user is looking at something particular.
+  const layoutKey = `${panel ? 'p' : ''}${historyOpen ? 'h' : ''}${topInset}`
+  const prevLayoutKeyRef = useRef(layoutKey)
+  useEffect(() => {
+    if (prevLayoutKeyRef.current === layoutKey) return
+    prevLayoutKeyRef.current = layoutKey
+    if (!highlightIds && !userMovedRef.current && mapReady) fitAll()
+  }, [layoutKey, highlightIds, fitAll, mapReady])
+
+  // Zoom to the active highlight set (impact view, search matches, a focused
+  // change or panel pick), and back to where the map was when it clears.
+  const savedViewportRef = useRef<Viewport | null>(null)
+  const highlightKey = highlightIds ? [...highlightIds].sort().join('\n') : ''
+  useEffect(() => {
+    const instance = reactFlowInstanceRef.current
+    if (!instance) return
+    if (!highlightKey) {
+      const saved = savedViewportRef.current
+      savedViewportRef.current = null
+      if (saved) {
+        const t = window.setTimeout(() => instance.setViewport(saved, { duration: 350 }), 150)
+        return () => window.clearTimeout(t)
+      }
+      return
+    }
+    if (!savedViewportRef.current) savedViewportRef.current = instance.getViewport()
+    const ids = highlightKey.split('\n')
+    const timeout = window.setTimeout(() => {
+      instance.fitView({
+        nodes: ids.map(id => ({ id })),
+        duration: 400,
+        padding: {
+          ...paddingRef.current,
+          // A lone match keeps some of its surroundings in view.
+          top: `${parseInt(paddingRef.current.top) + 40}px`,
+          bottom: `${parseInt(paddingRef.current.bottom) + 40}px`,
+        },
+        maxZoom: ids.length === 1 ? 0.85 : 1,
+        minZoom: 0.05,
+      })
+    }, 250) // debounce while typing
+    return () => window.clearTimeout(timeout)
+  }, [highlightKey, padding])
+
+  // ------------------------------------------------------------------------
+  // Selection and interaction
+  // ------------------------------------------------------------------------
+
+  const handleNodesChange = useCallback((changes: NodeChange<AppNode>[]) => {
     onNodesChange(changes)
-    
-    // Save positions for position changes (from dragging)
+    const ended: string[] = []
     changes.forEach(change => {
       if (change.type === 'position' && change.position) {
-        storedPositionsRef.current.set(change.id, change.position)
+        draggedRef.current.set(change.id, { parentId: nodesRef.current.get(change.id)?.parentId, position: change.position })
+        if (change.dragging === false) ended.push(change.id)
       }
     })
-  }, [onNodesChange])
+    // A moved card's edges no longer follow the layout's routes.
+    if (ended.length) {
+      const moved = new Set(ended)
+      setEdges(eds => eds.map(e => (moved.has(e.source) || moved.has(e.target)) && e.data?.waypoints
+        ? { ...e, data: { ...e.data, waypoints: undefined } }
+        : e))
+    }
+  }, [onNodesChange, setEdges])
 
-  const onConnect = useCallback(
-    (params: Connection) => setEdges((eds) => addEdge(params, eds)),
-    [setEdges]
-  )
+  const nodesRef = useRef<Map<string, AppNode>>(new Map())
+  nodesRef.current = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes])
+
+  // Where the map was before the drawer moved it, to go back on close.
+  const drawerViewportRef = useRef<Viewport | null>(null)
+
+  // Keep a clicked card visible beside the drawer.
+  const revealBesideDrawer = useCallback((node: Node) => {
+    const instance = reactFlowInstanceRef.current
+    if (!instance) return
+    const parent = node.parentId ? nodesRef.current.get(node.parentId) : undefined
+    const abs = { x: (parent?.position.x || 0) + node.position.x, y: (parent?.position.y || 0) + node.position.y }
+    const vp = instance.getViewport()
+    const flowEl = document.querySelector('.react-flow') as HTMLElement | null
+    const width = flowEl?.clientWidth || window.innerWidth
+    const right = vp.x + (abs.x + CARD_W) * vp.zoom
+    const limit = width - DRAWER_WIDTH - 32
+    if (right > limit) {
+      if (!drawerViewportRef.current) drawerViewportRef.current = vp
+      instance.setViewport({ ...vp, x: vp.x - (right - limit) }, { duration: 300 })
+    }
+  }, [])
+
+  const closeDrawer = useCallback(() => {
+    setDrawerOpen(false)
+    setSelectedServiceId(null)
+    // Closing the drawer ends the selection too: no card stays outlined.
+    setNodes(ns => (ns.some(n => n.selected) ? ns.map(n => (n.selected ? { ...n, selected: false } : n)) : ns))
+    const saved = drawerViewportRef.current
+    drawerViewportRef.current = null
+    if (saved && !savedViewportRef.current) reactFlowInstanceRef.current?.setViewport(saved, { duration: 300 })
+  }, [setNodes])
 
   // Handle node click - open drawer with appropriate data
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     if (node.type === 'server') {
-      // Server/Group node clicked
-      const data = node.data as {
-        serverName: string
-        serviceCount: number
-        totalConnections: number
-        cpuPercent?: number
-        memPercent?: number
-        memUsed?: number
-        memTotal?: number
-      }
-      setSelectedNode({
-        type: 'server',
-        service: null,
-        serverData: data,
-        ports: [],
-      })
-      setSelectedServiceId(null) // Clear edge highlighting
+      const data = node.data as SelectedNodeState['serverData'] & { kind?: string }
+      if (!data || data.kind !== 'host') return
+      setSelectedNode({ type: 'server', service: null, serverData: data, ports: [] })
+      setSelectedServiceId(null)
       setDrawerOpen(true)
     } else if (node.type === 'service') {
-      // Service node clicked - find from original topology first, then filtered (for aggregated services)
-      let service = activeTopology?.services.find((s) => s.id === node.id)
-
-      // If not found in original, check filtered topology (for collapsed/aggregated services)
-      if (!service && filteredTopology) {
-        service = filteredTopology.services.find((s) => s.id === node.id)
-      }
-
+      // From the original topology first, then the filtered one (aggregated services).
+      const service = activeTopology?.services.find((s) => s.id === node.id) ||
+        filteredTopology?.services.find((s) => s.id === node.id)
       const ports = (node.data as { ports?: number[] })?.ports || []
-      setSelectedNode({
-        type: 'service',
-        service: service || null,
-        serverData: null,
-        ports,
-      })
-      setSelectedServiceId(node.id) // Highlight connected edges
+      // A service picked in a panel gives way to the one clicked on the map.
+      setPanelFocusId(cur => (cur === node.id ? cur : null))
+      setSelectedNode({ type: 'service', service: service || null, serverData: null, ports })
+      setSelectedServiceId(node.id)
       setDrawerOpen(true)
+      revealBesideDrawer(node)
     }
-  }, [activeTopology, filteredTopology])
+  }, [activeTopology, filteredTopology, revealBesideDrawer])
 
-  // Handle edge click - highlight source and target services
+  // Handle edge click - show the source service, with this edge's port
   const onEdgeClick = useCallback((_: React.MouseEvent, edge: Edge) => {
-    // Find the source service for the edge
     const sourceService = activeTopology?.services.find((s) => s.id === edge.source) ||
-                          filteredTopology?.services.find((s) => s.id === edge.source)
-    
+      filteredTopology?.services.find((s) => s.id === edge.source)
     if (sourceService) {
       const edgePort = edge.data?.port as number | undefined
-      setSelectedNode({
-        type: 'service',
-        service: sourceService,
-        serverData: null,
-        ports: edgePort ? [edgePort] : [],
-      })
-      setSelectedServiceId(edge.source) // Highlight edges connected to source
+      setSelectedNode({ type: 'service', service: sourceService, serverData: null, ports: edgePort ? [edgePort] : [] })
+      setSelectedServiceId(edge.source)
       setDrawerOpen(true)
     }
   }, [activeTopology, filteredTopology])
 
-  // Handle pane click - close drawer and clear selection
+  // Canvas click: close the drawer and clear transient focus. A blast radius
+  // and a search stay: they have their own way out.
   const onPaneClick = useCallback(() => {
-    setDrawerOpen(false)
-    setSelectedServiceId(null)
-    // Clearing the impact view here matters: its only other affordance is
-    // re-clicking the same direction button on the same service, inside the
-    // drawer. Dismiss the drawer without that and the graph stays dimmed with
-    // no visible way back - and because impact takes priority over search
-    // highlighting (see highlightIds), search would appear broken too.
-    setImpactRoot(null)
-  }, [])
+    closeDrawer()
+    clearDriftFocus()
+    setPanelFocusId(null)
+  }, [clearDriftFocus, closeDrawer])
 
-  // Update edge highlighting when selection changes
+  // Esc steps back out: blast radius first, then the drawer, then a panel.
   useEffect(() => {
-    setEdges(currentEdges => currentEdges.map(edge => ({
-      ...edge,
-      data: {
-        ...edge.data,
-        highlighted: selectedServiceId ? 
-          (edge.source === selectedServiceId ? 'outgoing' : 
-           edge.target === selectedServiceId ? 'incoming' : null) 
-          : null,
-      },
-    })))
-  }, [selectedServiceId, setEdges])
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const t = e.target as HTMLElement
+      if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') return
+      if (impactRoot) setImpactRoot(null)
+      else if (drawerOpen) closeDrawer()
+      else if (panel) closePanel()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [impactRoot, drawerOpen, panel, closeDrawer, closePanel])
+
+  // ------------------------------------------------------------------------
+  // What the graph draws: highlight classes, lit edges and their labels
+  // ------------------------------------------------------------------------
+
+  const focusNodeId = hoverNodeId || (drawerOpen ? selectedServiceId : null) || panelFocusId
+
+  // On a large graph a hover waits until the pointer rests, so sweeping
+  // across the map does not re-light it card by card.
+  const hoverTimerRef = useRef<number | null>(null)
+  const largeGraph = nodes.length > VISIBLE_ONLY_MIN_NODES
+  const hover = useCallback((set: (id: string | null) => void, id: string | null) => {
+    if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current)
+    hoverTimerRef.current = null
+    if (!largeGraph) { set(id); return }
+    hoverTimerRef.current = window.setTimeout(() => set(id), id ? 90 : 40)
+  }, [largeGraph])
+
+  const displayNodes = useMemo(() => {
+    if (!highlightIds) return nodes
+    return nodes.map(node => {
+      if (node.type !== 'service' || !highlightIds.has(node.id)) return node
+      const cls = highlightKind === 'impact'
+        ? (node.id === impactRoot?.id ? 'il-lit il-impact-root' : 'il-lit il-impact')
+        : 'il-lit'
+      return { ...node, className: cls }
+    })
+  }, [nodes, highlightIds, highlightKind, impactRoot])
+
+  // Card and group-title rectangles, for placing labels clear of them.
+  const obstacles = useMemo(() => {
+    const rects: Rect[] = []
+    const groupsById = new Map(nodes.filter(n => n.type === 'server').map(n => [n.id, n]))
+    for (const n of nodes) {
+      if (n.type === 'server') {
+        rects.push({ x: n.position.x, y: n.position.y, w: Number(n.style?.width) || CARD_W, h: 50 })
+      } else {
+        const parent = n.parentId ? groupsById.get(n.parentId) : undefined
+        rects.push({ x: (parent?.position.x || 0) + n.position.x - 4, y: (parent?.position.y || 0) + n.position.y - 4, w: CARD_W + 8, h: CARD_H + 8 })
+      }
+    }
+    return rects
+  }, [nodes])
+
+  const connectionById = useMemo(
+    () => new Map((filteredTopology?.connections || []).map(c => [c.id, c])),
+    [filteredTopology]
+  )
+
+  const displayEdges = useMemo(() => {
+    const lit = new Map<string, EdgeFocus>()
+    if (highlightIds) {
+      for (const e of edges) {
+        const both = highlightIds.has(e.source) && highlightIds.has(e.target)
+        if (highlightKind === 'impact' ? both : both || (highlightIds.size === 1 && (highlightIds.has(e.source) || highlightIds.has(e.target)))) {
+          lit.set(e.id, highlightKind === 'impact' ? 'impact' : 'match')
+        }
+      }
+    }
+    const drift = driftFocus.focus
+    if (drift && highlightKind === 'drift') {
+      for (const e of edges) {
+        if (e.id === drift.connection_id || (e.source === drift.source_id && e.target === drift.target_id)) lit.set(e.id, 'outgoing')
+      }
+    }
+    const labelled: string[] = []
+    if (focusNodeId) {
+      const touching = edges.filter(e => e.source === focusNodeId || e.target === focusNodeId)
+      for (const e of touching) lit.set(e.id, e.source === focusNodeId ? 'outgoing' : 'incoming')
+      // The busiest first, when there are too many to label.
+      const rate = (id: string) => {
+        const c = connectionById.get(id)
+        return Math.max(c?.bytes_sent_rate || 0, c?.bytes_recv_rate || 0)
+      }
+      labelled.push(...touching.map(e => e.id).sort((a, b) => rate(b) - rate(a)).slice(0, MAX_LABELS))
+    }
+    if (hoverEdgeId) {
+      if (!lit.has(hoverEdgeId)) lit.set(hoverEdgeId, 'outgoing')
+      if (!labelled.includes(hoverEdgeId)) labelled.unshift(hoverEdgeId)
+    }
+    if (lit.size === 0) return edges
+
+    // Labels: port, and live rates (a past instant has no rates to show).
+    const byId = new Map(edges.map(e => [e.id, e]))
+    const requests = labelled.flatMap(id => {
+      const e = byId.get(id)
+      const s = e && nodesRef.current.get(e.source)
+      const t = e && nodesRef.current.get(e.target)
+      if (!e || !s || !t) return []
+      const sp = s.parentId ? nodesRef.current.get(s.parentId) : undefined
+      const tp = t.parentId ? nodesRef.current.get(t.parentId) : undefined
+      const sx = (sp?.position.x || 0) + s.position.x + CARD_W
+      const sy = (sp?.position.y || 0) + s.position.y + CARD_H / 2
+      const tx = (tp?.position.x || 0) + t.position.x
+      const ty = (tp?.position.y || 0) + t.position.y + CARD_H / 2
+      const c = connectionById.get(id)
+      let text = `:${e.data?.port}${e.data?.protocol === 'udp' ? '/udp' : ''}`
+      if (!timelineAt && c && ((c.bytes_sent_rate || 0) > 0 || (c.bytes_recv_rate || 0) > 0)) {
+        text += `\n↑${formatRate(c.bytes_sent_rate || 0.001)} ↓${formatRate(c.bytes_recv_rate || 0.001)}`
+      }
+      const lines = text.split('\n')
+      return [{
+        id, text, samples: routeEdge(sx, sy, tx, ty, e.data?.waypoints).samples,
+        width: Math.max(...lines.map(labelWidth)), height: lines.length * 15 + 4,
+      }]
+    })
+    const placed = placeLabels(requests, obstacles)
+    const texts = new Map(requests.map(r => [r.id, r.text]))
+
+    return edges.map(e => {
+      const focus = lit.get(e.id)
+      if (!focus) return e
+      const at = placed.get(e.id)
+      return {
+        ...e,
+        className: 'il-lit',
+        zIndex: 1,
+        data: { ...e.data, highlighted: focus, label: at ? { ...at, text: texts.get(e.id)! } : undefined },
+      }
+    })
+  }, [edges, highlightIds, highlightKind, driftFocus.focus, focusNodeId, hoverEdgeId, connectionById, obstacles, timelineAt])
+
+  const animate = !reducedMotion && !timelineAt && edges.length <= FLOW_ANIMATION_MAX_EDGES
+  const edgeSettings = useMemo(() => ({ animate }), [animate])
+
+  const wrapperClass = [
+    'h-full w-full transition-opacity duration-200',
+    mapReady || nodes.length === 0 ? 'opacity-100' : 'opacity-0',
+    highlightIds ? 'il-dim-nodes il-dim-edges' : '',
+    focusNodeId || hoverEdgeId ? 'il-dim-edges' : '',
+  ].join(' ')
+
+  // ------------------------------------------------------------------------
+  // Export
+  // ------------------------------------------------------------------------
 
   // Export topology as high-quality PNG
   const handleExportPng = useCallback(() => {
@@ -648,35 +905,33 @@ function App() {
     const flowElement = document.querySelector('.react-flow') as HTMLElement
     if (!flowElement) return
 
-    // Calculate bounds of all nodes
-    const nodesBounds = getNodesBounds(nodes)
-    const padding = 100
-    const imageWidth = nodesBounds.width + padding * 2
-    const imageHeight = nodesBounds.height + padding * 2
+    // Bounds of all nodes - through the instance, which resolves child
+    // nodes' positions inside their groups (the bare helper cannot).
+    const nodesBounds = reactFlowInstanceRef.current?.getNodesBounds(nodes) ?? getNodesBounds(nodes)
+    // The whole graph at 1:1 (scaled down only past what a canvas can hold),
+    // with a margin. getViewportForBounds took its padding as a fraction, so
+    // the old "100" pinned every export to its minimum zoom.
+    const pad = 80
+    const MAX_SIDE = 8000
+    const zoom = Math.min(1, MAX_SIDE / Math.max(nodesBounds.width + pad * 2, nodesBounds.height + pad * 2))
+    const imageWidth = Math.ceil((nodesBounds.width + pad * 2) * zoom)
+    const imageHeight = Math.ceil((nodesBounds.height + pad * 2) * zoom)
+    const viewport = { x: (pad - nodesBounds.x) * zoom, y: (pad - nodesBounds.y) * zoom, zoom }
+    // Sharp, but never a canvas wider than ~16k device pixels.
+    const pixelRatio = Math.max(1, Math.min(3, 16000 / Math.max(imageWidth, imageHeight)))
 
-    // Get viewport to fit all nodes
-    const viewport = getViewportForBounds(
-      nodesBounds,
-      imageWidth,
-      imageHeight,
-      0.5,  // minZoom
-      2,    // maxZoom
-      padding
-    )
-
-    // Hide controls and minimap during export
+    // Hide controls, minimap and the flow animation during export
     const controls = flowElement.querySelector('.react-flow__controls') as HTMLElement
     const minimap = flowElement.querySelector('.react-flow__minimap') as HTMLElement
     const attribution = flowElement.querySelector('.react-flow__attribution') as HTMLElement
-    
     if (controls) controls.style.display = 'none'
     if (minimap) minimap.style.display = 'none'
     if (attribution) attribution.style.display = 'none'
+    flowElement.classList.add('il-exporting')
 
     // Get the viewport element and apply transform for full capture
     const viewportElement = flowElement.querySelector('.react-flow__viewport') as HTMLElement
     const originalTransform = viewportElement?.style.transform || ''
-    
     if (viewportElement) {
       viewportElement.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`
     }
@@ -684,12 +939,12 @@ function App() {
     // High quality export with 3x pixel ratio
     toPng(flowElement, {
       backgroundColor: '#0a0f1a',
-      width: Math.max(imageWidth, flowElement.offsetWidth),
-      height: Math.max(imageHeight, flowElement.offsetHeight),
-      pixelRatio: 3, // 3x resolution for high quality
+      width: imageWidth,
+      height: imageHeight,
+      pixelRatio,
       style: {
-        width: `${Math.max(imageWidth, flowElement.offsetWidth)}px`,
-        height: `${Math.max(imageHeight, flowElement.offsetHeight)}px`,
+        width: `${imageWidth}px`,
+        height: `${imageHeight}px`,
       },
     })
       .then((dataUrl: string) => {
@@ -702,13 +957,11 @@ function App() {
         console.error('Export failed:', err)
       })
       .finally(() => {
-        // Restore everything
-        if (viewportElement) {
-          viewportElement.style.transform = originalTransform
-        }
+        if (viewportElement) viewportElement.style.transform = originalTransform
         if (controls) controls.style.display = ''
         if (minimap) minimap.style.display = ''
         if (attribution) attribution.style.display = ''
+        flowElement.classList.remove('il-exporting')
       })
   }, [nodes])
 
@@ -763,114 +1016,231 @@ function App() {
     }
   }, [timelineAt])
 
+  const impactName = impactRoot
+    ? (serviceById.get(impactRoot.id) ? serviceLabel(serviceById.get(impactRoot.id)!) : nameFromServiceId(impactRoot.id))
+    : ''
+
+  const emptyState = nodes.length === 0 && (
+    timelineAt
+      ? historyLoading ? 'loading-past' : 'empty-past'
+      : topology === null ? 'connecting' : 'waiting'
+  )
+
   return (
     <div className="h-screen w-screen flex flex-col bg-dark-950">
-      <Header 
-        isConnected={isConnected} 
-        stats={stats} 
+      <Header
+        isConnected={isConnected}
+        stats={stats}
         filters={filters}
         onFiltersChange={setFilters}
         filteredStats={filteredStats}
         searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
+        onSearchChange={handleSearchChange}
         searchMatchCount={searchMatchIds?.size}
         onExportPng={handleExportPng}
         onExportJson={handleExportJson}
         onExportMermaid={() => handleExportGraph('mermaid')}
         onExportDot={() => handleExportGraph('dot')}
+        viewingPast={!!timelineAt}
+        connecting={topology === null}
       />
-      
-      <div className="flex-1 flex overflow-hidden">
-        <div className="flex-1 relative">
-          <ReactFlow
-            nodes={displayNodes}
-            edges={displayEdges}
-            onInit={(instance) => { reactFlowInstanceRef.current = instance }}
-            onNodesChange={handleNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onNodeClick={onNodeClick}
-            onEdgeClick={onEdgeClick}
-            onPaneClick={onPaneClick}
-            nodeTypes={nodeTypes}
-            edgeTypes={edgeTypes}
-            fitView
-            edgesFocusable
-            selectNodesOnDrag={false}
-            attributionPosition="bottom-left"
-            className="grid-bg"
-            defaultEdgeOptions={{
-              type: 'smoothstep',
-              animated: false,
-              style: {
-                stroke: '#475569',
-                strokeWidth: 1.5,
-              },
-            }}
-          >
-            <Background 
-              variant={BackgroundVariant.Dots} 
-              gap={24} 
-              size={1} 
-              color="#374151"
-            />
-            <Controls 
-              className="!bg-dark-800 !border-dark-600 !rounded-lg !shadow-xl"
-              showInteractive={false}
-            />
-            <MiniMap
-              className="!bg-dark-800 !border-dark-600 !rounded-lg"
-              nodeColor={(node) => {
-                if (node.type === 'server') return '#475569'
-                return node.data?.healthy ? '#22c55e' : '#ef4444'
-              }}
-              maskColor="rgba(0, 0, 0, 0.8)"
-              pannable
-              zoomable
-            />
-          </ReactFlow>
 
-          {/* Empty state */}
-          {nodes.length === 0 && (
+      <div className="flex-1 flex overflow-hidden">
+        <SideRail
+          open={panel}
+          onToggle={togglePanel}
+          changesUnread={driftFeed.available ? driftFeed.unread : null}
+          historyAvailable={!!historyRange}
+          historyOpen={historyOpen}
+          viewingPast={!!timelineAt}
+          onToggleHistory={() => setHistoryOpen(o => !o)}
+        />
+
+        <div className="flex-1 relative min-w-0">
+          <EdgeSettingsContext.Provider value={edgeSettings}>
+            <ReactFlow
+              nodes={displayNodes}
+              edges={displayEdges}
+              onInit={(instance) => { reactFlowInstanceRef.current = instance }}
+              onNodesChange={handleNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodeClick={onNodeClick}
+              onEdgeClick={onEdgeClick}
+              onPaneClick={onPaneClick}
+              onNodeMouseEnter={(_, node) => { if (node.type === 'service') hover(setHoverNodeId, node.id) }}
+              onNodeMouseLeave={() => hover(setHoverNodeId, null)}
+              onEdgeMouseEnter={(_, edge) => hover(setHoverEdgeId, edge.id)}
+              onEdgeMouseLeave={() => hover(setHoverEdgeId, null)}
+              onMoveStart={(event) => { if (event) userMovedRef.current = true }}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
+              minZoom={0.05}
+              maxZoom={2.5}
+              nodesConnectable={false}
+              edgesFocusable
+              selectNodesOnDrag={false}
+              onlyRenderVisibleElements={nodes.length > VISIBLE_ONLY_MIN_NODES}
+              attributionPosition="bottom-right"
+              className={wrapperClass}
+              style={{ ['--il-right-inset' as string]: `${rightInset}px` }}
+            >
+              <svg className="absolute w-0 h-0" aria-hidden>
+                <defs>
+                  {([['base', '#475569'], ['out', '#60a5fa'], ['in', '#4ade80'], ['impact', '#f59e0b'], ['match', '#94a3b8']] as const).map(([id, color]) => (
+                    <marker key={id} id={`il-arrow-${id}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+                      <path d="M 0 1 L 9 5 L 0 9 z" fill={color} />
+                    </marker>
+                  ))}
+                </defs>
+              </svg>
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={24}
+                size={1}
+                color="#1f2937"
+              />
+              <Controls
+                position="bottom-right"
+                showInteractive={false}
+                onFitView={() => { userMovedRef.current = false }}
+                fitViewOptions={{ padding, maxZoom: 1, minZoom: 0.05, duration: 350 }}
+                style={{ right: rightInset + EDGE + MINIMAP_W + 8, bottom: EDGE, margin: 0 }}
+              />
+              <MiniMap
+                nodeColor={(node) => {
+                  if (node.type === 'server') return '#1e293b'
+                  return node.data?.healthy ? '#22c55e' : '#ef4444'
+                }}
+                nodeStrokeWidth={0}
+                maskColor="rgba(2, 6, 23, 0.72)"
+                pannable
+                zoomable
+                ariaLabel="Mini map"
+                style={{ width: MINIMAP_W, height: MINIMAP_H, right: rightInset + EDGE, bottom: EDGE + 14, margin: 0 }}
+              />
+            </ReactFlow>
+          </EdgeSettingsContext.Provider>
+
+          {/* Empty and loading states */}
+          {emptyState && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="text-center">
-                <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-dark-800 flex items-center justify-center">
-                  <svg className="w-12 h-12 text-dark-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} 
-                      d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
-                  </svg>
-                </div>
-                <h3 className="text-xl font-medium text-dark-300 mb-2">
-                  Waiting for traffic data...
-                </h3>
-                <p className="text-dark-500 max-w-md">
-                  The topology map will populate automatically as the eBPF agents
-                  detect service-to-service communication.
-                </p>
+              <div className="text-center max-w-md px-6">
+                {emptyState === 'connecting' || emptyState === 'loading-past' ? (
+                  <>
+                    <Loader2 size={28} className="mx-auto mb-4 text-dark-500 animate-spin" />
+                    <h3 className="text-base font-medium text-dark-300">
+                      {emptyState === 'connecting' ? 'Loading the map…' : 'Loading the recorded map…'}
+                    </h3>
+                  </>
+                ) : emptyState === 'empty-past' ? (
+                  <>
+                    <h3 className="text-lg font-medium text-dark-200 mb-2">Nothing was recorded at this moment</h3>
+                    <p className="text-sm text-dark-500 mb-4">History starts when InfraLens first saw traffic. Move the timeline later, or go back to the live map.</p>
+                    <button
+                      onClick={() => setTimelineAt(null)}
+                      className="pointer-events-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-lens-500/15 text-lens-300 border border-lens-500/30 hover:bg-lens-500/25"
+                    >
+                      <Radio size={14} /> Back to live
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-20 h-20 mx-auto mb-5 rounded-full bg-dark-800/80 flex items-center justify-center">
+                      <svg className="w-10 h-10 text-dark-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                          d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                      </svg>
+                    </div>
+                    <h3 className="text-lg font-medium text-dark-200 mb-2">Waiting for traffic data…</h3>
+                    <p className="text-sm text-dark-500">
+                      The topology map will populate automatically as the eBPF agents
+                      detect service-to-service communication.
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           )}
 
-          <TimelineScrubber
-            range={historyRange}
-            value={timelineAt}
-            onChange={setTimelineAt}
-            loading={historyLoading}
-          />
+          {/* Map states: viewing the past, blast radius */}
+          {(timelineAt || impactRoot) && (
+            <div
+              className="absolute top-3 z-20 flex flex-col items-center gap-2 pointer-events-none px-3"
+              style={{ left: leftInset, right: rightInset }}
+            >
+              {timelineAt && <HistoryBanner at={timelineAt} loading={historyLoading} onGoLive={() => setTimelineAt(null)} />}
+              {impactRoot && (
+                <ImpactPill
+                  name={impactName}
+                  direction={impactRoot.direction}
+                  count={impactIds ? impactIds.size - 1 : null}
+                  loading={impactLoading}
+                  onDirection={d => handleShowImpact(impactRoot.id, d)}
+                  onClear={handleClearImpact}
+                />
+              )}
+            </div>
+          )}
 
-          <div className="absolute top-4 right-4 z-10 flex flex-col items-end gap-2">
-            <CriticalityPanel />
-            <OrphansPanel />
-            {historyRange && <DecommissionPanel />}
-            {historyRange && <DiffPanel range={historyRange} />}
-          </div>
+          {historyOpen && historyRange && (
+            <TimelineScrubber
+              range={historyRange}
+              value={timelineAt}
+              onChange={setTimelineAt}
+              loading={historyLoading}
+              onClose={() => setHistoryOpen(false)}
+              style={{ left: leftInset + EDGE, right: rightInset + EDGE + MINIMAP_W + 8 + 32 + 12 }}
+            />
+          )}
+
+          {panel === 'changes' && driftFeed.available && (
+            <ChangesPanel
+              onClose={closePanel}
+              seenAtOpen={driftFeed.seenAtOpen}
+              selectedId={driftFocus.focus?.id ?? null}
+              onSelect={setDriftFocus}
+              isOnGraph={driftFocus.isOnGraph}
+              viewingAt={timelineAt}
+              onViewAt={(ev, at) => {
+                setTimelineAt(at)
+                if (ev && at) setDriftFocus(ev)
+              }}
+            />
+          )}
+
+          {panel === 'idle' && (
+            <IdleSpendPanel
+              onClose={closePanel}
+              onFocusService={id => startPanelFocus(id)}
+              focusedId={panelFocusId}
+            />
+          )}
+
+          {panel === 'critical' && (
+            <CriticalityPanel
+              onClose={closePanel}
+              onSelect={id => (impactRoot?.id === id ? handleClearImpact() : handleShowImpact(id, 'upstream'))}
+              selectedId={impactRoot?.direction === 'upstream' ? impactRoot.id : null}
+            />
+          )}
+          {panel === 'orphans' && (
+            <OrphansPanel
+              onClose={closePanel}
+              onSelect={id => startPanelFocus(panelFocusId === id ? null : id)}
+              selectedId={panelFocusId}
+            />
+          )}
+          {panel === 'stale' && historyRange && <DecommissionPanel onClose={closePanel} />}
+          {panel === 'compare' && historyRange && (
+            <DiffPanel range={historyRange} onClose={closePanel} liveServices={liveServiceById} />
+          )}
         </div>
       </div>
 
       {/* Service Details Drawer */}
       <ServiceDrawer
         isOpen={drawerOpen}
-        onClose={() => { setDrawerOpen(false); setImpactRoot(null) }}
+        onClose={closeDrawer}
         service={selectedNode.service}
         connections={filteredTopology?.connections || activeTopology?.connections || []}
         ports={selectedNode.ports}
@@ -879,6 +1249,8 @@ function App() {
         onShowImpact={handleShowImpact}
         onClearImpact={handleClearImpact}
         activeImpactDirection={impactRoot && selectedNode.service?.id === impactRoot.id ? impactRoot.direction : null}
+        services={serviceById}
+        viewingAt={timelineAt}
       />
     </div>
   )

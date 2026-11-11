@@ -81,7 +81,7 @@ func (h *EventHandler) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	timer.ObserveEvent("tcp_event")
 
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 }
 
 // HandleStats processes incoming throughput stats from agents.
@@ -116,7 +116,7 @@ func (h *EventHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
 	timer.ObserveEvent("throughput")
 
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 }
 
 // HandleMetrics processes incoming host metrics from agents.
@@ -142,7 +142,7 @@ func (h *EventHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 }
 
 // HandleInspection processes deep inspection data from agents.
@@ -175,5 +175,5 @@ func (h *EventHandler) HandleInspection(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 }

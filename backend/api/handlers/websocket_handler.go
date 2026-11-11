@@ -45,6 +45,9 @@ const (
 //   - "connection"         data is a ConnectionResponse (created or updated)
 //   - "connection.deleted" data is {"connection_id": "..."}
 //   - "metrics"            data is a MetricsResponse
+//   - "drift"              data is a DriftEventsMessage: architecture drift
+//     events just recorded, at most MaxWSDriftEvents of them (added in v3.1;
+//     clients that predate it ignore unknown types)
 type WSMessage struct {
 	Type string      `json:"type"`
 	Data interface{} `json:"data"`
@@ -158,7 +161,10 @@ func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 			}
 
 		case <-pingTicker.C:
-			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+				log.WithError(err).Debug("WebSocket ping failed")
+				return
+			}
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				log.WithError(err).Debug("WebSocket ping failed")
 				return
@@ -171,6 +177,16 @@ func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 		case <-sub.Done:
 			log.WithField("subscriber", subID).Info("WebSocket subscription ended")
 			return
+
+		case <-r.Context().Done():
+			// With UI login enabled the request context is bound to the
+			// session, so this is the session expiring or being logged out.
+			log.WithField("subscriber", subID).Info("WebSocket session ended")
+			// Best-effort close frame: the connection is being dropped either way.
+			_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+			_ = conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "session ended"))
+			return
 		}
 	}
 }
@@ -182,7 +198,9 @@ func (h *WebSocketHandler) readPump(conn *websocket.Conn, done chan<- struct{}) 
 	defer close(done)
 
 	conn.SetReadLimit(maxClientMessageSize)
-	conn.SetReadDeadline(time.Now().Add(pongWait))
+	if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		return
+	}
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(pongWait))
 	})
@@ -193,14 +211,18 @@ func (h *WebSocketHandler) readPump(conn *websocket.Conn, done chan<- struct{}) 
 		}
 		// Clients aren't expected to send data; ignore anything they do send
 		// but treat it as liveness.
-		conn.SetReadDeadline(time.Now().Add(pongWait))
+		if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+			return
+		}
 	}
 }
 
 // writeJSON writes a message with a bounded deadline. Callers must ensure only
 // one goroutine writes to conn at a time.
 func writeJSON(conn *websocket.Conn, msg WSMessage) error {
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	if err := conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+		return err
+	}
 	return conn.WriteJSON(msg)
 }
 
@@ -268,6 +290,13 @@ func (h *WebSocketHandler) eventToMessage(ctx context.Context, event service.Eve
 			return WSMessage{Type: "snapshot", Data: convertTopologyToResponse(t, true)}, true
 		}
 		return WSMessage{Type: "snapshot", Data: event.Data}, true
+
+	case service.EventDriftDetected:
+		events, ok := event.Data.([]storage.DriftEvent)
+		if !ok || len(events) == 0 {
+			return WSMessage{}, false
+		}
+		return WSMessage{Type: "drift", Data: driftEventsMessage(events)}, true
 
 	default:
 		return WSMessage{}, false

@@ -5,6 +5,12 @@
 // topology through the regular TopologyService, then continuously emits
 // throughput and host-metric updates. The frontend renders it exactly like
 // real agent data, including live rate changes on edges.
+//
+// The demo tells one story across every feature (see story.go): two weeks
+// of backfilled history in which dependencies come and go, the drift feed
+// a detector would have written over them, a short live script of new
+// dependencies, idle services the Idle-spend panel finds (idle.go), and DNS
+// names on every external destination.
 package demo
 
 import (
@@ -12,12 +18,16 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
 	log "github.com/sirupsen/logrus"
 )
+
+// demoRandSeed seeds the throughput random walk.
+const demoRandSeed = 310
 
 // tickInterval controls how often the simulator emits updates.
 const tickInterval = 2 * time.Second
@@ -33,6 +43,10 @@ type demoConnection struct {
 	targetID string
 	port     uint16
 	protocol string // "tcp" or "udp"
+
+	// hostnames are the DNS names the source resolved the target from, as
+	// an agent would report them for an external destination.
+	hostnames []string
 
 	baseSentRate float64 // bytes/sec
 	baseRecvRate float64 // bytes/sec
@@ -59,6 +73,21 @@ type demoNode struct {
 
 	cpuPercent float64
 	memPercent float64
+
+	// The values wander within base +/- these bands, never above
+	// demoMaxUsage: the demo is the product's shop window and should look
+	// like a calm, healthy cluster.
+	cpuBase, cpuBand float64
+	memBase, memBand float64
+}
+
+// demoMaxUsage keeps every demo meter in the UI's green band (ServerNode
+// colours usage amber from 60% and red from 85%).
+const demoMaxUsage = 55
+
+func newDemoNode(name string, memTotal uint64, cpu, cpuBand, mem, memBand float64) *demoNode {
+	return &demoNode{name: name, memTotal: memTotal, cpuPercent: cpu, memPercent: mem,
+		cpuBase: cpu, cpuBand: cpuBand, memBase: mem, memBand: memBand}
 }
 
 // Simulator seeds and animates a demo topology.
@@ -69,23 +98,59 @@ type Simulator struct {
 	services    []storage.Service
 	connections []*demoConnection
 	nodes       []*demoNode
+
+	// The simulated past and the scripted changes after start - see
+	// story.go in this package.
+	past    []pastSpan
+	script  []scriptStep
+	started time.Time
+
+	ready     chan struct{}
+	readyOnce sync.Once
+
+	// noDriftFeed skips seeding the drift feed (DRIFT_ENABLED=false).
+	noDriftFeed bool
 }
+
+// DisableDriftFeed stops the simulator from seeding drift events: drift
+// detection is switched off, so there is no feed to show them in. Call
+// before Run.
+func (s *Simulator) DisableDriftFeed() { s.noDriftFeed = true }
 
 // NewSimulator creates a demo simulator backed by the given topology service.
 func NewSimulator(topology *service.TopologyService) *Simulator {
 	s := &Simulator{
 		topology: topology,
-		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		// A fixed seed: throughput wanders the same way on every run, so a
+		// recording (scripts/demo-gif) is reproducible.
+		rng:   rand.New(rand.NewSource(demoRandSeed)),
+		ready: make(chan struct{}),
 	}
 	s.buildScenario()
+	s.configureIdleCost()
 	return s
+}
+
+// Ready is closed once the simulator has written its past and its starting
+// topology (or given up trying). Drift detection must seed after that: a
+// detector that loads its baseline while the backfill is still being written
+// sees half a past.
+func (s *Simulator) Ready() <-chan struct{} {
+	return s.ready
+}
+
+func (s *Simulator) markReady() {
+	s.readyOnce.Do(func() { close(s.ready) })
 }
 
 // Run seeds the demo topology and emits updates until ctx is cancelled.
 func (s *Simulator) Run(ctx context.Context) {
 	log.Info("Demo mode enabled - simulating topology (no agent required)")
+	defer s.markReady() // whatever happens below, never hold detection back
 
-	if err := s.seed(ctx); err != nil {
+	err := s.start(ctx, time.Now())
+	s.markReady()
+	if err != nil {
 		log.WithError(err).Error("Demo simulator failed to seed topology")
 		return
 	}
@@ -102,6 +167,7 @@ func (s *Simulator) Run(ctx context.Context) {
 			log.Info("Demo simulator stopped")
 			return
 		case <-ticker.C:
+			s.advanceScript(ctx)
 			s.tick(ctx)
 		case <-refreshTicker.C:
 			s.refreshServices(ctx)
@@ -145,6 +211,8 @@ func (s *Simulator) buildScenario() {
 		svc("10.0.2.11/auth-service", "auth-service", "application", "Go", "go", nodeApp, "10.0.2.11"),
 		svc("10.0.2.12/orders-service", "orders-service", "application", "Python/Uvicorn", "python", nodeApp, "10.0.2.12"),
 		svc("10.0.2.13/payment-worker", "payment-worker", "application", "Python", "python", nodeApp, "10.0.2.13"),
+		// Retired by the live script (story.go).
+		svc("10.0.2.14/recommendations", "recommendations", "application", "Python", "python", nodeApp, "10.0.2.14"),
 
 		// Data node
 		svc("10.0.3.10:5432", "postgres", "database", "PostgreSQL 16.2", "postgresql", nodeData, "10.0.3.10"),
@@ -152,7 +220,22 @@ func (s *Simulator) buildScenario() {
 		svc("10.0.3.12:9092", "kafka", "message_queue", "Kafka", "kafka", nodeData, "10.0.3.12"),
 		svc("10.0.3.13:9090", "prometheus", "monitoring", "Prometheus", "prometheus", nodeData, "10.0.3.13"),
 		svc("10.0.3.14:53", "dns", "application", "DNS", "dns", nodeData, "10.0.3.14"),
+		// Adopted 5 hours ago (story.go) - the replacement for search-v1.
+		svc("10.0.3.15:9200", "search", "database", "Elasticsearch 8.13", "elasticsearch", nodeData, "10.0.3.15"),
+
+		// External SaaS dependencies, shaped exactly like what the processor
+		// creates for an outbound connection to a public address: keyed by
+		// IP:port, no node. The DNS names on their connections are what an
+		// agent learns from the answers those workloads received.
+		// Documentation-range addresses (RFC 5737), not the real services'.
+		external("198.51.100.20"), // api.stripe.com - adopted 30h ago
+		external("198.51.100.42"), // s3.us-east-1.amazonaws.com
+		external("198.51.100.50"), // o450123.ingest.sentry.io
+		external("198.51.100.60"), // shared CDN address: two names
+		external("198.51.100.61"), // oauth2.googleapis.com - adopted 50m ago
 	}
+	// The idle-spend part of the cast (idle.go).
+	s.services = append(s.services, idleDemoServices(svc)...)
 
 	conn := func(src, dst string, port uint16, sentKBps, recvKBps float64) *demoConnection {
 		return &demoConnection{
@@ -188,28 +271,75 @@ func (s *Simulator) buildScenario() {
 		conn("10.0.3.13:9090", "10.0.2.10/api-gateway", 8080, 3, 40),
 		udpConn("10.0.2.10/api-gateway", "10.0.3.14:53", 53, 1, 2),
 		udpConn("10.0.2.12/orders-service", "10.0.3.14:53", 53, 1, 2),
+
+		conn("10.0.2.10/api-gateway", "10.0.2.14/recommendations", 7000, 6, 18),
+		conn("10.0.2.12/orders-service", "10.0.3.15:9200", 9200, 12, 48),
+		named(conn("10.0.2.13/payment-worker", "198.51.100.20:443", 443, 4, 6), "api.stripe.com"),
+		named(conn("10.0.2.11/auth-service", "198.51.100.61:443", 443, 2, 5), "oauth2.googleapis.com"),
+		named(conn("10.0.2.12/orders-service", "198.51.100.42:443", 443, 80, 10), "s3.us-east-1.amazonaws.com"),
+		named(conn("10.0.2.10/api-gateway", "198.51.100.50:443", 443, 3, 1), "o450123.ingest.sentry.io"),
+		named(conn("10.0.1.11/node", "198.51.100.60:443", 443, 2, 1), "api.segment.io", "cdn.segment.com"),
 	}
+	s.connections = append(s.connections, idleDemoConnections(conn)...)
 
 	gib := func(n uint64) uint64 { return n * 1024 * 1024 * 1024 }
 	s.nodes = []*demoNode{
-		{name: "demo-edge-1", memTotal: gib(8), cpuPercent: 22, memPercent: 38},
-		{name: "demo-app-1", memTotal: gib(16), cpuPercent: 45, memPercent: 55},
-		{name: "demo-data-1", memTotal: gib(32), cpuPercent: 30, memPercent: 68},
+		newDemoNode("demo-edge-1", gib(8), 22, 8, 36, 4),
+		newDemoNode("demo-app-1", gib(16), 38, 9, 46, 4),
+		newDemoNode("demo-data-1", gib(32), 28, 7, 49, 4),
+		newDemoNode(nodeLegacy, gib(8), 5, 3, 30, 2), // nothing runs there any more
+	}
+
+	s.buildTimeline(svc, conn)
+}
+
+// named attaches the DNS names the source resolved the target from.
+func named(c *demoConnection, hostnames ...string) *demoConnection {
+	c.hostnames = hostnames
+	return c
+}
+
+// external describes an outbound HTTPS destination the way the event
+// processor records one: ID "IP:443", named by port, displayed by IP.
+func external(ip string) storage.Service {
+	return storage.Service{
+		ID:          ip + ":443",
+		Name:        ":443",
+		DisplayName: ip,
+		Type:        "web_server",
+		Tech:        "HTTPS",
+		Icon:        "https",
+		PodIP:       ip,
+		Healthy:     true,
 	}
 }
 
-// seed creates the initial services, connections, and node metrics.
+// start writes the demo's past (or, on a kept database, fast-forwards the
+// script past what the previous run already played) and then its current
+// topology, as of now.
+func (s *Simulator) start(ctx context.Context, now time.Time) error {
+	s.started = now
+	if kept := s.seedPast(ctx); kept {
+		s.fastForwardScript(ctx)
+	}
+	return s.seed(ctx)
+}
+
+// seed creates the initial services, connections, and node metrics. The
+// past (seedPast) is written before this, so the live writes below extend
+// the backfilled intervals rather than opening new ones.
 func (s *Simulator) seed(ctx context.Context) error {
 	s.refreshServices(ctx)
 
 	for _, c := range s.connections {
 		if err := s.topology.AddConnection(ctx, &storage.Connection{
-			ID:       c.id(),
-			SourceID: c.sourceID,
-			TargetID: c.targetID,
-			Port:     c.port,
-			Protocol: c.protocol,
-			LastSeen: time.Now(),
+			ID:        c.id(),
+			SourceID:  c.sourceID,
+			TargetID:  c.targetID,
+			Port:      c.port,
+			Protocol:  c.protocol,
+			LastSeen:  time.Now(),
+			Hostnames: storage.ObservedHostnames(time.Now(), c.hostnames...),
 		}); err != nil {
 			return err
 		}
@@ -219,8 +349,14 @@ func (s *Simulator) seed(ctx context.Context) error {
 	return nil
 }
 
-// refreshServices re-upserts all demo services to keep last_seen fresh.
+// refreshServices re-upserts all demo services to keep last_seen fresh, and
+// re-reports the simulated DNS names so they do not age out.
 func (s *Simulator) refreshServices(ctx context.Context) {
+	for _, c := range s.connections {
+		if len(c.hostnames) > 0 {
+			_ = s.topology.AddConnectionHostnames(ctx, c.id(), c.hostnames)
+		}
+	}
 	for i := range s.services {
 		svc := s.services[i] // copy: Upsert mutates LastSeen
 		svc.LastSeen = time.Now()
@@ -253,8 +389,7 @@ func (s *Simulator) tick(ctx context.Context) {
 	}
 
 	for _, n := range s.nodes {
-		n.cpuPercent = s.drift(n.cpuPercent, 5, 3, 95)
-		n.memPercent = s.drift(n.memPercent, 2, 10, 95)
+		s.wander(n)
 
 		memUsed := uint64(float64(n.memTotal) * n.memPercent / 100)
 		if err := s.topology.UpdateNodeMetrics(ctx, &storage.NodeMetrics{
@@ -268,6 +403,12 @@ func (s *Simulator) tick(ctx context.Context) {
 			log.WithError(err).WithField("node", n.name).Debug("Demo simulator failed to update metrics")
 		}
 	}
+}
+
+// wander moves a node's CPU and memory one step within its bands.
+func (s *Simulator) wander(n *demoNode) {
+	n.cpuPercent = s.drift(n.cpuPercent, 3, math.Max(1, n.cpuBase-n.cpuBand), math.Min(demoMaxUsage, n.cpuBase+n.cpuBand))
+	n.memPercent = s.drift(n.memPercent, 1, math.Max(1, n.memBase-n.memBand), math.Min(demoMaxUsage, n.memBase+n.memBand))
 }
 
 // jitter returns base scaled by a random factor in [1-amount, 1+amount].

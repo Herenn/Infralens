@@ -61,6 +61,8 @@ export interface Service {
   inspection?: ServiceInspection  // Deep inspection data
   original_id?: string     // Original service ID (for aggregated services)
   aggregated_count?: number // Number of services aggregated (for display)
+  hostname?: string        // DNS name callers used for this address (external services)
+  hostnames?: string[]     // Every DNS name observed for it, primary first
 }
 
 // A decommission candidate: a service's most recent observation, for
@@ -80,9 +82,57 @@ export interface StaleService {
 export interface CriticalityEntry {
   id: string
   name?: string
+  // DNS name of an external (address-keyed) service, when known.
+  hostname?: string
   type?: string
   node?: string
   blast_radius: number
+}
+
+// One architecture change from the drift feed: an edge that appeared (never
+// seen before) or disappeared (no longer observed). Names are snapshots taken
+// at detection time; empty means nothing better than the ID was known.
+export interface DriftEvent {
+  id: number
+  detected_at: string
+  kind: 'appeared' | 'disappeared'
+  connection_id: string
+  source_id: string
+  source_name?: string
+  target_id: string
+  target_name?: string
+  port: number
+  protocol: string
+  external: boolean
+  first_seen: string
+  last_seen: string
+}
+
+export interface DriftSilentAgent {
+  node: string
+  group?: string // CLUSTER_NAME, absent for an ungrouped agent
+  last_seen: string
+}
+
+export interface DriftSummary {
+  since: string | null
+  total: number
+  appeared: number
+  disappeared: number
+  external: number
+  latest: string | null
+  detector: {
+    running: boolean
+    warmup_until: string | null
+    last_check: string | null
+    check_interval_seconds?: number
+    gone_after_seconds?: number
+    // Agents that stopped reporting recently, newest first, at most 20;
+    // silent_agents_total counts them all. Edges only they could see are
+    // not being detected meanwhile.
+    silent_agents?: DriftSilentAgent[]
+    silent_agents_total?: number
+  }
 }
 
 // Service type constants
@@ -124,6 +174,7 @@ export interface Connection {
   packets_recv?: number
   last_seen: string
   latency_ms?: number
+  hostnames?: string[] // DNS names the source resolved the target from, newest first
 }
 
 // NodeMetrics represents CPU/RAM usage for a physical node/server

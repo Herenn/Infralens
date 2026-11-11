@@ -1,0 +1,4 @@
+node_modules/
+# Raw captures, intermediate frames, built backend binary, demo database
+out/
+.cache/

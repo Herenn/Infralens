@@ -11,10 +11,9 @@ import {
   Box,
   Cloud,
   Zap,
-  ArrowDownToLine, 
-  ArrowUpFromLine 
 } from 'lucide-react'
 import { Service, TypeColors } from '../types'
+import { serviceHostnames } from '../utils/hostnames'
 
 export interface ServiceNodeData {
   label: string
@@ -130,124 +129,76 @@ function getK8sDisplayInfo(service: Service): { type: string; namespace: string;
   return null
 }
 
+// Handles sit exactly on the card's left and right edges with no size, so
+// edges meet the card where utils/edgeRoute.ts expects them.
+const HANDLE_CLASS = '!w-px !h-px !min-w-0 !min-h-0 !border-0 !bg-transparent !opacity-0'
+
 function ServiceNode({ data, selected }: ServiceNodeProps) {
-  const { label, service, incomingCount, outgoingCount, healthy, ports } = data
+  const { label, service, healthy, ports } = data
 
   const k8sType = isK8sResource(service)
   const k8sInfo = getK8sDisplayInfo(service)
-  
+  const hostnames = serviceHostnames(service)
+
   // Get icon and color based on fingerprinted type
   const Icon = getServiceIcon(service.type, service.icon)
   const typeColor = getTypeColor(service.type)
 
-  // Determine the badge text (tech or K8s type)
-  const badgeText = service.tech || (k8sInfo ? k8sInfo.type : null)
-  const badgeColor = service.type ? typeColor : (k8sType === 'pod' ? '#3b82f6' : '#8b5cf6')
-
-  // Format ports for display (show first 2 max)
-  const displayPorts = ports?.slice(0, 2) || []
-  const hasMorePorts = (ports?.length || 0) > 2
+  const title = k8sInfo ? k8sInfo.name : label
+  const techText = service.tech || (k8sInfo ? k8sInfo.type : null)
+  const techColor = service.type ? typeColor : (k8sType === 'pod' ? '#3b82f6' : '#8b5cf6')
+  // The address is secondary: shown under the name, unless it is the name.
+  const address = service.pod_ip && service.pod_ip !== title ? service.pod_ip : null
+  const firstPort = ports && ports.length > 0 ? ports[0] : null
+  const morePorts = (ports?.length || 0) - 1
 
   return (
     <div
-      className={`
-        relative px-3 py-2.5 rounded-xl border-2 transition-all duration-200
-        bg-gradient-to-br from-dark-800 to-dark-900
-        ${selected 
-          ? 'border-lens-500 shadow-lg shadow-lens-500/20' 
-          : 'border-dark-600 hover:border-dark-500'
-        }
-        ${!healthy ? 'border-red-500/50' : ''}
+      className={`il-card relative h-full w-full flex items-center gap-2.5 pl-2.5 pr-3 rounded-lg border transition-[border-color,box-shadow] duration-150
+        bg-gradient-to-br from-dark-800 to-[#131c2e]
+        ${selected
+          ? 'border-lens-500 shadow-[0_0_0_3px_rgba(34,197,94,0.18)]'
+          : healthy ? 'border-dark-600/90 hover:border-dark-400' : 'border-red-500/60'}
       `}
-      style={{ minWidth: 160, maxWidth: 220 }}
+      title={hostnames.length > 1 ? `DNS: ${hostnames.join(', ')}` : undefined}
     >
-      {/* Connection handles */}
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!w-3 !h-3 !bg-dark-500 !border-2 !border-dark-400 hover:!bg-lens-500 transition-colors"
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!w-3 !h-3 !bg-dark-500 !border-2 !border-dark-400 hover:!bg-lens-500 transition-colors"
-      />
+      <Handle type="target" position={Position.Left} className={HANDLE_CLASS} isConnectable={false} />
+      <Handle type="source" position={Position.Right} className={HANDLE_CLASS} isConnectable={false} />
 
-      {/* Status indicator */}
-      <div 
-        className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full ${
-          healthy ? 'bg-lens-500 animate-pulse-slow' : 'bg-red-500'
-        }`}
-      />
+      <div
+        className="w-8 h-8 rounded-md flex items-center justify-center shrink-0"
+        style={{ backgroundColor: `${typeColor}1f`, color: healthy ? typeColor : '#ef4444' }}
+      >
+        <Icon size={17} />
+      </div>
 
-      {/* Tech/Type badge */}
-      {badgeText && (
-        <div 
-          className="absolute -top-2 left-3 px-1.5 py-0.5 text-[9px] font-semibold rounded text-white"
-          style={{ backgroundColor: badgeColor }}
-        >
-          {badgeText}
-        </div>
-      )}
-
-      {/* Content */}
-      <div className="flex items-start gap-2 mt-1">
-        <div 
-          className="p-1.5 rounded-lg flex-shrink-0"
-          style={{ 
-            backgroundColor: `${typeColor}15`,
-            color: healthy ? typeColor : '#ef4444'
-          }}
-        >
-          <Icon size={18} />
-        </div>
-        
-        <div className="flex-1 min-w-0">
-          {/* Primary name */}
-          <h3 className="font-medium text-dark-100 truncate text-xs leading-tight">
-            {k8sInfo ? k8sInfo.name : label}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <h3 className="il-card-title font-semibold text-dark-100 truncate text-[13px] leading-[18px]">
+            {title}
           </h3>
-
-          {/* Namespace (if K8s) */}
-          {k8sInfo && (
-            <p className="text-[10px] text-dark-400 truncate">
-              ns/{k8sInfo.namespace}
-            </p>
+          {!k8sInfo && hostnames.length > 1 && (
+            <span className="shrink-0 text-[10px] text-dark-400">+{hostnames.length - 1}</span>
           )}
-
-          {/* IP address + Port badges */}
-          <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-            {service.pod_ip && (
-              <span className="text-[10px] text-dark-500 font-mono">
-                {service.pod_ip}
-              </span>
-            )}
-            {displayPorts.map(port => (
-              <span 
-                key={port}
-                className="text-[9px] font-mono bg-slate-700 text-slate-300 px-1 py-0.5 rounded"
-              >
-                :{port}
-              </span>
-            ))}
-            {hasMorePorts && (
-              <span className="text-[9px] text-dark-500">+{(ports?.length || 0) - 2}</span>
-            )}
-          </div>
+        </div>
+        <div className="flex items-center gap-1.5 min-w-0 text-[10.5px] leading-4 mt-px">
+          {techText && (
+            <span className="shrink-0 max-w-[90px] truncate font-medium" style={{ color: techColor }}>{techText}</span>
+          )}
+          {k8sInfo && <span className="truncate text-dark-400">ns/{k8sInfo.namespace}</span>}
+          {!k8sInfo && (address || firstPort !== null) && (
+            <span className="truncate font-mono text-dark-400">
+              {address}{firstPort !== null && <span className="text-dark-300">:{firstPort}</span>}
+              {morePorts > 0 && <span className="text-dark-500"> +{morePorts}</span>}
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Connection counts */}
-      <div className="flex items-center gap-2 mt-1.5 pt-1.5 border-t border-dark-700/50">
-        <div className="flex items-center gap-1 text-[10px] text-dark-400">
-          <ArrowDownToLine size={10} className="text-blue-400" />
-          <span>{incomingCount}</span>
-        </div>
-        <div className="flex items-center gap-1 text-[10px] text-dark-400">
-          <ArrowUpFromLine size={10} className="text-lens-400" />
-          <span>{outgoingCount}</span>
-        </div>
-      </div>
+      <span
+        className={`absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full ${healthy ? 'bg-lens-500' : 'bg-red-500'}`}
+        title={healthy ? 'Healthy' : 'Unhealthy'}
+      />
     </div>
   )
 }

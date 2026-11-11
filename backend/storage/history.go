@@ -35,6 +35,24 @@ type ConnectionInterval struct {
 	Protocol     string    `json:"protocol,omitempty"`
 	FirstSeen    time.Time `json:"first_seen"`
 	LastSeen     time.Time `json:"last_seen"`
+
+	// Hostnames are the edge's DNS names as last recorded on this interval.
+	Hostnames []Hostname `json:"hostnames,omitempty"`
+}
+
+// NodeInterval is a contiguous period during which a node's agent was
+// reporting (its host-metrics heartbeat). It is the node's observation
+// coverage: only that node's own agent can extend it, unlike the service and
+// connection intervals touching the node, which the far end's agent extends
+// too. Node is always the real agent node; Group is the CLUSTER_NAME group
+// it reports under ("" when ungrouped), which is what services and edges of
+// grouped agents carry as their node.
+type NodeInterval struct {
+	ID        int64     `json:"id"`
+	Node      string    `json:"node"`
+	Group     string    `json:"group,omitempty"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
 }
 
 // HistoryBounds is the earliest and latest instants covered by recorded
@@ -99,6 +117,23 @@ type HistoryRepository interface {
 	// (service.DriftDetector) seeds its known-dependency set from it and then
 	// reads each check window through it.
 	ConnectionsBetween(ctx context.Context, from, to time.Time) ([]ConnectionInterval, error)
+
+	// EachConnectionBetween is ConnectionsBetween streamed: fn is called for
+	// every interval overlapping [from, to], in first_seen order, without
+	// materializing them all - drift detection seeds from the whole
+	// retention window. fn must not use the store: with SQLite's single
+	// connection the query holds it until iteration ends. A non-nil error
+	// from fn stops iteration and is returned.
+	EachConnectionBetween(ctx context.Context, from, to time.Time, fn func(ConnectionInterval) error) error
+
+	// RecordNode extends or opens the reporting interval of node's agent,
+	// observed at `at`, reporting under group ("" when ungrouped; see
+	// NodeInterval).
+	RecordNode(ctx context.Context, node, group string, at time.Time, maxGap time.Duration) error
+
+	// NodesBetween returns every node reporting interval overlapping
+	// [from, to], ordered by first_seen.
+	NodesBetween(ctx context.Context, from, to time.Time) ([]NodeInterval, error)
 
 	// DeleteStale removes intervals that ended before the cutoff. Unlike
 	// pruning current state, this is the retention boundary for history.
@@ -176,6 +211,9 @@ func mergeConnectionIntervals(rows []ConnectionInterval) []ConnectionInterval {
 		if row.LastSeen.After(existing.LastSeen) {
 			existing.LastSeen = row.LastSeen
 		}
+		// Union, each name at its latest sighting. The zero "now" disables
+		// age-based expiry here: reading history must not depend on the clock.
+		existing.Hostnames = MergeHostnames(row.Hostnames, existing.Hostnames, time.Time{})
 	}
 
 	merged := make([]ConnectionInterval, 0, len(order))

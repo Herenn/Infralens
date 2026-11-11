@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/Herenn/Infralens/backend/api/middleware"
+	"github.com/Herenn/Infralens/backend/service"
 	"github.com/Herenn/Infralens/backend/storage"
+	log "github.com/sirupsen/logrus"
 )
 
 // Config holds all configuration for the InfraLens backend.
@@ -32,19 +34,51 @@ type Config struct {
 
 	// Architecture drift notifications
 	Drift DriftConfig
+
+	// Idle spend estimation (see idlecost.go)
+	IdleCost service.IdleCostConfig
+
+	// MCP (Model Context Protocol) endpoint for AI assistants
+	MCP MCPConfig
 }
 
-// DriftConfig configures architecture drift notifications: a webhook called
-// when a dependency appears that has never been seen before, or an
-// established one stops being observed. Disabled unless WebhookURL is set.
+// MCPConfig configures the read-only MCP endpoint served at /mcp.
+type MCPConfig struct {
+	// Enabled mounts /mcp. On by default: it is read-only, and what it serves
+	// is the same topology the public read endpoints (/api/v1/topology,
+	// /services, /graph/*, /topology/history/*, /topology/export) serve. The
+	// one addition - a service's process fingerprint (process name, listen
+	// ports, DB/HTTP server banners, pod) - is only returned to callers that
+	// authenticated with a key, never in open mode.
+	Enabled bool
+
+	// APIKey (MCP_API_KEY) is a read-only key valid on /mcp only, so AI
+	// assistant configs never need the agents' write-capable API_KEY. /mcp
+	// accepts either key; any key configured makes one required.
+	APIKey string
+
+	// AllowedOrigins are browser origins allowed to call /mcp (Origin check
+	// and CORS) besides loopback ones. Non-browser clients send no Origin and
+	// are unaffected.
+	AllowedOrigins []string
+}
+
+// DriftConfig configures architecture drift detection: a dependency appears
+// that has never been seen before, or an established one stops being
+// observed. Detection runs whenever history is enabled and records changes in
+// the in-UI feed; the webhook is optional, off unless WebhookURL is set.
 type DriftConfig struct {
 	WebhookURL string
 	Interval   time.Duration
 	GoneAfter  time.Duration
 	Warmup     time.Duration
+
+	// DetectionEnabled switches drift detection (feed and webhook) off
+	// entirely when false. Default true.
+	DetectionEnabled bool
 }
 
-// Enabled reports whether drift notifications are configured.
+// Enabled reports whether drift webhook notifications are configured.
 func (c DriftConfig) Enabled() bool {
 	return c.WebhookURL != ""
 }
@@ -150,6 +184,13 @@ func Load() *Config {
 			// That has to be a deliberate choice, not something you get by
 			// forgetting to set a variable.
 			AllowNoAuth: getBoolEnv("ALLOW_NO_AUTH", false),
+			// UI login (opt-in). Unset UI_PASSWORD keeps v3.0 behaviour.
+			UIPassword:    getEnv("UI_PASSWORD", ""),
+			UIUsername:    getEnv("UI_USERNAME", middleware.DefaultUIUsername),
+			SessionSecret: getEnv("SESSION_SECRET", ""),
+			SessionTTL:    getDurationEnv("SESSION_TTL", middleware.DefaultSessionTTL),
+			// Whose X-Forwarded-For to believe for login throttling.
+			TrustedProxies: getEnv("TRUSTED_PROXIES", ""),
 		},
 
 		LLM: LLMConfig{
@@ -175,10 +216,60 @@ func Load() *Config {
 			Interval:   getDurationEnv("DRIFT_CHECK_INTERVAL", 0),
 			GoneAfter:  getDurationEnv("DRIFT_GONE_AFTER", 0),
 			Warmup:     getDurationEnv("DRIFT_WARMUP", -1),
+
+			DetectionEnabled: getBoolEnv("DRIFT_ENABLED", true),
+		},
+
+		IdleCost: loadIdleCost(),
+
+		MCP: MCPConfig{
+			Enabled:        getBoolEnv("MCP_ENABLED", true),
+			APIKey:         getEnv("MCP_API_KEY", ""),
+			AllowedOrigins: getListEnv("MCP_ALLOWED_ORIGINS"),
 		},
 	}
 
+	// The demo writes two weeks of synthetic history and drift events. With
+	// the default SQLite file shared, trying the demo and then running for
+	// real would leave that fake past in the real database for the whole
+	// retention window - so the demo gets its own file unless told otherwise.
+	if cfg.Server.DemoMode && os.Getenv("DB_DSN") == "" && isSQLiteDriver(cfg.Storage.Driver) {
+		cfg.Storage.DSN = DefaultDemoDSN
+	}
+
+	if gap := cfg.Storage.HistoryMaxGap; gap > 0 && gap < MinHistoryMaxGap {
+		log.WithFields(log.Fields{"HISTORY_MAX_GAP": gap, "using": MinHistoryMaxGap}).Warn(
+			"HISTORY_MAX_GAP is shorter than a few agent heartbeats (host metrics every 5s): every heartbeat " +
+				"would open a new node interval and observation coverage would fragment; raising it")
+		cfg.Storage.HistoryMaxGap = MinHistoryMaxGap
+	}
+
 	return cfg
+}
+
+// MinHistoryMaxGap is the shortest HISTORY_MAX_GAP accepted: three default
+// agent heartbeat periods (host metrics every 5s). History refreshes are
+// throttled to half the gap, so below this consecutive heartbeats no longer
+// extend one interval and node coverage (see service/coverage.go) breaks
+// into a row per heartbeat.
+const MinHistoryMaxGap = 15 * time.Second
+
+// DefaultDemoDSN is the SQLite database demo mode uses when DB_DSN is unset.
+const DefaultDemoDSN = "infralens-demo.db"
+
+func isSQLiteDriver(driver string) bool {
+	return driver == "" || driver == "sqlite" || driver == "sqlite3"
+}
+
+// getListEnv reads a comma-separated list, dropping empty entries.
+func getListEnv(key string) []string {
+	var out []string
+	for _, p := range strings.Split(os.Getenv(key), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Helper functions

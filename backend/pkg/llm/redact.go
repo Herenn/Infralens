@@ -22,6 +22,7 @@ var redactPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{35}\b`),                       // Google API key
 	regexp.MustCompile(`\bgh[pousr]_[0-9A-Za-z]{36,255}\b`),                // GitHub tokens
 	regexp.MustCompile(`\bxox[baprs]-[0-9A-Za-z-]{10,}\b`),                 // Slack tokens
+	regexp.MustCompile(`\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{20,}`),  // OpenAI project / service-account / admin key
 	regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`),                          // OpenAI-style API key
 	regexp.MustCompile(`\bsk-ant-[A-Za-z0-9\-_]{20,}\b`),                   // Anthropic API key
 	regexp.MustCompile(`\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b`),     // Stripe secret/restricted key

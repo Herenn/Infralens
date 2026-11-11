@@ -362,6 +362,7 @@ func (h *TopologyHandler) HandleGetCriticality(w http.ResponseWriter, r *http.Re
 		response = append(response, CriticalityResponse{
 			ID:          sc.Service.ID,
 			Name:        sc.Service.Name,
+			Hostname:    service.ServiceHostname(&sc.Service),
 			Type:        sc.Service.Type,
 			Node:        sc.Service.Node,
 			BlastRadius: sc.BlastRadius,
@@ -427,6 +428,12 @@ type ServiceResponse struct {
 	Labels       map[string]string `json:"labels,omitempty"`
 	LastSeen     string            `json:"last_seen"`
 	Healthy      *bool             `json:"healthy,omitempty"`
+
+	// Hostname is the DNS name to label an address-keyed (external) service
+	// with - the most common of Hostnames. Hostnames lists every name its
+	// callers resolved it from. Both omitted when none was observed.
+	Hostname  string   `json:"hostname,omitempty"`
+	Hostnames []string `json:"hostnames,omitempty"`
 }
 
 // ConnectionResponse is the connection format expected by the frontend.
@@ -445,6 +452,10 @@ type ConnectionResponse struct {
 	PacketsRecv   uint64  `json:"packets_recv,omitempty"`
 	LastSeen      string  `json:"last_seen"`
 	LatencyMs     float64 `json:"latency_ms,omitempty"`
+
+	// Hostnames are the DNS names the source resolved the target from, most
+	// recent first.
+	Hostnames []string `json:"hostnames,omitempty"`
 }
 
 // HistoryRangeResponse is the earliest/latest recorded history instants,
@@ -468,8 +479,11 @@ type StaleServiceResponse struct {
 
 // CriticalityResponse is a service's rank in the blast-radius-size ranking.
 type CriticalityResponse struct {
-	ID          string `json:"id"`
-	Name        string `json:"name,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	// Hostname is the DNS name an external (address-keyed) service is
+	// labelled with, as in ServiceResponse.
+	Hostname    string `json:"hostname,omitempty"`
 	Type        string `json:"type,omitempty"`
 	Node        string `json:"node,omitempty"`
 	BlastRadius int    `json:"blast_radius"`
@@ -540,6 +554,8 @@ func convertServiceToResponse(svc storage.Service, healthKnown bool) ServiceResp
 		Labels:       svc.Labels,
 		LastSeen:     svc.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
 		Healthy:      healthy,
+		Hostname:     service.ServiceHostname(&svc),
+		Hostnames:    svc.Hostnames,
 	}
 }
 
@@ -559,6 +575,7 @@ func convertConnectionToResponse(conn storage.Connection) ConnectionResponse {
 		PacketsRecv:   conn.PacketsRecv,
 		LastSeen:      conn.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
 		LatencyMs:     conn.Latency,
+		Hostnames:     storage.HostnameNames(conn.Hostnames),
 	}
 }
 

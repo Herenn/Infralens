@@ -24,6 +24,13 @@ spec:
     metadata:
       labels:
         {{- include "infralens.backend.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pods when the chart's Secret changes: env vars from a
+        # Secret are only read at container start, so without this a
+        # `helm upgrade` that rotates uiPassword/apiKey would leave the old
+        # (possibly leaked) values live. Not covered: backend.auth.existingSecret,
+        # which the chart does not manage - restart the Deployment yourself.
+        checksum/secret: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ include "infralens.serviceAccountName" . }}
       # fsGroup is what makes the mounted volume writable. The image runs as
@@ -52,6 +59,34 @@ spec:
             {{- if .Values.backend.auth.allowNoAuth }}
             - name: ALLOW_NO_AUTH
               value: "true"
+            {{- end }}
+            {{- with .Values.backend.auth }}
+            {{- if or .uiPassword .existingSecret }}
+            # UI login: read endpoints and the WebSocket need a session or API_KEY.
+            - name: UI_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret | default (printf "%s-secrets" (include "infralens.fullname" $)) }}
+                  key: ui-password
+            - name: UI_USERNAME
+              value: {{ .uiUsername | default "admin" | quote }}
+            - name: SESSION_TTL
+              value: {{ .sessionTTL | default "12h" | quote }}
+            {{- if .trustedProxies }}
+            - name: TRUSTED_PROXIES
+              value: {{ .trustedProxies | quote }}
+            {{- end }}
+            {{- if or .sessionSecret .existingSecret }}
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret | default (printf "%s-secrets" (include "infralens.fullname" $)) }}
+                  key: session-secret
+                  {{- if .existingSecret }}
+                  optional: true
+                  {{- end }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- if .Values.backend.demoMode }}
             - name: DEMO_MODE
@@ -102,20 +137,66 @@ spec:
               value: {{ .Values.backend.history.retention | quote }}
             - name: HISTORY_MAX_GAP
               value: {{ .Values.backend.history.maxGap | quote }}
+            # Architecture drift detection / Changes feed. The timings apply
+            # whether or not a webhook is configured: detection always runs
+            # (with history) and feeds the UI. Unset ones use the backend's
+            # defaults (demo mode has its own, much faster ones).
+            - name: DRIFT_ENABLED
+              value: {{ .Values.backend.drift.enabled | quote }}
+            {{- with .Values.backend.drift }}
+            {{- if and (not (kindIs "invalid" .checkInterval)) (ne (toString .checkInterval) "") }}
+            - name: DRIFT_CHECK_INTERVAL
+              value: {{ .checkInterval | quote }}
+            {{- end }}
+            {{- if and (not (kindIs "invalid" .goneAfter)) (ne (toString .goneAfter) "") }}
+            - name: DRIFT_GONE_AFTER
+              value: {{ .goneAfter | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if and (not (kindIs "invalid" .Values.backend.drift.warmup)) (ne (toString .Values.backend.drift.warmup) "") }}
+            - name: DRIFT_WARMUP
+              value: {{ .Values.backend.drift.warmup | quote }}
+            {{- end }}
+            # MCP endpoint (/mcp) for AI assistants.
+            - name: MCP_ENABLED
+              value: {{ .Values.backend.mcp.enabled | quote }}
+            {{- if .Values.backend.mcp.allowedOrigins }}
+            - name: MCP_ALLOWED_ORIGINS
+              value: {{ .Values.backend.mcp.allowedOrigins | quote }}
+            {{- end }}
+            {{- if .Values.backend.mcp.apiKey }}
+            # Read-only key accepted on /mcp only.
+            - name: MCP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "infralens.fullname" . }}-secrets
+                  key: mcp-api-key
+            {{- end }}
             {{- if .Values.backend.drift.webhookUrl }}
-            # Architecture drift notifications.
+            # Optional drift webhook (Slack/Mattermost-compatible).
             - name: DRIFT_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ include "infralens.fullname" . }}-secrets
                   key: drift-webhook-url
-            - name: DRIFT_CHECK_INTERVAL
-              value: {{ .Values.backend.drift.checkInterval | quote }}
-            - name: DRIFT_GONE_AFTER
-              value: {{ .Values.backend.drift.goneAfter | quote }}
-            - name: DRIFT_WARMUP
-              value: {{ .Values.backend.drift.warmup | quote }}
             {{- end }}
+            # Idle spend estimation. Empty values mean "unset".
+            - name: IDLE_COST_NODE_MONTHLY
+              value: {{ .Values.backend.idleCost.nodeMonthly | quote }}
+            - name: IDLE_COST_NODE_PRICES
+              value: {{ .Values.backend.idleCost.nodePrices | quote }}
+            - name: IDLE_COST_SERVICE_PRICES
+              value: {{ .Values.backend.idleCost.servicePrices | quote }}
+            - name: IDLE_COST_CURRENCY
+              value: {{ .Values.backend.idleCost.currency | quote }}
+            - name: IDLE_COST_EXCLUDE
+              value: {{ .Values.backend.idleCost.exclude | quote }}
+            - name: IDLE_COST_WINDOW
+              value: {{ .Values.backend.idleCost.window | quote }}
+            - name: IDLE_COST_QUIET_AFTER
+              value: {{ .Values.backend.idleCost.quietAfter | quote }}
+            - name: IDLE_COST_WARMUP
+              value: {{ .Values.backend.idleCost.warmup | quote }}
             {{- with .Values.backend.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

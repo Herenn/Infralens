@@ -9,7 +9,7 @@ import (
 )
 
 // Version is the backend version (set at build time)
-var Version = "3.0.0"
+var Version = "3.1.0"
 
 // HealthHandler handles health and status endpoints.
 type HealthHandler struct {
@@ -28,7 +28,7 @@ func NewHealthHandler(store storage.Store, k8sWatcher *k8s.Watcher) *HealthHandl
 // HandleHealth returns the health status.
 func (h *HealthHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 }
 
 // HandleReady returns the readiness status.
@@ -38,7 +38,7 @@ func (h *HealthHandler) HandleReady(w http.ResponseWriter, r *http.Request) {
 	// Check database connection
 	if err := h.store.Ping(ctx); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status": "not ready",
 			"error":  "database connection failed",
 		})
@@ -46,7 +46,7 @@ func (h *HealthHandler) HandleReady(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 }
 
 // HandleK8sStatus returns Kubernetes watcher status.
@@ -56,13 +56,13 @@ func (h *HealthHandler) HandleK8sStatus(w http.ResponseWriter, r *http.Request) 
 		"cache":   h.k8sWatcher.Stats(),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(status)
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 // HandleVersion returns the backend version.
 func (h *HealthHandler) HandleVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"version": Version,
 	})
 }

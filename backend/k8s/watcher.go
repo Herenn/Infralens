@@ -117,19 +117,23 @@ func (w *Watcher) Start() {
 
 	// Setup Pod informer
 	podInformer := w.factory.Core().V1().Pods().Informer()
-	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    w.onPodAdd,
 		UpdateFunc: w.onPodUpdate,
 		DeleteFunc: w.onPodDelete,
-	})
+	}); err != nil {
+		log.WithError(err).Error("Failed to register Kubernetes pod event handler")
+	}
 
 	// Setup Service informer
 	svcInformer := w.factory.Core().V1().Services().Informer()
-	svcInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	if _, err := svcInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    w.onServiceAdd,
 		UpdateFunc: w.onServiceUpdate,
 		DeleteFunc: w.onServiceDelete,
-	})
+	}); err != nil {
+		log.WithError(err).Error("Failed to register Kubernetes service event handler")
+	}
 
 	// Start the informers
 	w.factory.Start(w.ctx.Done())
