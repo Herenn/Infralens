@@ -411,5 +411,15 @@ func (r *HistoryRepo) DeleteStale(ctx context.Context, before time.Time) (int64,
 		return svcDeleted, err
 	}
 
-	return svcDeleted + connDeleted, nil
+	nodeRes, err := exec.ExecContext(ctx,
+		`DELETE FROM node_intervals WHERE last_seen < ?`, before)
+	if err != nil {
+		return svcDeleted + connDeleted, fmt.Errorf("pruning node intervals: %w", err)
+	}
+	nodeDeleted, err := nodeRes.RowsAffected()
+	if err != nil {
+		return svcDeleted + connDeleted, err
+	}
+
+	return svcDeleted + connDeleted + nodeDeleted, nil
 }

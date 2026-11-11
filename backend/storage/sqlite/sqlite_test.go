@@ -635,3 +635,8 @@ func TestStore_Ping(t *testing.T) {
 		t.Errorf("Ping failed: %v", err)
 	}
 }
+
+func TestSQLiteMigrationsRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	storage.MigrationRoundTripSuite(t, store, store, 7)
+}

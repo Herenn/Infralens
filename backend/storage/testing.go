@@ -48,6 +48,10 @@ func StoreSuite(t *testing.T, store Store) {
 	t.Run("OptionalInterfaces", func(t *testing.T) {
 		OptionalInterfacesSuite(t, store)
 	})
+
+	t.Run("Parity", func(t *testing.T) {
+		ParitySuite(t, store)
+	})
 }
 
 // OptionalInterfacesSuite checks the optional extensions features discover by

@@ -337,3 +337,29 @@ func TestTimestamps_EveryDatetimeColumnIsNormalized(t *testing.T) {
 		}
 	}
 }
+
+// TestTimestamps_NormalizedWithoutAutoMigrate: operators who migrate out of
+// band (DB_AUTO_MIGRATE=false) get v3.0 rows normalised at startup too,
+// because the schema is at a version whose code expects UTC.
+func TestTimestamps_NormalizedWithoutAutoMigrate(t *testing.T) {
+	withLocal(t, "Asia/Kolkata")
+	dsn := t.TempDir() + "/oob.db"
+	s, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 11, 10, 9, 0, 0, 123456789, time.UTC)
+	writeV30Rows(t, s, 3, base)
+	_ = s.Close()
+
+	s, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	for _, raw := range rawTimes(t, s, "connection_intervals") {
+		if strings.Contains(raw, "m=") || strings.Count(raw, "+0000 UTC") != 2 {
+			t.Errorf("row not normalized with DB_AUTO_MIGRATE=false: %q", raw)
+		}
+	}
+}

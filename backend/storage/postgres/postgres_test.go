@@ -170,3 +170,10 @@ func TestPostgresConcurrentConnections(t *testing.T) {
 		}
 	}
 }
+
+// TestPostgresMigrationsRoundTrip executes every v3.1 down migration and
+// re-applies them. It leaves the schema at the latest version.
+func TestPostgresMigrationsRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	storage.MigrationRoundTripSuite(t, store, store, 7)
+}

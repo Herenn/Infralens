@@ -163,6 +163,7 @@ func (r *DriftRepo) ListEvents(ctx context.Context, filter storage.DriftEventFil
 		}
 		ev.Kind = storage.DriftEventKind(kind)
 		ev.Port = uint16(port)
+		ev.DetectedAt, ev.FirstSeen, ev.LastSeen = fromDB(ev.DetectedAt), fromDB(ev.FirstSeen), fromDB(ev.LastSeen)
 		out = append(out, ev)
 	}
 	return out, rows.Err()
@@ -214,6 +215,7 @@ func (r *DriftRepo) Summarize(ctx context.Context, filter storage.DriftEventFilt
 	if err != nil {
 		return sum, fmt.Errorf("querying latest drift event: %w", err)
 	}
+	latest = fromDB(latest)
 	sum.Latest = &latest
 	return sum, nil
 }
@@ -239,7 +241,7 @@ func (r *DriftRepo) Checkpoint(ctx context.Context) (time.Time, bool, error) {
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("reading drift checkpoint: %w", err)
 	}
-	return at, true, nil
+	return fromDB(at), true, nil
 }
 
 // SetCheckpoint records a detection pass, never moving it backwards.

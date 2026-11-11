@@ -109,6 +109,28 @@ func New(cfg storage.Config) (*Store, error) {
 	return store, nil
 }
 
+// MigrateTo moves the schema to exactly version, applying up or down
+// migrations as needed. For operators and the migration round-trip tests;
+// startup only ever migrates up (see migrate).
+func (s *Store) MigrateTo(version uint) error {
+	source, err := iofs.New(pgmigrations.FS, ".")
+	if err != nil {
+		return fmt.Errorf("creating migration source: %w", err)
+	}
+	driver, err := postgres.WithInstance(s.db, &postgres.Config{})
+	if err != nil {
+		return fmt.Errorf("creating migration driver: %w", err)
+	}
+	m, err := migrate.NewWithInstance("iofs", source, "postgres", driver)
+	if err != nil {
+		return fmt.Errorf("creating migrator: %w", err)
+	}
+	if err := m.Migrate(version); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("migrating to version %d: %w", version, err)
+	}
+	return nil
+}
+
 // migrate runs database migrations using golang-migrate with embedded SQL files.
 func (s *Store) migrate(ctx context.Context) error {
 	// Create migration source from embedded files
@@ -431,6 +453,7 @@ func (r *ServiceRepo) Get(ctx context.Context, id string) (*storage.Service, err
 	if err != nil {
 		return nil, err
 	}
+	svc.LastSeen, svc.CreatedAt, svc.UpdatedAt = fromDB(svc.LastSeen), fromDB(svc.CreatedAt), fromDB(svc.UpdatedAt)
 
 	if labelsJSON != "" {
 		json.Unmarshal([]byte(labelsJSON), &svc.Labels)
@@ -491,6 +514,7 @@ func (r *ServiceRepo) List(ctx context.Context, filter storage.ServiceFilter) ([
 		if err != nil {
 			return nil, err
 		}
+		svc.LastSeen, svc.CreatedAt, svc.UpdatedAt = fromDB(svc.LastSeen), fromDB(svc.CreatedAt), fromDB(svc.UpdatedAt)
 		if labelsJSON != "" {
 			json.Unmarshal([]byte(labelsJSON), &svc.Labels)
 		}
@@ -560,6 +584,7 @@ func (r *ServiceRepo) GetInspection(ctx context.Context, serviceID string) (*sto
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+	insp.InspectedAt = fromDB(insp.InspectedAt)
 	return &insp, err
 }
 
@@ -631,6 +656,7 @@ func (r *ConnectionRepo) Get(ctx context.Context, id string) (*storage.Connectio
 		return nil, nil
 	}
 	conn.Hostnames = storage.DecodeHostnames(hostnames)
+	conn.LastSeen, conn.CreatedAt, conn.UpdatedAt = fromDB(conn.LastSeen), fromDB(conn.CreatedAt), fromDB(conn.UpdatedAt)
 	return &conn, err
 }
 
@@ -687,6 +713,7 @@ func (r *ConnectionRepo) List(ctx context.Context, filter storage.ConnectionFilt
 			return nil, err
 		}
 		conn.Hostnames = storage.DecodeHostnames(hostnames)
+		conn.LastSeen, conn.CreatedAt, conn.UpdatedAt = fromDB(conn.LastSeen), fromDB(conn.CreatedAt), fromDB(conn.UpdatedAt)
 		connections = append(connections, conn)
 	}
 	return connections, rows.Err()
@@ -733,7 +760,11 @@ func (r *ConnectionRepo) UpdateStats(ctx context.Context, id string, bytesSent, 
 }
 
 // SetHostnames replaces a connection's DNS names. Deliberately leaves count,
-// stats, last_seen and updated_at alone: learning a name is not a sighting.
+// stats and last_seen alone: learning a name is not a sighting, and
+// last_seen is what pruning, liveness and history go by. updated_at does
+// move - the v3.0 BEFORE UPDATE trigger stamps it on every row change - which
+// is correct for what it means here ("row last modified"); nothing reads it
+// for pruning or liveness. (SQLite has no such trigger and leaves it.)
 func (r *ConnectionRepo) SetHostnames(ctx context.Context, id string, hostnames []storage.Hostname) error {
 	_, err := r.executor(ctx).ExecContext(ctx,
 		"UPDATE connections SET hostnames = $1 WHERE id = $2",
@@ -789,6 +820,7 @@ func (r *MetricsRepo) Get(ctx context.Context, nodeName string) (*storage.NodeMe
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+	m.LastSeen, m.UpdatedAt = fromDB(m.LastSeen), fromDB(m.UpdatedAt)
 	return &m, err
 }
 
@@ -807,6 +839,7 @@ func (r *MetricsRepo) List(ctx context.Context) ([]storage.NodeMetrics, error) {
 		if err != nil {
 			return nil, err
 		}
+		m.LastSeen, m.UpdatedAt = fromDB(m.LastSeen), fromDB(m.UpdatedAt)
 		metrics = append(metrics, m)
 	}
 	return metrics, rows.Err()

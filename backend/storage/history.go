@@ -40,6 +40,18 @@ type ConnectionInterval struct {
 	Hostnames []Hostname `json:"hostnames,omitempty"`
 }
 
+// NodeInterval is a contiguous period during which a node's agent was
+// reporting (its host-metrics heartbeat). It is the node's observation
+// coverage: only that node's own agent can extend it, unlike the service and
+// connection intervals touching the node, which the far end's agent extends
+// too. Under CLUSTER_NAME, Node is the group name.
+type NodeInterval struct {
+	ID        int64     `json:"id"`
+	Node      string    `json:"node"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+}
+
 // HistoryBounds is the earliest and latest instants covered by recorded
 // history. It sizes a UI timeline control without the caller having to guess
 // a retention window or scan every interval itself.
@@ -110,6 +122,14 @@ type HistoryRepository interface {
 	// connection the query holds it until iteration ends. A non-nil error
 	// from fn stops iteration and is returned.
 	EachConnectionBetween(ctx context.Context, from, to time.Time, fn func(ConnectionInterval) error) error
+
+	// RecordNode extends or opens the reporting interval of node's agent,
+	// observed at `at` (see NodeInterval).
+	RecordNode(ctx context.Context, node string, at time.Time, maxGap time.Duration) error
+
+	// NodesBetween returns every node reporting interval overlapping
+	// [from, to], ordered by first_seen.
+	NodesBetween(ctx context.Context, from, to time.Time) ([]NodeInterval, error)
 
 	// DeleteStale removes intervals that ended before the cutoff. Unlike
 	// pruning current state, this is the retention boundary for history.

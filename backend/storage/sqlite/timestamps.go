@@ -44,6 +44,7 @@ var timestampColumns = []struct {
 	{"connection_intervals", []string{"first_seen", "last_seen"}},
 	{"drift_events", []string{"detected_at", "first_seen", "last_seen"}},
 	{"drift_checkpoint", []string{"checked_at"}},
+	{"node_intervals", []string{"first_seen", "last_seen"}},
 }
 
 // normalizeBatch is how many rows one normalisation transaction rewrites:

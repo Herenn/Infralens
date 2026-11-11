@@ -49,6 +49,7 @@ func (r *HistoryRepo) RecordService(ctx context.Context, svc *storage.Service, a
 	}
 
 	exec := r.executor(ctx)
+	at = pgTime(at)
 	cutoff := at.Add(-maxGap)
 
 	res, err := exec.ExecContext(ctx, `
@@ -112,6 +113,7 @@ func (r *HistoryRepo) RecordConnection(ctx context.Context, conn *storage.Connec
 	}
 
 	exec := r.executor(ctx)
+	at = pgTime(at)
 	cutoff := at.Add(-maxGap)
 
 	protocol := conn.Protocol
@@ -179,6 +181,7 @@ func (r *HistoryRepo) scanServiceIntervals(rows *sql.Rows) ([]storage.ServiceInt
 			&si.Namespace, &si.Node, &si.FirstSeen, &si.LastSeen); err != nil {
 			return nil, err
 		}
+		si.FirstSeen, si.LastSeen = fromDB(si.FirstSeen), fromDB(si.LastSeen)
 		out = append(out, si)
 	}
 	return out, rows.Err()
@@ -186,6 +189,7 @@ func (r *HistoryRepo) scanServiceIntervals(rows *sql.Rows) ([]storage.ServiceInt
 
 // ServicesAt returns services whose interval covers the given instant.
 func (r *HistoryRepo) ServicesAt(ctx context.Context, at time.Time, grace time.Duration) ([]storage.ServiceInterval, error) {
+	at = pgTime(at)
 	covers := at.Add(-grace)
 	rows, err := r.executor(ctx).QueryContext(ctx, `
 		SELECT `+serviceIntervalColumns+`
@@ -205,6 +209,7 @@ func (r *HistoryRepo) ServicesAt(ctx context.Context, at time.Time, grace time.D
 
 // ServicesBetween returns service intervals overlapping the window.
 func (r *HistoryRepo) ServicesBetween(ctx context.Context, from, to time.Time) ([]storage.ServiceInterval, error) {
+	from, to = pgTime(from), pgTime(to)
 	rows, err := r.executor(ctx).QueryContext(ctx, `
 		SELECT `+serviceIntervalColumns+`
 		FROM service_intervals
@@ -231,6 +236,7 @@ func (r *HistoryRepo) scanConnectionIntervals(rows *sql.Rows) ([]storage.Connect
 			return nil, err
 		}
 		ci.Hostnames = storage.DecodeHostnames(hostnames)
+		ci.FirstSeen, ci.LastSeen = fromDB(ci.FirstSeen), fromDB(ci.LastSeen)
 		out = append(out, ci)
 	}
 	return out, rows.Err()
@@ -238,6 +244,7 @@ func (r *HistoryRepo) scanConnectionIntervals(rows *sql.Rows) ([]storage.Connect
 
 // ConnectionsAt returns edges whose interval covers the given instant.
 func (r *HistoryRepo) ConnectionsAt(ctx context.Context, at time.Time, grace time.Duration) ([]storage.ConnectionInterval, error) {
+	at = pgTime(at)
 	covers := at.Add(-grace)
 	rows, err := r.executor(ctx).QueryContext(ctx, `
 		SELECT `+connectionIntervalColumns+`
@@ -257,6 +264,7 @@ func (r *HistoryRepo) ConnectionsAt(ctx context.Context, at time.Time, grace tim
 
 // ConnectionsBetween returns connection intervals overlapping the window.
 func (r *HistoryRepo) ConnectionsBetween(ctx context.Context, from, to time.Time) ([]storage.ConnectionInterval, error) {
+	from, to = pgTime(from), pgTime(to)
 	rows, err := r.executor(ctx).QueryContext(ctx, `
 		SELECT `+connectionIntervalColumns+`
 		FROM connection_intervals
@@ -272,6 +280,7 @@ func (r *HistoryRepo) ConnectionsBetween(ctx context.Context, from, to time.Time
 // EachConnectionBetween streams connection intervals overlapping the window,
 // in first_seen order.
 func (r *HistoryRepo) EachConnectionBetween(ctx context.Context, from, to time.Time, fn func(storage.ConnectionInterval) error) error {
+	from, to = pgTime(from), pgTime(to)
 	rows, err := r.executor(ctx).QueryContext(ctx, `
 		SELECT `+connectionIntervalColumns+`
 		FROM connection_intervals
@@ -289,6 +298,7 @@ func (r *HistoryRepo) EachConnectionBetween(ctx context.Context, from, to time.T
 			return err
 		}
 		ci.Hostnames = storage.DecodeHostnames(hostnames)
+		ci.FirstSeen, ci.LastSeen = fromDB(ci.FirstSeen), fromDB(ci.LastSeen)
 		if err := fn(ci); err != nil {
 			return err
 		}
@@ -312,7 +322,7 @@ func (r *HistoryRepo) Bounds(ctx context.Context) (storage.HistoryBounds, bool, 
 	if !earliest.Valid || !latest.Valid {
 		return storage.HistoryBounds{}, false, nil
 	}
-	return storage.HistoryBounds{Earliest: earliest.Time, Latest: latest.Time}, true, nil
+	return storage.HistoryBounds{Earliest: fromDB(earliest.Time), Latest: fromDB(latest.Time)}, true, nil
 }
 
 // StaleServices returns each service's newest interval, for services whose
@@ -320,6 +330,7 @@ func (r *HistoryRepo) Bounds(ctx context.Context) (storage.HistoryBounds, bool, 
 // decltype quirk (see the sqlite implementation), but uses the same
 // correlated-subquery shape so both backends stay structurally identical.
 func (r *HistoryRepo) StaleServices(ctx context.Context, before time.Time, limit int) ([]storage.ServiceInterval, error) {
+	before = pgTime(before)
 	query := `
 		SELECT ` + serviceIntervalColumns + `
 		FROM service_intervals si
@@ -346,6 +357,7 @@ func (r *HistoryRepo) StaleServices(ctx context.Context, before time.Time, limit
 
 // DeleteStale drops intervals that ended before the cutoff.
 func (r *HistoryRepo) DeleteStale(ctx context.Context, before time.Time) (int64, error) {
+	before = pgTime(before)
 	exec := r.executor(ctx)
 
 	svcRes, err := exec.ExecContext(ctx,
@@ -368,5 +380,15 @@ func (r *HistoryRepo) DeleteStale(ctx context.Context, before time.Time) (int64,
 		return svcDeleted, err
 	}
 
-	return svcDeleted + connDeleted, nil
+	nodeRes, err := exec.ExecContext(ctx,
+		`DELETE FROM node_intervals WHERE last_seen < $1`, before)
+	if err != nil {
+		return svcDeleted + connDeleted, fmt.Errorf("pruning node intervals: %w", err)
+	}
+	nodeDeleted, err := nodeRes.RowsAffected()
+	if err != nil {
+		return svcDeleted + connDeleted, err
+	}
+
+	return svcDeleted + connDeleted + nodeDeleted, nil
 }

@@ -110,10 +110,23 @@ func New(cfg storage.Config) (*Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("running migrations: %w", err)
 		}
-		// Rows written before v3.1 store local-zone text; see dbTime. Not
-		// bounded by the 5s connect timeout above - a large database takes
-		// longer - and not fatal: an unconverted row only mis-compares, and
-		// the next start resumes where this one stopped.
+	}
+
+	// Rows written before v3.1 store local-zone text; see dbTime. Normalised
+	// whenever the schema is at a version whose code expects UTC - also when
+	// migrations are run out of band (DB_AUTO_MIGRATE=false), which would
+	// otherwise leave v3.0 rows mis-comparing forever. Not bounded by the 5s
+	// connect timeout above - a large database takes longer - and not fatal:
+	// an unconverted row only mis-compares, and the next start resumes where
+	// this one stopped.
+	switch version, dirty, ok := store.schemaVersion(context.Background()); {
+	case !ok:
+		// No migrations table: nothing has been created yet.
+	case dirty:
+		log.WithField("version", version).Warn("Database schema is marked dirty (an interrupted migration); not normalizing stored timestamps")
+	case version < utcSchemaVersion:
+		log.WithField("version", version).Warn("Database schema is older than this backend expects; run the migrations (or set DB_AUTO_MIGRATE=true)")
+	default:
 		if _, err := store.NormalizeTimestamps(context.Background()); err != nil {
 			log.WithError(err).Warn("Could not normalize stored timestamps to UTC; will retry on next start")
 		}
@@ -136,6 +149,43 @@ func New(cfg storage.Config) (*Store, error) {
 	}).Info("SQLite store initialized")
 
 	return store, nil
+}
+
+// utcSchemaVersion is the first schema version written by code that stores
+// times as UTC (migration 000004 shipped with that change); from it on,
+// startup normalises any older rows.
+const utcSchemaVersion = 4
+
+// schemaVersion reads golang-migrate's bookkeeping. ok is false when the
+// table does not exist or holds no version.
+func (s *Store) schemaVersion(ctx context.Context) (version int, dirty, ok bool) {
+	err := s.db.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations LIMIT 1`).Scan(&version, &dirty)
+	if err != nil {
+		return 0, false, false
+	}
+	return version, dirty, true
+}
+
+// MigrateTo moves the schema to exactly version, applying up or down
+// migrations as needed. For operators and the migration round-trip tests;
+// startup only ever migrates up (see migrate).
+func (s *Store) MigrateTo(version uint) error {
+	source, err := iofs.New(migrations.FS, ".")
+	if err != nil {
+		return fmt.Errorf("creating migration source: %w", err)
+	}
+	driver, err := sqlite.WithInstance(s.db, &sqlite.Config{})
+	if err != nil {
+		return fmt.Errorf("creating migration driver: %w", err)
+	}
+	m, err := migrate.NewWithInstance("iofs", source, "sqlite", driver)
+	if err != nil {
+		return fmt.Errorf("creating migrator: %w", err)
+	}
+	if err := m.Migrate(version); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("migrating to version %d: %w", version, err)
+	}
+	return nil
 }
 
 // migrate runs database migrations using golang-migrate with embedded SQL files.
