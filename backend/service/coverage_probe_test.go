@@ -623,8 +623,8 @@ func TestReviewR3ReturnedMember(t *testing.T) {
 			if item.IdleConfidence != ConfidenceLow || item.InTotal || item.NotInTotalReason != NotInTotalSilentAgent {
 				t.Errorf("billing conf=%s in_total=%v reason=%q, want low / false / silent_agent", item.IdleConfidence, item.InTotal, item.NotInTotalReason)
 			}
-			if len(r.SilentAgents) != 1 {
-				t.Fatalf("silent_agents = %+v, want node-a", r.SilentAgents)
+			if len(r.SilentAgents) != 1 || r.SilentAgentsTotal != 1 || r.SilentAgentsStillOut != 0 || r.SilentNotes != 1 {
+				t.Fatalf("silent_agents = %+v (total %d, still out %d, notes %d), want node-a, back", r.SilentAgents, r.SilentAgentsTotal, r.SilentAgentsStillOut, r.SilentNotes)
 			}
 			a := r.SilentAgents[0]
 			if a.Node != "node-a" || a.Intermittent || a.ReturnedAt == nil ||
@@ -758,5 +758,196 @@ func TestReviewR3ReplicaAttribution(t *testing.T) {
 	t.Logf("replica attribution: gone at %v", goneAt)
 	if goneKeys(goneAt) != w.edge("api", "cache") {
 		t.Errorf("gone = %v; the documented limit is api->cache reported gone", goneAt)
+	}
+}
+
+// r4span is a heartbeat interval as durations before now.
+type r4span struct{ from, to time.Duration }
+
+// r4Idle (from the fifth review): group "K" (or node-a when group is "")
+// carries a genuinely idle service legacy and a live ingress->web; members
+// heartbeat as given.
+func r4Idle(t *testing.T, group string, members map[string][]r4span) *IdleSpendReport {
+	t.Helper()
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+	now := time.Now()
+	node := group
+	if group == "" {
+		node = "node-a"
+	}
+	legacy := &storage.Service{ID: "Deploy:prod/legacy", Name: "legacy", Type: "web_server", Node: node}
+	web := &storage.Service{ID: "Deploy:prod/web", Name: "web", Type: "web_server", Node: node}
+	ing := &storage.Service{ID: "Deploy:prod/ingress", Name: "ingress", Type: "web_server", Node: node}
+	old := &storage.Connection{ID: "ingress->legacy", SourceID: ing.ID, TargetID: legacy.ID, Port: 8080}
+	live := &storage.Connection{ID: "ingress->web", SourceID: ing.ID, TargetID: web.ID, Port: 8080}
+	spans := []HistorySpan{
+		{Service: legacy, From: now.Add(-29 * day), To: now},
+		{Service: web, From: now.Add(-29 * day), To: now},
+		{Service: ing, From: now.Add(-29 * day), To: now},
+		{Connection: old, From: now.Add(-29 * day), To: now.Add(-20 * day)},
+		{Connection: live, From: now.Add(-29 * day), To: now},
+	}
+	for m, ss := range members {
+		for _, s := range ss {
+			spans = append(spans, HistorySpan{Node: m, Group: group, From: now.Add(-s.from), To: now.Add(-s.to)})
+		}
+	}
+	if err := ts.ImportHistory(ctx, spans); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []*storage.Service{legacy, web, ing} {
+		cp := *s
+		if err := ts.AddOrUpdateService(ctx, &cp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ts.AddConnection(ctx, &storage.Connection{ID: live.ID, SourceID: ing.ID, TargetID: web.ID, Port: 8080, LastSeen: now}); err != nil {
+		t.Fatal(err)
+	}
+	if group != "" {
+		for m := range members {
+			ts.NoteAgentNode(group, m)
+		}
+	}
+	ts.ConfigureIdleCost(IdleCostConfig{DefaultNodeMonthly: 300, Warmup: -1})
+	r, err := ts.GetIdleSpend(ctx, IdleSpendQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// F1/F2 (fifth review): only an agent's own failure is an outage. A backend
+// outage silences every member at once and warns nobody; one member out
+// while the others report does, also when it began before the window.
+func TestReviewR4Outages(t *testing.T) {
+	d := func(x float64) time.Duration { return time.Duration(x * float64(day)) }
+	h := func(x float64) time.Duration { return time.Duration(x * float64(time.Hour)) }
+	full := []r4span{{d(29), 0}}
+	gap := func(at, length time.Duration) []r4span { return []r4span{{d(29), at}, {at - length, 0}} }
+	cases := []struct {
+		name    string
+		group   string
+		members map[string][]r4span
+		silent  string // the agent listed, "" for none
+	}{
+		{"healthy", "K", map[string][]r4span{"a": full, "b": full, "c": full}, ""},
+		{"backend down 2h for everyone 5d ago", "K", map[string][]r4span{"a": gap(d(5), h(2)), "b": gap(d(5), h(2)), "c": gap(d(5), h(2))}, ""},
+		{"backend down 50m for everyone", "K", map[string][]r4span{"a": gap(d(5), h(0.83)), "b": gap(d(5), h(0.83))}, ""},
+		{"single-member group, backend down 2h", "K", map[string][]r4span{"a": gap(d(5), h(2))}, ""},
+		{"a joined 25d ago (no earlier heartbeat)", "K", map[string][]r4span{"a": {{d(25), 0}}, "b": {{d(35), 0}}}, ""},
+		{"a: old 3d outage + recent 2h blip", "K", map[string][]r4span{"a": {{d(29), d(20)}, {d(17), d(1)}, {d(1) - h(2), 0}}, "b": full}, "a"},
+		{"a joined mid-window, healthy since", "K", map[string][]r4span{"a": {{d(10), 0}}, "b": full}, ""},
+		{"a left (scaled in) 10d ago", "K", map[string][]r4span{"a": {{d(29), d(10)}}, "b": full}, "a"},
+		{"ungrouped 2h gap", "", map[string][]r4span{"node-a": gap(d(5), h(2))}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := r4Idle(t, c.group, c.members)
+			it := findItem(r, "Deploy:prod/legacy")
+			if it == nil {
+				t.Fatalf("legacy not flagged: %+v", r.Excluded)
+			}
+			var listed []string
+			for _, a := range r.SilentAgents {
+				listed = append(listed, a.Node)
+			}
+			t.Logf("legacy %s in_total=%v; silent %v", it.IdleConfidence, it.InTotal, listed)
+			if c.silent == "" {
+				if len(listed) != 0 || !it.InTotal || it.IdleConfidence == ConfidenceLow {
+					t.Errorf("want no warning: silent=%v in_total=%v conf=%s", listed, it.InTotal, it.IdleConfidence)
+				}
+				return
+			}
+			if len(listed) != 1 || listed[0] != c.silent || it.InTotal || it.IdleConfidence != ConfidenceLow {
+				t.Errorf("want %s listed and legacy low/out: silent=%v in_total=%v conf=%s", c.silent, listed, it.InTotal, it.IdleConfidence)
+			}
+		})
+	}
+}
+
+// F2: an outage that began before the evidence window and ended inside it
+// is reported (heartbeats are no longer clipped to the window).
+func TestReviewR4OutageAcrossWindowStart(t *testing.T) {
+	now := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	since := now.Add(-29 * day)
+	c := newObservationCoverage(5*time.Minute, 5*time.Minute, 7*day)
+	c.now = func() time.Time { return now }
+	c.setHeartbeats([]storage.NodeInterval{
+		{Node: "a", Group: "K", FirstSeen: now.Add(-60 * day), LastSeen: now.Add(-31 * day)},
+		{Node: "a", Group: "K", FirstSeen: now.Add(-27 * day), LastSeen: now},
+		{Node: "b", Group: "K", FirstSeen: now.Add(-60 * day), LastSeen: now},
+	})
+	outs := c.memberOutages(since, now)
+	if len(outs) != 1 || outs[0].Node != "a" || !outs[0].From.Equal(now.Add(-31*day)) || !outs[0].To.Equal(now.Add(-27*day)) {
+		t.Errorf("outages = %+v, want a from -31d to -27d", outs)
+	}
+	// End to end: the Idle-spend coverage keeps heartbeats from before the window.
+	in := idleInputs{now: now, maxGap: 5 * time.Minute, coverageStart: since, retireAfter: 7 * day, historyNodes: []storage.NodeInterval{
+		{Node: "a", Group: "K", FirstSeen: now.Add(-60 * day), LastSeen: now.Add(-31 * day)},
+		{Node: "a", Group: "K", FirstSeen: now.Add(-27 * day), LastSeen: now},
+		{Node: "b", Group: "K", FirstSeen: now.Add(-60 * day), LastSeen: now},
+	}}
+	if outs := buildIdleCoverage(in, func(string) string { return "" }).memberOutages(since, now); len(outs) != 1 || outs[0].Node != "a" {
+		t.Errorf("idle coverage outages = %+v, want a", outs)
+	}
+}
+
+// The flapping rule at and around its threshold (a member up `up` of every
+// 80 minutes, another steady): evaluated per 5-minute step over the
+// trailing two hours, so a member reporting ~56% of the time (with the
+// heartbeat grace) is listed as intermittent and one at ~69% is not.
+func TestReviewR4FlapUnit(t *testing.T) {
+	now := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	start := now.Add(-10 * day)
+	for _, c := range []struct {
+		up     time.Duration
+		listed bool
+	}{{25 * time.Minute, true}, {30 * time.Minute, true}, {35 * time.Minute, true}, {40 * time.Minute, true}, {50 * time.Minute, false}} {
+		period := 80 * time.Minute
+		beats := []storage.NodeInterval{{Node: "a", Group: "K", FirstSeen: start, LastSeen: now}}
+		for at := start; at.Before(now); at = at.Add(period) {
+			end := at.Add(c.up)
+			if end.After(now) {
+				end = now
+			}
+			beats = append(beats, storage.NodeInterval{Node: "c", Group: "K", FirstSeen: at, LastSeen: end})
+		}
+		cov := newObservationCoverage(5*time.Minute, 5*time.Minute, 7*day)
+		cov.now = func() time.Time { return now }
+		cov.setHeartbeats(beats)
+		outs := cov.memberOutages(now.Add(-7*day), now)
+		if listed := len(outs) == 1 && outs[0].Node == "c" && outs[0].Intermittent; listed != c.listed || (!c.listed && len(outs) != 0) {
+			t.Errorf("up %s of %s: outages %+v, want listed=%v", c.up, period, outs, c.listed)
+		}
+	}
+}
+
+// F4: with more out-agents than silent_agents holds, the counts and the
+// number of leading notes still describe all of them.
+func TestIdleSilentAgentCountsBeyondTheCap(t *testing.T) {
+	now := idleNow
+	w := newIdleWorld()
+	w.svc("10.0.0.1/a", "a", "web_server", "G0")
+	for g := 0; g < 3; g++ {
+		group := fmt.Sprintf("G%d", g)
+		w.in.historyNodes = append(w.in.historyNodes, storage.NodeInterval{Node: "steady", Group: group, FirstSeen: ago(14 * day), LastSeen: now})
+		for i := 0; i < 10; i++ {
+			last := ago(2 * day)
+			w.in.historyNodes = append(w.in.historyNodes, storage.NodeInterval{Node: fmt.Sprintf("n%d", i), Group: group, FirstSeen: ago(14 * day), LastSeen: last})
+			if i%2 == 0 { // back again
+				w.in.historyNodes = append(w.in.historyNodes, storage.NodeInterval{Node: fmt.Sprintf("n%d", i), Group: group, FirstSeen: ago(day), LastSeen: now})
+			}
+		}
+	}
+	r := w.run(IdleCostConfig{DefaultNodeMonthly: 100}, IdleSpendQuery{})
+	if len(r.SilentAgents) != maxIdleSilentAgents || r.SilentAgentsTotal != 30 || r.SilentAgentsStillOut != 15 || r.SilentNotes != 3 {
+		t.Errorf("listed %d, total %d, still out %d, notes %d; want 20, 30, 15, 3", len(r.SilentAgents), r.SilentAgentsTotal, r.SilentAgentsStillOut, r.SilentNotes)
+	}
+	for i := 0; i < r.SilentNotes; i++ {
+		if !strings.HasPrefix(r.Notes[i], "In CLUSTER_NAME group") {
+			t.Errorf("note %d = %q", i, r.Notes[i])
+		}
 	}
 }

@@ -528,6 +528,10 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 				groupOrder = append(groupOrder, o.Group)
 			}
 			byGroup[o.Group] = append(byGroup[o.Group], o)
+			report.SilentAgentsTotal++
+			if o.To.IsZero() {
+				report.SilentAgentsStillOut++
+			}
 			if len(report.SilentAgents) < maxIdleSilentAgents {
 				a := IdleSilentAgent{Group: o.Group, Node: o.Node, LastSeen: o.LastSeen, SilentSince: o.From, Intermittent: o.Intermittent}
 				if !o.To.IsZero() {
@@ -557,6 +561,7 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 			silentNotes = append(silentNotes, outageGroupNote(g, agents, affected, now, coverageStart))
 		}
 		report.Notes = append(silentNotes, report.Notes...)
+		report.SilentNotes = len(silentNotes)
 	}
 
 	// --- Cost attribution ----------------------------------------------------

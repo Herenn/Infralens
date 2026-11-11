@@ -436,3 +436,74 @@ func TestCoverageMemberOutages(t *testing.T) {
 		t.Errorf("flappy = %+v, want intermittent, ended at -2d", o)
 	}
 }
+
+// TestCoverageOutagesNeedOtherAgents (F1): a member's silence is its own
+// outage only while some other agent of the installation was reporting.
+func TestCoverageOutagesNeedOtherAgents(t *testing.T) {
+	now := time.Now().Truncate(time.Minute)
+	at := func(h float64) time.Time { return now.Add(-5*day + time.Duration(h*float64(time.Hour))) }
+	iv := func(node, group string, from, to time.Time) storage.NodeInterval {
+		return storage.NodeInterval{Node: node, Group: group, FirstSeen: from, LastSeen: to}
+	}
+	start := now.Add(-10 * day)
+	listed := func(beats []storage.NodeInterval) map[string]memberOutage {
+		c := newObservationCoverage(5*time.Minute, 5*time.Minute, 7*day)
+		c.setHeartbeats(beats)
+		out := map[string]memberOutage{}
+		for _, o := range c.memberOutages(now.Add(-7*day), now) {
+			out[o.Group+"/"+o.Node] = o
+		}
+		return out
+	}
+
+	// The whole group K down 2h while group L and an ungrouped node report:
+	// an agent-side outage, listed for both members.
+	got := listed([]storage.NodeInterval{
+		iv("a", "K", start, at(0)), iv("a", "K", at(2), now),
+		iv("b", "K", start, at(0)), iv("b", "K", at(2), now),
+		iv("l1", "L", start, now), iv("x", "", start, now),
+	})
+	if len(got) != 2 || got["K/a"].From.IsZero() || got["K/b"].From.IsZero() {
+		t.Errorf("whole group down, others up: %+v, want K/a and K/b", got)
+	}
+
+	// Everything down 2h (a backend outage): nobody listed.
+	got = listed([]storage.NodeInterval{
+		iv("a", "K", start, at(0)), iv("a", "K", at(2), now),
+		iv("b", "K", start, at(0)), iv("b", "K", at(2), now),
+		iv("x", "", start, at(0)), iv("x", "", at(2), now),
+	})
+	if len(got) != 0 {
+		t.Errorf("backend outage: %+v, want none", got)
+	}
+
+	// a down 5h; the backend down from +1h to +3h meanwhile: others reported
+	// for 3h of a's silence - listed from its last heartbeat.
+	got = listed([]storage.NodeInterval{
+		iv("a", "K", start, at(0)), iv("a", "K", at(5), now),
+		iv("b", "K", start, at(1)), iv("b", "K", at(3), now),
+	})
+	if o, ok := got["K/a"]; !ok || !o.From.Equal(at(0)) || !o.To.Equal(at(5)) || len(got) != 1 {
+		t.Errorf("member out across a shorter backend outage: %+v, want K/a from +0 to +5h", got)
+	}
+
+	// The backend down from +0 to +3h, a back only at +3.5h: others reported
+	// for 30 minutes of its silence, under the timeout - nobody listed.
+	got = listed([]storage.NodeInterval{
+		iv("a", "K", start, at(0)), iv("a", "K", at(3.5), now),
+		iv("b", "K", start, at(0)), iv("b", "K", at(3), now),
+	})
+	if len(got) != 0 {
+		t.Errorf("member back 30 minutes after a backend outage: %+v, want none", got)
+	}
+
+	// Same, but a back only at +5h: listed for the part others reported,
+	// from +3h.
+	got = listed([]storage.NodeInterval{
+		iv("a", "K", start, at(0)), iv("a", "K", at(5), now),
+		iv("b", "K", start, at(0)), iv("b", "K", at(3), now),
+	})
+	if o, ok := got["K/a"]; !ok || !o.From.Equal(at(3)) || !o.To.Equal(at(5)) || len(got) != 1 {
+		t.Errorf("member out 2h past a backend outage: %+v, want K/a from +3h to +5h", got)
+	}
+}

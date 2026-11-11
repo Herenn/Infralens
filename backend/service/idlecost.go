@@ -244,6 +244,12 @@ type IdleSpendReport struct {
 	// confidence and not in the total, and Notes opens with one sentence per
 	// such group saying so.
 	SilentAgents []IdleSilentAgent `json:"silent_agents"`
+	// SilentAgentsTotal counts all such agents (SilentAgents is capped);
+	// SilentAgentsStillOut those of them not reporting yet. SilentNotes is
+	// how many entries at the head of Notes are about them (one per group).
+	SilentAgentsTotal    int `json:"silent_agents_total"`
+	SilentAgentsStillOut int `json:"silent_agents_still_out"`
+	SilentNotes          int `json:"silent_notes"`
 }
 
 // IdleSilentAgent is a grouped agent that was out within the evidence

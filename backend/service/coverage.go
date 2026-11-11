@@ -688,10 +688,27 @@ type memberOutage struct {
 }
 
 // memberOutages lists, per CLUSTER_NAME member, its most recent outage
-// whose not-current part overlaps [since, now] - whether or not the agent
-// is reporting again. An outage starts where the silence it belongs to
-// starts; not-current stretches less than a member timeout apart (a crash
-// loop) are one outage. Ordered: ongoing first, then newest end first.
+// that overlaps [since, now] - whether or not the agent is reporting again.
+//
+// An outage is the member's own failure, not the backend's: its silence
+// counts only while collection was otherwise alive, i.e. while some OTHER
+// agent of the installation (any group, or ungrouped) was heartbeating. A
+// backend outage silences every agent at once and is never listed - while
+// no member reports, the group is unobserved and nothing accrues anyway.
+// A whole group going silent while another group or an ungrouped node keeps
+// reporting is listed. The rule, per silence of the member:
+//
+//   - longer than the member timeout: an outage if other agents reported
+//     for longer than the timeout during it; it is reported from the first
+//     moment they did (the member's last heartbeat, unless the backend was
+//     down then too);
+//   - shorter (only a flapping member is not current then): an outage if
+//     other agents reported during its not-current part.
+//
+// Outages less than a member timeout apart (a crash loop) are one,
+// marked intermittent. Heartbeats should not be clipped to the window, so
+// an outage that began before it is still seen. Ordered: ongoing first,
+// then newest end first.
 func (c *observationCoverage) memberOutages(since, now time.Time) []memberOutage {
 	timeout := c.memberTimeout()
 	var out []memberOutage
@@ -704,33 +721,37 @@ func (c *observationCoverage) memberOutages(since, now time.Time) []memberOutage
 		notCurrent := silence.minus(c.memberGaps(hb))
 		var cur *memberOutage
 		var last memberOutage
-		found := false
-		silences := 0
+		found, silences := false, 0
 		flush := func() {
 			if cur != nil {
 				cur.Intermittent = silences > 1
 				last, found = *cur, true
 			}
 		}
-		for _, nc := range notCurrent {
-			if !nc.to.After(since) {
+		for _, sil := range silence {
+			if !sil.to.After(since) || notCurrent.covered(sil.from, sil.to) == 0 {
 				continue
 			}
-			// the silence this stretch is part of
-			i := sort.Search(len(silence), func(i int) bool { return silence[i].to.After(nc.from) })
-			if i == len(silence) {
-				continue
-			}
-			sil := silence[i]
-			if cur != nil && !sil.from.After(cur.To.Add(timeout)) {
-				if sil.to.After(cur.To) { // a later silence, after a report
-					silences++
-					cur.To = sil.to
+			// Within the member's own silence, hbAll is the other agents.
+			alive := coverage{sil}.intersect(c.hbAll)
+			from := sil.from.Add(-c.heartbeatGrace) // its last heartbeat
+			if sil.to.Sub(sil.from) > timeout {
+				if alive.total() <= timeout {
+					continue // the backend (or everything) was down
 				}
+				if alive[0].from.After(sil.from) {
+					from = alive[0].from
+				}
+			} else if (coverage{sil}).intersect(notCurrent).intersect(c.hbAll).total() == 0 {
+				continue
+			}
+			if cur != nil && !from.After(cur.To.Add(timeout)) {
+				silences++
+				cur.To = sil.to
 				continue
 			}
 			flush()
-			cur = &memberOutage{Group: k.group, Node: k.node, From: sil.from.Add(-c.heartbeatGrace), To: sil.to}
+			cur = &memberOutage{Group: k.group, Node: k.node, From: from, To: sil.to}
 			silences = 1
 		}
 		flush()
@@ -863,10 +884,16 @@ func buildIdleCoverage(in idleInputs, nodeOf func(id string) string) *observatio
 		}
 		return from, to, !to.Before(from)
 	}
+	// Heartbeats are kept from before the window (all of retention): a
+	// member's first heartbeat, its flapping ratio and an outage that began
+	// before the window must not look as if the agent joined at its start.
+	// Coverage is only ever queried within the window.
 	beats := make([]storage.NodeInterval, 0, len(in.historyNodes))
 	for _, ni := range in.historyNodes {
-		if from, to, ok := clip(ni.FirstSeen, ni.LastSeen); ok {
-			ni.FirstSeen, ni.LastSeen = from, to
+		if ni.LastSeen.After(hi) {
+			ni.LastSeen = hi
+		}
+		if !ni.LastSeen.Before(ni.FirstSeen) {
 			beats = append(beats, ni)
 		}
 	}
