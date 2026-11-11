@@ -745,6 +745,17 @@ function App() {
 
   const focusNodeId = hoverNodeId || (drawerOpen ? selectedServiceId : null) || panelFocusId
 
+  // On a large graph a hover waits until the pointer rests, so sweeping
+  // across the map does not re-light it card by card.
+  const hoverTimerRef = useRef<number | null>(null)
+  const largeGraph = nodes.length > VISIBLE_ONLY_MIN_NODES
+  const hover = useCallback((set: (id: string | null) => void, id: string | null) => {
+    if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current)
+    hoverTimerRef.current = null
+    if (!largeGraph) { set(id); return }
+    hoverTimerRef.current = window.setTimeout(() => set(id), id ? 90 : 40)
+  }, [largeGraph])
+
   const displayNodes = useMemo(() => {
     if (!highlightIds) return nodes
     return nodes.map(node => {
@@ -1025,10 +1036,10 @@ function App() {
               onNodeClick={onNodeClick}
               onEdgeClick={onEdgeClick}
               onPaneClick={onPaneClick}
-              onNodeMouseEnter={(_, node) => { if (node.type === 'service') setHoverNodeId(node.id) }}
-              onNodeMouseLeave={() => setHoverNodeId(null)}
-              onEdgeMouseEnter={(_, edge) => setHoverEdgeId(edge.id)}
-              onEdgeMouseLeave={() => setHoverEdgeId(null)}
+              onNodeMouseEnter={(_, node) => { if (node.type === 'service') hover(setHoverNodeId, node.id) }}
+              onNodeMouseLeave={() => hover(setHoverNodeId, null)}
+              onEdgeMouseEnter={(_, edge) => hover(setHoverEdgeId, edge.id)}
+              onEdgeMouseLeave={() => hover(setHoverEdgeId, null)}
               onMoveStart={(event) => { if (event) userMovedRef.current = true }}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
