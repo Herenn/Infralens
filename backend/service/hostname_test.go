@@ -368,3 +368,45 @@ func TestDriftTextUnchangedWithoutHostname(t *testing.T) {
 		t.Errorf("empty target_hostname serialized: %s", body)
 	}
 }
+
+// Names observed a moment apart - here in consecutive seconds, as when one
+// report's events straddle a second boundary - are equally recent: the label
+// is the name more callers used, then the alphabetically first, whatever
+// the sub-refresh timing. (TestHostnameExportSharedAddress flaked on this:
+// "assets.example.org" won whenever its event landed one second after the
+// other two.)
+func TestAnnotateHostnamesNearTiesAreStable(t *testing.T) {
+	base := time.Now().Truncate(time.Second)
+	for _, offsets := range [][3]time.Duration{
+		{0, 0, 0},           // identical timestamps
+		{0, 0, time.Second}, // the third name a second later
+		{0, time.Second, 2 * time.Second},
+		{time.Second, 0, 0},
+		{0, 0, storage.HostnameRefresh}, // still within the refresh granularity
+	} {
+		services := []storage.Service{{ID: "104.16.0.1:443"}}
+		conns := []storage.Connection{
+			{SourceID: "a", TargetID: "104.16.0.1:443", Hostnames: []storage.Hostname{{Name: "cdn.example.com", LastSeen: base.Add(offsets[0])}}},
+			{SourceID: "b", TargetID: "104.16.0.1:443", Hostnames: []storage.Hostname{{Name: "cdn.example.com", LastSeen: base.Add(offsets[1])}}},
+			{SourceID: "c", TargetID: "104.16.0.1:443", Hostnames: []storage.Hostname{{Name: "assets.example.org", LastSeen: base.Add(offsets[2])}}},
+		}
+		for i := 0; i < 20; i++ { // map iteration order must not matter either
+			services[0].Hostnames = nil
+			AnnotateHostnames(services, conns)
+			if want := []string{"cdn.example.com", "assets.example.org"}; !eqNames(services[0].Hostnames, want) {
+				t.Fatalf("offsets %v: ranking = %v, want %v", offsets, services[0].Hostnames, want)
+			}
+		}
+	}
+	// A name newer by more than the refresh granularity is the current one.
+	services := []storage.Service{{ID: "104.16.0.1:443"}}
+	conns := []storage.Connection{
+		{SourceID: "a", TargetID: "104.16.0.1:443", Hostnames: []storage.Hostname{{Name: "cdn.example.com", LastSeen: base}}},
+		{SourceID: "b", TargetID: "104.16.0.1:443", Hostnames: []storage.Hostname{{Name: "cdn.example.com", LastSeen: base}}},
+		{SourceID: "c", TargetID: "104.16.0.1:443", Hostnames: []storage.Hostname{{Name: "assets.example.org", LastSeen: base.Add(storage.HostnameRefresh + time.Second)}}},
+	}
+	AnnotateHostnames(services, conns)
+	if want := []string{"assets.example.org", "cdn.example.com"}; !eqNames(services[0].Hostnames, want) {
+		t.Errorf("clearly newer name: ranking = %v, want %v", services[0].Hostnames, want)
+	}
+}

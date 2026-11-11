@@ -97,6 +97,13 @@ func isAddressKeyedID(id string) bool {
 // used by more callers, then alphabetical so the order is stable. Names not
 // observed within storage.HostnameMaxAge of ref are left out (a zero ref
 // keeps everything).
+//
+// "Most recently" is judged at storage.HostnameRefresh granularity: names
+// observed within that long of the newest one count as equally recent.
+// Last-seen times only advance in HostnameRefresh steps (MergeHostnames), so
+// a smaller difference is noise - names first seen a moment apart, say in
+// consecutive seconds, would otherwise flip the label depending on where a
+// second boundary fell.
 func serviceHostnames(id string, conns []storage.Connection, ref time.Time) []string {
 	type score struct {
 		edges  int
@@ -127,12 +134,21 @@ func serviceHostnames(id string, conns []storage.Connection, ref time.Time) []st
 		return nil
 	}
 	names := make([]string, 0, len(scores))
-	for h := range scores {
+	var newest time.Time
+	for h, s := range scores {
 		names = append(names, h)
+		if s.latest.After(newest) {
+			newest = s.latest
+		}
 	}
+	current := newest.Add(-storage.HostnameRefresh)
 	sort.Slice(names, func(i, j int) bool {
 		a, b := scores[names[i]], scores[names[j]]
-		if !a.latest.Equal(b.latest) {
+		aCur, bCur := !a.latest.Before(current), !b.latest.Before(current)
+		if aCur != bCur {
+			return aCur
+		}
+		if !aCur && !a.latest.Equal(b.latest) {
 			return a.latest.After(b.latest)
 		}
 		if a.edges != b.edges {
