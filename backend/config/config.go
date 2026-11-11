@@ -228,7 +228,7 @@ func Load() *Config {
 		},
 	}
 
-	// The demo writes three days of synthetic history and drift events. With
+	// The demo writes two weeks of synthetic history and drift events. With
 	// the default SQLite file shared, trying the demo and then running for
 	// real would leave that fake past in the real database for the whole
 	// retention window - so the demo gets its own file unless told otherwise.

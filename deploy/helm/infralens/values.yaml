@@ -252,6 +252,8 @@ agent:
   # destinations a workload actually connected to. Names are display labels,
   # not verified facts: whoever controls a workload's resolver controls its
   # labels. If capture cannot start, the agent logs once and reports IPs.
+  # Not yet run on a real cluster by the maintainers: run the smoke test in
+  # the README ("DNS Names for External Destinations") on a canary node first.
   dnsNames: false
   # Tuning for DNS name capture, used only with dnsNames: true. Empty keeps
   # the agent's defaults; any other value (0 included) is passed on.
