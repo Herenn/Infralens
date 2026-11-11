@@ -27,9 +27,15 @@ spec:
           env:
             # Where the bundled nginx proxies /api/ and /mcp (rendered into its
             # config at start - see frontend/nginx.conf). The image default,
-            # http://backend:8080, only resolves under docker-compose.
+            # http://backend:8080, only resolves under docker-compose. Must be
+            # scheme://host:port with no path: a trailing slash is dropped,
+            # anything else with a path is refused.
+            {{- $backendURL := .Values.frontend.backendUrl | default (printf "http://%s-backend:%v" (include "infralens.fullname" .) .Values.backend.service.port) | trimSuffix "/" }}
+            {{- if not (regexMatch "^https?://[^/?#]+$" $backendURL) }}
+            {{- fail (printf "frontend.backendUrl must be scheme://host:port with no path (got %q)" $backendURL) }}
+            {{- end }}
             - name: INFRALENS_BACKEND_URL
-              value: "http://{{ include "infralens.fullname" . }}-backend:{{ .Values.backend.service.port }}"
+              value: {{ $backendURL | quote }}
           livenessProbe:
             httpGet:
               path: /

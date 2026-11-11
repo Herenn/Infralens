@@ -204,6 +204,11 @@ backend:
 frontend:
   enabled: true
   replicaCount: 1
+
+  # Where the frontend's nginx proxies /api/ and /mcp. Empty: this release's
+  # backend Service. Must be scheme://host:port with no path (a trailing
+  # slash is dropped; a path is refused at render time).
+  backendUrl: ""
   
   image:
     repository: ghcr.io/herenn/infralens/frontend
