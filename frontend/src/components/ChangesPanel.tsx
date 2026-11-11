@@ -338,6 +338,17 @@ export default function ChangesPanel({ onClose, seenAtOpen, selectedId, onSelect
 
 // "2 agents stopped reporting (node-a 3 h ago, node-b 1 day ago) - changes
 // only they could see are not being detected", the full list on expand.
+// That holds for ungrouped agents (until they are retired). A cluster-group
+// member stops holding its group back after an hour, so what only it saw
+// may be reported gone instead.
+function silentConsequence(agents: DriftSilentAgent[], total: number): string {
+  const grouped = agents.filter(a => a.group).length
+  const pron = total === 1 ? 'it' : 'they'
+  if (grouped === 0) return `changes only ${pron} could see are not being detected`
+  if (grouped === agents.length) return `${total === 1 ? 'its cluster group is' : 'their cluster groups are'} watched without ${total === 1 ? 'it' : 'them'}, so what only ${pron} saw may be reported gone`
+  return 'changes only they could see are not being detected, or (in cluster groups) may be reported gone'
+}
+
 function SilentAgentsLine({ agents, total, now }: { agents: DriftSilentAgent[]; total: number; now: number }) {
   const [open, setOpen] = useState(false)
   const named = agents.slice(0, 2).map(a => `${a.node} ${relativeTime(a.last_seen, now)}`).join(', ')
@@ -356,7 +367,7 @@ function SilentAgentsLine({ agents, total, now }: { agents: DriftSilentAgent[]; 
           <span className="font-semibold text-orange-200">
             {total === 1 ? '1 agent stopped reporting' : `${total} agents stopped reporting`}
           </span>{' '}
-          ({named}{more > 0 ? `, +${more} more` : ''}) - changes only {total === 1 ? 'it' : 'they'} could see are not being detected
+          ({named}{more > 0 ? `, +${more} more` : ''}) - {silentConsequence(agents, total)}
         </span>
         <ChevronDown size={13} className={`shrink-0 mt-px text-orange-300/80 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>

@@ -146,6 +146,9 @@ export interface IdleSpendReport {
   notes: string[]
   // Still-silent agents first, at most 20. Absent from older backends.
   silent_agents?: IdleSilentAgent[]
+  silent_agents_total?: number // all of them (silent_agents is capped)
+  silent_agents_still_out?: number // of those, not reporting yet
+  silent_notes?: number // notes at the head of report.notes about them
 }
 
 const NOT_IN_TOTAL_TEXT: Record<'current_window' | 'silent_agent' | 'unknown', { short: string; long: string }> = {
@@ -176,27 +179,32 @@ export function totalsNotInTotalText(report: IdleSpendReport): string {
   return notInTotalText(reasons.length === 1 ? reasons[0] : undefined).short
 }
 
+/** How many agents were out (all of them, not just the capped list). */
+export function silentAgentCount(report: IdleSpendReport): number {
+  return report.silent_agents_total ?? report.silent_agents?.length ?? 0
+}
+
 /**
  * Headline of the silent-agent warning: agents still out first, then those
  * that were out earlier in the window and are reporting again.
  */
-export function silentAgentsHeadline(agents: IdleSilentAgent[]): string {
-  const count = (n: number) => (n >= 20 ? '20+' : String(n))
-  const out = agents.filter(a => !a.returned_at).length
-  const back = agents.length - out
+export function silentAgentsHeadline(report: IdleSpendReport): string {
+  const agents = report.silent_agents ?? []
+  const total = silentAgentCount(report)
+  const out = report.silent_agents_still_out ?? agents.filter(a => !a.returned_at).length
+  const back = total - out
   if (out > 0) {
-    const head = out === 1 ? 'An agent stopped reporting' : `${count(out)} agents stopped reporting`
-    return back > 0 ? `${head}, ${count(back)} more ${back === 1 ? 'was' : 'were'} out earlier` : head
+    const head = out === 1 ? 'An agent stopped reporting' : `${out} agents stopped reporting`
+    return back > 0 ? `${head}, ${back} more ${back === 1 ? 'was' : 'were'} out earlier` : head
   }
-  return back === 1 ? 'An agent was not reporting for a while' : `${count(back)} agents were not reporting for a while`
+  return back === 1 ? 'An agent was not reporting for a while' : `${back} agents were not reporting for a while`
 }
 
 /** The notes about silent agents: report.notes opens with one per group. */
 export function splitSilentNotes(report: IdleSpendReport): { silent: string[]; other: string[] } {
   const agents = report.silent_agents ?? []
-  if (agents.length === 0) return { silent: [], other: report.notes }
-  const groups = new Set(agents.map(a => a.group)).size
-  const n = Math.min(groups, report.notes.length)
+  const n = Math.min(report.silent_notes ?? new Set(agents.map(a => a.group)).size, report.notes.length)
+  if (n === 0) return { silent: [], other: report.notes }
   return { silent: report.notes.slice(0, n), other: report.notes.slice(n) }
 }
 

@@ -7,7 +7,7 @@ import { apiUrl } from '../lib/api'
 import { DOCK_CLASS } from './dock'
 import {
   CATEGORY_LABELS, Confidence, EXCLUSION_LABELS, IdleServiceItem, IdleSpendReport,
-  formatDuration, formatMoney, itemNotInTotalText, silentAgentsHeadline, splitSilentNotes, totalsNotInTotalText,
+  formatDuration, formatMoney, itemNotInTotalText, silentAgentCount, silentAgentsHeadline, splitSilentNotes, totalsNotInTotalText,
 } from '../lib/idleSpend'
 
 interface IdleSpendPanelProps {
@@ -167,7 +167,7 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
   const chip = report ? pricingChip(report) : null
   const needsPrice = report && !report.pricing.configured
   const notes = report ? splitSilentNotes(report) : { silent: [], other: [] }
-  const silentAgents = report?.silent_agents ?? []
+  const silentCount = report ? silentAgentCount(report) : 0
 
   return (
     <section className={DOCK_CLASS} data-panel="idle" aria-label="Idle spend">
@@ -204,7 +204,7 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
           {/* Agents that stopped reporting: the list below is unreliable for
               their groups, so this leads, ahead of the headline. Absent
               (and nothing rendered) when every agent reports. */}
-          {silentAgents.length > 0 && (
+          {report && silentCount > 0 && (
             <div
               role="alert"
               data-testid="idle-silent-agents"
@@ -214,9 +214,9 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
                 <AlertTriangle size={14} className="shrink-0 mt-px text-orange-300" />
                 <p className="leading-snug">
                   <span className="font-semibold text-orange-200">
-                    {silentAgentsHeadline(silentAgents)}
+                    {silentAgentsHeadline(report)}
                   </span>{' '}
-                  <span className="text-orange-200/70">- this list may be wrong for {silentAgents.length === 1 ? 'its group' : 'their groups'}</span>
+                  <span className="text-orange-200/70">- this list may be wrong for {silentCount === 1 ? 'its group' : 'their groups'}</span>
                 </p>
               </div>
               {notes.silent.map(n => (
