@@ -24,6 +24,7 @@ type idleInputs struct {
 	window          time.Duration
 	historyEdges    []storage.ConnectionInterval // newest interval per connection in the window
 	historyServices []storage.ServiceInterval    // every service interval in the window
+	historyNodes    []storage.NodeInterval       // agent heartbeat intervals (observation coverage)
 	stale           []storage.ServiceInterval
 	listenPorts     func(id string) []int // TCP listening ports from inspection; may be nil
 	groups          map[string][]string   // CLUSTER_NAME group -> agent node names
@@ -168,8 +169,8 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 		coverageStart = now
 	}
 	in.coverageStart = coverageStart
-	obs := buildObservationIndex(in, nodeOf)
-	observedTotal := obs.global.total()
+	obs := buildIdleCoverage(in, nodeOf)
+	observedTotal := obs.total(coverageStart, now)
 	report.Evidence = IdleEvidenceWindow{
 		HistoryEnabled:    in.historyEnabled,
 		From:              coverageStart,
@@ -203,7 +204,11 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 		if !in.historyEnabled {
 			return 0, wall
 		}
-		return obs.observed(node, start, now), wall
+		var nodes []string
+		if node != "" {
+			nodes = []string{node}
+		}
+		return obs.observed(nodes, start, now), wall
 	}
 
 	// --- First pass: direct evidence -----------------------------------------

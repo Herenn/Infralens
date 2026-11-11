@@ -589,6 +589,15 @@ func (ts *TopologyService) computeIdleSpend(ctx context.Context, assume float64)
 			if in.historyServices, err = ts.store.History().ServicesBetween(ctx, from, now); err != nil {
 				return nil, fmt.Errorf("querying service history: %w", err)
 			}
+			// All heartbeats within retention, not just the window: the
+			// first one marks where heartbeat coverage begins (see coverage.go).
+			retention := ts.historyRetention
+			if retention <= 0 {
+				retention = storage.DefaultHistoryRetention
+			}
+			if in.historyNodes, err = ts.store.History().NodesBetween(ctx, now.Add(-retention), now); err != nil {
+				return nil, fmt.Errorf("querying node history: %w", err)
+			}
 			if in.stale, err = ts.GetStaleServices(ctx, 0, maxIdleStaleCandidates); err != nil {
 				return nil, fmt.Errorf("querying stale services: %w", err)
 			}

@@ -92,7 +92,15 @@ type Simulator struct {
 
 	ready     chan struct{}
 	readyOnce sync.Once
+
+	// noDriftFeed skips seeding the drift feed (DRIFT_ENABLED=false).
+	noDriftFeed bool
 }
+
+// DisableDriftFeed stops the simulator from seeding drift events: drift
+// detection is switched off, so there is no feed to show them in. Call
+// before Run.
+func (s *Simulator) DisableDriftFeed() { s.noDriftFeed = true }
 
 // NewSimulator creates a demo simulator backed by the given topology service.
 func NewSimulator(topology *service.TopologyService) *Simulator {

@@ -206,6 +206,22 @@ func (ts *TopologyService) recordServiceHistory(ctx context.Context, svc *storag
 	}
 }
 
+// recordNodeHistory records an agent heartbeat (a host-metrics report) as
+// node observation coverage - see storage.NodeInterval. Throttled like the
+// throughput-driven refreshes: agents report every few seconds.
+func (ts *TopologyService) recordNodeHistory(ctx context.Context, node string, at time.Time) {
+	if !ts.historyEnabled || node == "" {
+		return
+	}
+	at = observationTime(at)
+	if !ts.claimHistoryRefresh("n:"+node, at) {
+		return
+	}
+	if err := ts.store.History().RecordNode(ctx, node, at, ts.historyMaxGap); err != nil {
+		ts.logHistoryFailure(err, "node", node)
+	}
+}
+
 // observationTime resolves when a sighting happened.
 //
 // Callers pass the LastSeen they built the entity with. Note that the current
@@ -521,6 +537,7 @@ func (ts *TopologyService) UpdateNodeMetrics(ctx context.Context, metrics *stora
 	if err := ts.store.Metrics().Upsert(ctx, metrics); err != nil {
 		return fmt.Errorf("upserting metrics: %w", err)
 	}
+	ts.recordNodeHistory(ctx, metrics.NodeName, metrics.LastSeen)
 
 	ts.eventBus.PublishMetricsUpdated(MetricsEvent{
 		NodeName:   metrics.NodeName,

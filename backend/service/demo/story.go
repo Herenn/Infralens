@@ -221,15 +221,25 @@ func (s *Simulator) seedPast(ctx context.Context) (kept bool) {
 		}
 		spans = append(spans, service.HistorySpan{From: from, To: to, Connection: s.pastConnection(p.connection, to)})
 	}
+	// Every demo node's agent was reporting throughout: its observation
+	// coverage (coverage.go in the service package).
+	for _, n := range s.nodes {
+		spans = append(spans, service.HistorySpan{From: at(-backfillSpan), To: s.started, Node: n.name})
+	}
 	if err := s.topology.ImportHistory(ctx, spans); err != nil {
 		log.WithError(err).Warn("Demo simulator: failed to backfill history")
 		return false
 	}
 
-	events := s.seededEvents(earliest)
-	if _, err := s.topology.ImportDriftEvents(ctx, events); err != nil {
-		log.WithError(err).Warn("Demo simulator: failed to seed drift events")
-		return false
+	// No feed to seed when drift detection is off (DRIFT_ENABLED=false):
+	// the endpoints are not even registered.
+	var events []storage.DriftEvent
+	if !s.noDriftFeed {
+		events = s.seededEvents(earliest)
+		if _, err := s.topology.ImportDriftEvents(ctx, events); err != nil {
+			log.WithError(err).Warn("Demo simulator: failed to seed drift events")
+			return false
+		}
 	}
 
 	log.WithFields(log.Fields{

@@ -127,18 +127,17 @@ type DriftDetector struct {
 	lastCheck     time.Time
 	baselineUntil time.Time
 
-	// latestObserved is the newest sighting of any edge. Disappearance is
-	// measured against it rather than the wall clock: if every agent stops
-	// reporting, nothing is observed, latestObserved stops advancing, and
-	// the whole graph is not announced as gone because of an outage on the
-	// collection side.
-	latestObserved time.Time
+	// cov is when each node's agent was observing (coverage.go, shared with
+	// Idle spend). An edge's absence is measured in time during which an
+	// agent that could have recorded it was reporting: an outage - of the
+	// backend, of collection, or of just the one node's agent - is not
+	// absence, so recovering from it does not announce every edge that has
+	// not happened to be seen again yet.
+	cov *observationCoverage
 
-	// silences are the stretches (within retention) in which nothing at all
-	// was observed. They are subtracted when measuring how long an edge has
-	// been gone, so recovering from an outage longer than GoneAfter does not
-	// announce every edge that has not happened to be seen again yet.
-	silences []driftSilence
+	// nodes maps service IDs to their node, for edgeReporters. Filled from
+	// history at seed and from current state on every pass.
+	nodes map[string]string
 
 	// pending holds events that could not be written to the feed yet.
 	pending []storage.DriftEvent
@@ -175,6 +174,7 @@ func (ts *TopologyService) NewDriftDetector(cfg DriftConfig, notifier DriftNotif
 		notifier:  notifier,
 		now:       time.Now,
 		known:     make(map[string]*driftEdgeState),
+		nodes:     make(map[string]string),
 	}, nil
 }
 
@@ -316,25 +316,19 @@ func (d *DriftDetector) keepPending(events []storage.DriftEvent) {
 	}
 }
 
-// driftSilence is a stretch with no observation at all - every agent quiet,
-// or the backend down. Time inside one does not count towards GoneAfter:
-// "not observed for 24h" means 24 hours in which we were observing.
-type driftSilence struct {
-	from, to time.Time
-}
-
-// maxSilenceThreshold caps how long nothing at all may be observed before
-// the stretch counts as a collection outage. A cluster with anything running
+// maxSilenceThreshold caps how long nothing may be observed on a node's
+// edges before, in history recorded before agent heartbeats existed, the
+// stretch counts as a collection outage. A node with anything running
 // produces observations every few minutes (throughput reports refresh every
-// live connection's history), so an hour of total silence is an outage, not
-// a quiet spell.
+// live connection's history), so an hour of silence is an outage, not a
+// quiet spell.
 const maxSilenceThreshold = time.Hour
 
-// silenceThreshold is how long a stretch with no observation at all must be
-// to count as a silence: half of GoneAfter, but at least the history max gap
-// (shorter gaps are ordinary cadence) and at most maxSilenceThreshold.
-// Crediting a silence only ever errs towards reporting "gone" later, never
-// falsely.
+// silenceThreshold is how long after an edge interval ends, in history from
+// before agent heartbeats, the node is still assumed to be observing: half
+// of GoneAfter, but at least the history max gap (shorter gaps are ordinary
+// cadence) and at most maxSilenceThreshold. It only ever errs towards
+// reporting "gone" later, never falsely.
 func (d *DriftDetector) silenceThreshold() time.Duration {
 	t := d.cfg.GoneAfter / 2
 	if t > maxSilenceThreshold {
@@ -346,42 +340,50 @@ func (d *DriftDetector) silenceThreshold() time.Duration {
 	return t
 }
 
-// see accounts for one interval in the global observation timeline. It must
-// be called in first_seen order. An interval starting more than the silence
-// threshold after everything seen so far had ended opens a silence - nothing
-// was observed in between, or that stretch would be covered.
+// see accounts for one interval as evidence of its reporting agents'
+// observation (pre-heartbeat history; see coverage.go). Keyed by interval,
+// so an interval read again after being extended replaces its span.
 func (d *DriftDetector) see(ci storage.ConnectionInterval) {
-	if !d.latestObserved.IsZero() && ci.FirstSeen.Sub(d.latestObserved) > d.silenceThreshold() {
-		d.silences = append(d.silences, driftSilence{from: d.latestObserved, to: ci.FirstSeen})
+	if !d.cov.epoch.IsZero() && !ci.FirstSeen.Before(d.cov.epoch) {
+		return // heartbeats decide from the epoch on
 	}
-	if ci.LastSeen.After(d.latestObserved) {
-		d.latestObserved = ci.LastSeen
+	key := fmt.Sprintf("%d|%s", ci.ID, ci.ConnectionID)
+	if ci.ID == 0 {
+		key = ci.ConnectionID + "|" + ci.FirstSeen.String()
 	}
+	d.cov.addEvidence(key, edgeReporters(ci.SourceID, ci.TargetID, d.nodeOf), ci.FirstSeen, ci.LastSeen)
 }
 
-// observedSince is how much observed time lies between lastSeen and ref:
-// the wall-clock span minus any silences within it.
-func (d *DriftDetector) observedSince(lastSeen, ref time.Time) time.Duration {
-	span := ref.Sub(lastSeen)
-	for _, s := range d.silences {
-		from, to := s.from, s.to
-		if from.Before(lastSeen) {
-			from = lastSeen
-		}
-		if to.After(ref) {
-			to = ref
-		}
-		if to.After(from) {
-			span -= to.Sub(from)
+func (d *DriftDetector) nodeOf(id string) string { return d.nodes[id] }
+
+// loadCoverage refreshes what the coverage needs from the store: every agent
+// heartbeat within retention, and the node of every current service.
+func (d *DriftDetector) loadCoverage(ctx context.Context, now time.Time) error {
+	if d.cov == nil {
+		d.cov = newObservationCoverage(d.maxGap, d.silenceThreshold())
+	}
+	beats, err := d.history.NodesBetween(ctx, now.Add(-d.retention), now)
+	if err != nil {
+		return fmt.Errorf("loading node coverage: %w", err)
+	}
+	d.cov.setHeartbeats(beats)
+	services, err := d.ts.store.Services().List(ctx, storage.ServiceFilter{})
+	if err != nil {
+		return fmt.Errorf("loading service nodes: %w", err)
+	}
+	for _, svc := range services {
+		if svc.Node != "" {
+			d.nodes[svc.ID] = svc.Node
 		}
 	}
-	return span
+	return nil
 }
 
 // gone reports whether an edge has gone unobserved for GoneAfter of observed
-// time, as of ref.
+// time, as of ref - observed by an agent that could have recorded it.
 func (d *DriftDetector) gone(st *driftEdgeState, ref time.Time) bool {
-	return d.observedSince(st.edge.LastSeen, ref) > d.cfg.GoneAfter
+	reporters := edgeReporters(st.edge.SourceID, st.edge.TargetID, d.nodeOf)
+	return d.cov.observed(reporters, st.edge.LastSeen, ref) > d.cfg.GoneAfter
 }
 
 // seed loads the detector's baseline from history.
@@ -398,8 +400,9 @@ func (d *DriftDetector) gone(st *driftEdgeState, ref time.Time) bool {
 // that is redeployed often that is not a rare window.
 //
 // History is streamed in first_seen order rather than loaded: the window is
-// the whole retention period. That order is also what lets one pass find the
-// silences, and tell an edge's first sighting apart from its later ones.
+// the whole retention period. That order is also what lets one pass tell an
+// edge's first sighting apart from its later ones. Observation coverage
+// (coverage.go) is loaded first and fed the same intervals.
 //
 // Edges that can never be reported - inbound connections from public
 // internet clients, one per visitor - are not kept at all.
@@ -433,8 +436,24 @@ func (d *DriftDetector) seed(ctx context.Context) error {
 	var observedAtCheckpoint time.Time
 
 	d.known = make(map[string]*driftEdgeState)
-	d.silences = nil
-	d.latestObserved = time.Time{}
+	d.cov = nil
+	d.nodes = make(map[string]string)
+	// Nodes of services only history still knows (pruned from current
+	// state), then current state on top, then heartbeats - all before
+	// streaming: with SQLite's single connection nothing else can query
+	// while EachConnectionBetween iterates.
+	past, err := d.history.ServicesBetween(ctx, now.Add(-d.retention), now)
+	if err != nil {
+		return fmt.Errorf("loading service history: %w", err)
+	}
+	for _, si := range past {
+		if si.Node != "" {
+			d.nodes[si.ServiceID] = si.Node
+		}
+	}
+	if err := d.loadCoverage(ctx, now); err != nil {
+		return err
+	}
 	err = d.history.EachConnectionBetween(ctx, now.Add(-d.retention), now, func(ci storage.ConnectionInterval) error {
 		d.see(ci)
 		if resuming {
@@ -463,7 +482,7 @@ func (d *DriftDetector) seed(ctx context.Context) error {
 	// Anything that had already gone quiet is not news - either it was
 	// announced by the previous process or it went away before detection
 	// was turned on.
-	ref := d.latestObserved
+	ref := now
 	if resuming {
 		ref = observedAtCheckpoint.Add(-d.maxGap)
 	}
@@ -557,6 +576,9 @@ func (d *DriftDetector) check(ctx context.Context) (*DriftReport, error) {
 	// observation's own timestamp, which can trail the moment it becomes
 	// visible to this query. Re-reading a little is free - known edges are
 	// deduplicated - while missing a write would lose a new edge for good.
+	if err := d.loadCoverage(ctx, now); err != nil {
+		return nil, err
+	}
 	var intervals []storage.ConnectionInterval
 	err := d.history.EachConnectionBetween(ctx, d.lastCheck.Add(-d.maxGap), now, func(ci storage.ConnectionInterval) error {
 		intervals = append(intervals, ci)
@@ -568,7 +590,6 @@ func (d *DriftDetector) check(ctx context.Context) (*DriftReport, error) {
 
 	report := &DriftReport{DetectedAt: now}
 
-	// In first_seen order, as see requires.
 	for _, ci := range intervals {
 		d.see(ci)
 		st, isNew := d.observe(ci)
@@ -583,7 +604,7 @@ func (d *DriftDetector) check(ctx context.Context) (*DriftReport, error) {
 		}
 		// Seen again after being announced as gone: re-arm it so a later
 		// disappearance is announced too.
-		if st.goneReported && !d.gone(st, d.latestObserved) {
+		if st.goneReported && !d.gone(st, now) {
 			st.goneReported = false
 		}
 	}
@@ -596,32 +617,20 @@ func (d *DriftDetector) check(ctx context.Context) (*DriftReport, error) {
 			delete(d.known, id)
 			continue
 		}
-		if !st.goneReported && d.gone(st, d.latestObserved) {
+		if !st.goneReported && d.gone(st, now) {
 			st.goneReported = true
 			if d.reportable(st.edge) {
 				report.Disappeared = append(report.Disappeared, st.edge)
 			}
 		}
 	}
-	d.pruneSilences(evictBefore)
+	d.cov.forget(evictBefore)
 
 	sortDriftEdges(report.Appeared)
 	sortDriftEdges(report.Disappeared)
 
 	d.lastCheck = now
 	return report, nil
-}
-
-// pruneSilences forgets silences that ended before the cutoff: no edge still
-// known can have been last seen before them.
-func (d *DriftDetector) pruneSilences(before time.Time) {
-	keep := d.silences[:0]
-	for _, s := range d.silences {
-		if !s.to.Before(before) {
-			keep = append(keep, s)
-		}
-	}
-	d.silences = keep
 }
 
 // reportable filters out edges whose churn is not architecture drift: inbound

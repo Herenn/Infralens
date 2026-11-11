@@ -198,3 +198,25 @@ func TestDemoStoryInvariants(t *testing.T) {
 		t.Errorf("restart moved the start of history: %s -> %s", bounds.Earliest, bounds2.Earliest)
 	}
 }
+
+// With drift detection off the demo writes no drift events: there is no
+// feed (the endpoints answer 404) to show them in.
+func TestDemoWithoutDriftFeed(t *testing.T) {
+	ts := newDemoTopology(t)
+	ctx := context.Background()
+	sim := NewSimulator(ts)
+	sim.DisableDriftFeed()
+	if err := sim.start(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	page, err := ts.ListDriftEvents(ctx, storage.DriftEventFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 0 {
+		t.Errorf("seeded %d drift events with drift detection off", len(page.Events))
+	}
+	if _, ok, _ := ts.GetHistoryBounds(ctx); !ok {
+		t.Error("history should still be backfilled")
+	}
+}
