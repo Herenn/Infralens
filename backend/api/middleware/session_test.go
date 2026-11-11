@@ -341,11 +341,11 @@ func TestLoginLimiter_PerClient(t *testing.T) {
 	l := newLoginLimiter(clock.Now)
 
 	for i := 0; i < loginClientBurst; i++ {
-		if ok, _ := l.take("1.2.3.4"); !ok {
+		if ok, _ := l.take("1.2.3.4", "1.2.3.4"); !ok {
 			t.Fatalf("attempt %d refused within burst", i+1)
 		}
 	}
-	ok, retry := l.take("1.2.3.4")
+	ok, retry := l.take("1.2.3.4", "1.2.3.4")
 	if ok {
 		t.Fatal("attempt beyond burst allowed")
 	}
@@ -354,16 +354,16 @@ func TestLoginLimiter_PerClient(t *testing.T) {
 	}
 
 	// Another client is unaffected.
-	if ok, _ := l.take("5.6.7.8"); !ok {
+	if ok, _ := l.take("5.6.7.8", "5.6.7.8"); !ok {
 		t.Error("a different client was throttled")
 	}
 
 	// One refill period later, exactly one more attempt.
 	clock.Advance(loginClientRefill)
-	if ok, _ := l.take("1.2.3.4"); !ok {
+	if ok, _ := l.take("1.2.3.4", "1.2.3.4"); !ok {
 		t.Error("no attempt after a refill period")
 	}
-	if ok, _ := l.take("1.2.3.4"); ok {
+	if ok, _ := l.take("1.2.3.4", "1.2.3.4"); ok {
 		t.Error("more than one attempt after a single refill period")
 	}
 }
@@ -371,11 +371,11 @@ func TestLoginLimiter_PerClient(t *testing.T) {
 func TestLoginLimiter_RefundOnSuccess(t *testing.T) {
 	l := newLoginLimiter(newFakeClock().Now)
 	for i := 0; i < loginClientBurst*3; i++ {
-		ok, _ := l.take("1.2.3.4")
+		ok, _ := l.take("1.2.3.4", "1.2.3.4")
 		if !ok {
 			t.Fatalf("successful logins exhausted the limiter at attempt %d", i+1)
 		}
-		l.refund("1.2.3.4")
+		l.refund("1.2.3.4", "1.2.3.4")
 	}
 }
 
@@ -388,9 +388,9 @@ func TestLoginLimiter_GlobalSafetyCap(t *testing.T) {
 		t.Fatalf("global cap (%d) must be far above the per-client burst (%d)", loginGlobalBurst, loginClientBurst)
 	}
 	for i := 0; i < loginClientBurst; i++ {
-		l.take("one-client")
+		l.take("one-client", "one-client")
 	}
-	if ok, _ := l.take("one-client"); ok {
+	if ok, _ := l.take("one-client", "one-client"); ok {
 		t.Fatal("per-client limit not enforced")
 	}
 	if l.global.tokens < loginGlobalBurst-loginClientBurst-1 {
@@ -399,9 +399,9 @@ func TestLoginLimiter_GlobalSafetyCap(t *testing.T) {
 
 	// Spread across enough clients, the cap does bind.
 	for i := 0; i < loginGlobalBurst; i++ {
-		l.take("distributed-" + strconv.Itoa(i))
+		l.take("distributed-"+strconv.Itoa(i), "distributed-"+strconv.Itoa(i))
 	}
-	if ok, _ := l.take("yet-another"); ok {
+	if ok, _ := l.take("yet-another", "yet-another"); ok {
 		t.Error("global safety cap not enforced across many clients")
 	}
 }
@@ -499,5 +499,55 @@ func TestSameOrigin(t *testing.T) {
 		if wild.SameOrigin(r) {
 			t.Errorf("CORS_ORIGINS=%s made a sibling origin trusted for cookie requests", pattern)
 		}
+	}
+}
+
+// One peer forging a new client identity per request at 4 attempts a second
+// for ten minutes (the review measured ~2/s as enough to keep the admin out)
+// only ever spends its own peer budget: a first-time admin behind the real
+// proxy, and one connecting directly, still get in at the end.
+func TestLoginLimiter_SustainedForgingPeer(t *testing.T) {
+	clock := newFakeClock()
+	l := newLoginLimiter(clock.Now)
+	for i := 0; i < 4*600; i++ {
+		l.take("forged-"+strconv.Itoa(i)+"@10.0.0.66", "10.0.0.66")
+		clock.Advance(250 * time.Millisecond)
+	}
+	if ok, _ := l.take("203.0.113.5@10.0.0.2", "10.0.0.2"); !ok {
+		t.Error("first-time admin behind the real proxy locked out by one forging peer")
+	}
+	if ok, _ := l.take("192.168.1.50", "192.168.1.50"); !ok {
+		t.Error("admin connecting directly locked out by one forging peer")
+	}
+}
+
+// A distributed attack (many peers) can still exhaust the global cap - that
+// is what it is for - but an admin who signed in before from the same
+// identity is not subject to it.
+func TestLoginLimiter_KnownGoodClientSurvivesGlobalDrain(t *testing.T) {
+	clock := newFakeClock()
+	l := newLoginLimiter(clock.Now)
+	admin, proxy := "203.0.113.5@10.0.0.2", "10.0.0.2"
+	if ok, _ := l.take(admin, proxy); !ok {
+		t.Fatal("first login refused")
+	}
+	l.refund(admin, proxy) // signed in
+
+	for i := 0; i < 10*loginGlobalBurst; i++ {
+		peer := "10.1." + strconv.Itoa(i/250) + "." + strconv.Itoa(i%250)
+		l.take(peer, peer)
+	}
+	if ok, _ := l.take("198.51.100.9", "198.51.100.9"); ok {
+		t.Fatal("global cap did not bind under a distributed attack")
+	}
+	if ok, _ := l.take(admin, proxy); !ok {
+		t.Error("admin with a previous successful login locked out by a distributed attack")
+	}
+	// Its own bucket still applies.
+	for i := 0; i < loginClientBurst; i++ {
+		l.take(admin, proxy)
+	}
+	if ok, _ := l.take(admin, proxy); ok {
+		t.Error("known-good client bypassed its own per-client limit")
 	}
 }

@@ -338,12 +338,12 @@ func (sm *SessionManager) CheckCredentials(username, password string) bool {
 // AllowLoginAttempt reserves a login attempt for the request's client (see
 // loginLimiter.take and proxyConfig.clientKey).
 func (sm *SessionManager) AllowLoginAttempt(r *http.Request) (bool, time.Duration) {
-	return sm.limiter.take(sm.proxies.clientKey(r))
+	return sm.limiter.take(sm.proxies.clientKey(r), peerKey(r))
 }
 
 // LoginSucceeded refunds the attempt reserved by AllowLoginAttempt.
 func (sm *SessionManager) LoginSucceeded(r *http.Request) {
-	sm.limiter.refund(sm.proxies.clientKey(r))
+	sm.limiter.refund(sm.proxies.clientKey(r), peerKey(r))
 }
 
 // NewSession creates a session and sets its cookie on w.

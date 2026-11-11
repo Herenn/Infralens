@@ -71,7 +71,8 @@ func (h *AuthHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleLogin checks the admin credentials and starts a session. Attempts
-// are throttled per client and globally; a throttled attempt is refused
+// are throttled per client, per connecting peer and globally (see
+// middleware/ratelimit.go); a throttled attempt is refused
 // before the password is looked at, so it reveals nothing about it.
 func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
