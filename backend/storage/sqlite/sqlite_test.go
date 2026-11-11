@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
@@ -674,6 +675,69 @@ func TestOutdatedSchemaWithoutAutoMigrateFailsFast(t *testing.T) {
 	s, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: false})
 	if err != nil {
 		t.Fatalf("current schema without auto-migrate: %v", err)
+	}
+	_ = s.Close()
+}
+
+// A schema newer than this binary (migrated by a newer InfraLens) is refused
+// in both DB_AUTO_MIGRATE modes: downgrades are unsupported.
+func TestNewerSchemaIsRefused(t *testing.T) {
+	dsn := t.TempDir() + "/newer.db"
+	s, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE schema_migrations SET version = 99`); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	for _, auto := range []bool{true, false} {
+		_, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: auto})
+		if err == nil || !strings.Contains(err.Error(), "version 99, newer than this backend knows (7)") || !strings.Contains(err.Error(), "Downgrades are not supported") {
+			t.Errorf("auto-migrate=%v: %v, want a clear refusal", auto, err)
+		}
+	}
+}
+
+// A database migrated by a development build whose migration 7 created
+// node_intervals without group_name is refused at startup with recovery
+// instructions; following them recovers it.
+func TestDevBuildNodeIntervalsAreRefused(t *testing.T) {
+	dsn := t.TempDir() + "/dev.db"
+	s, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`DROP TABLE node_intervals`,
+		`CREATE TABLE node_intervals (id INTEGER PRIMARY KEY AUTOINCREMENT, node_name TEXT NOT NULL, first_seen TIMESTAMP NOT NULL, last_seen TIMESTAMP NOT NULL)`,
+	} {
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.Close()
+	for _, auto := range []bool{true, false} {
+		_, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: auto})
+		if err == nil || !strings.Contains(err.Error(), "lacks column(s) group_name") || !strings.Contains(err.Error(), "unreleased development build") ||
+			!strings.Contains(err.Error(), "UPDATE schema_migrations SET version = 6") {
+			t.Fatalf("auto-migrate=%v: %v, want a refusal with recovery steps", auto, err)
+		}
+	}
+	// The documented recovery.
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{`DROP TABLE IF EXISTS node_intervals`, `UPDATE schema_migrations SET version = 6, dirty = false`} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = db.Close()
+	s, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatalf("after recovery: %v", err)
 	}
 	_ = s.Close()
 }

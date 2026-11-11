@@ -84,20 +84,29 @@ func New(cfg storage.Config) (*Store, error) {
 	store.drift = &DriftRepo{db: db}
 
 	// Run migrations if enabled; otherwise the schema must already be
-	// current (see storage.CheckSchema).
+	// current (see storage.CheckSchema). A schema newer than this binary is
+	// refused either way (downgrades are unsupported).
+	if version, _, ok := store.schemaVersion(ctx); ok {
+		if err := storage.CheckSchemaNotNewer(pgmigrations.FS, version, ok); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if cfg.AutoMigrate {
 		if err := store.migrate(ctx); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("running migrations: %w", err)
 		}
 	} else {
-		var version int
-		var dirty bool
-		ok := db.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations LIMIT 1`).Scan(&version, &dirty) == nil
+		version, dirty, ok := store.schemaVersion(ctx)
 		if err := storage.CheckSchema(pgmigrations.FS, version, dirty, ok); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("DB_AUTO_MIGRATE=false: %w", err)
 		}
+	}
+	if err := store.checkNodeIntervals(ctx); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	// Start pruning goroutine if enabled.
@@ -116,6 +125,43 @@ func New(cfg storage.Config) (*Store, error) {
 	}).Info("PostgreSQL store initialized")
 
 	return store, nil
+}
+
+// schemaVersion reads golang-migrate's bookkeeping. ok is false when the
+// table does not exist or holds no version.
+func (s *Store) schemaVersion(ctx context.Context) (version int, dirty, ok bool) {
+	err := s.db.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations LIMIT 1`).Scan(&version, &dirty)
+	if err != nil {
+		return 0, false, false
+	}
+	return version, dirty, true
+}
+
+// checkNodeIntervals: see storage.CheckNodeIntervals.
+func (s *Store) checkNodeIntervals(ctx context.Context) error {
+	version, _, ok := s.schemaVersion(ctx)
+	if !ok {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT column_name FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'node_intervals'`)
+	if err != nil {
+		return fmt.Errorf("checking node_intervals: %w", err)
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return fmt.Errorf("checking node_intervals: %w", err)
+		}
+		cols = append(cols, c)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("checking node_intervals: %w", err)
+	}
+	return storage.CheckNodeIntervals(version, cols)
 }
 
 // MigrateTo moves the schema to exactly version, applying up or down

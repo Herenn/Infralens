@@ -105,7 +105,14 @@ func New(cfg storage.Config) (*Store, error) {
 	store.drift = &DriftRepo{db: db}
 
 	// Run migrations if enabled; otherwise the schema must already be
-	// current (see storage.CheckSchema).
+	// current (see storage.CheckSchema). A schema newer than this binary is
+	// refused either way (downgrades are unsupported).
+	if version, _, ok := store.schemaVersion(ctx); ok {
+		if err := storage.CheckSchemaNotNewer(migrations.FS, version, ok); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if cfg.AutoMigrate {
 		if err := store.migrate(ctx); err != nil {
 			db.Close()
@@ -117,6 +124,10 @@ func New(cfg storage.Config) (*Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("DB_AUTO_MIGRATE=false: %w", err)
 		}
+	}
+	if err := store.checkNodeIntervals(ctx); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	// Rows written before v3.1 store local-zone text; see dbTime. The schema
@@ -157,6 +168,31 @@ func (s *Store) schemaVersion(ctx context.Context) (version int, dirty, ok bool)
 		return 0, false, false
 	}
 	return version, dirty, true
+}
+
+// checkNodeIntervals: see storage.CheckNodeIntervals.
+func (s *Store) checkNodeIntervals(ctx context.Context) error {
+	version, _, ok := s.schemaVersion(ctx)
+	if !ok {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM pragma_table_info('node_intervals')`)
+	if err != nil {
+		return fmt.Errorf("checking node_intervals: %w", err)
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return fmt.Errorf("checking node_intervals: %w", err)
+		}
+		cols = append(cols, c)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("checking node_intervals: %w", err)
+	}
+	return storage.CheckNodeIntervals(version, cols)
 }
 
 // MigrateTo moves the schema to exactly version, applying up or down

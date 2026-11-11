@@ -5,9 +5,12 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/Herenn/Infralens/backend/migrations"
+	"github.com/Herenn/Infralens/backend/storage"
 	"github.com/Herenn/Infralens/backend/storage/postgres/pgmigrations"
 )
 
@@ -80,5 +83,36 @@ func TestMigrationsContiguous(t *testing.T) {
 		if pg[v] != n {
 			t.Errorf("version %d: sqlite %q, postgres %q - the two stores must migrate in step", v, n, pg[v])
 		}
+	}
+}
+
+func TestCheckSchemaNewerAndNodeIntervals(t *testing.T) {
+	fsys := fstest.MapFS{
+		"000001_init.up.sql":                 {Data: []byte("")},
+		"000007_add_node_intervals.up.sql":   {Data: []byte("")},
+		"000007_add_node_intervals.down.sql": {Data: []byte("")},
+	}
+	for _, check := range []func() error{
+		func() error { return storage.CheckSchemaNotNewer(fsys, 8, true) },
+		func() error { return storage.CheckSchema(fsys, 8, false, true) },
+	} {
+		if err := check(); err == nil || !strings.Contains(err.Error(), "newer than this backend knows (7)") {
+			t.Errorf("newer schema: %v", err)
+		}
+	}
+	if err := storage.CheckSchemaNotNewer(fsys, 7, true); err != nil {
+		t.Errorf("current schema: %v", err)
+	}
+	if err := storage.CheckNodeIntervals(6, nil); err != nil {
+		t.Errorf("before migration 7: %v", err)
+	}
+	if err := storage.CheckNodeIntervals(7, []string{"id", "node_name", "group_name", "first_seen", "last_seen"}); err != nil {
+		t.Errorf("released table: %v", err)
+	}
+	if err := storage.CheckNodeIntervals(7, []string{"id", "node_name", "first_seen", "last_seen"}); err == nil || !strings.Contains(err.Error(), "group_name") {
+		t.Errorf("dev-build table: %v", err)
+	}
+	if err := storage.CheckNodeIntervals(8, nil); err == nil || !strings.Contains(err.Error(), "is missing") {
+		t.Errorf("missing table: %v", err)
 	}
 }
