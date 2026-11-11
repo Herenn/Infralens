@@ -15,7 +15,7 @@ export const CARD_H = 56
 
 const ROW_GAP = 20            // vertical space between cards in a column
 const SUBCOL_GAP = 104        // between wrapped columns inside one group
-const COLUMN_GAP = 116        // between flow columns: the gutters edges and labels use
+const COLUMN_GAP = 136        // between flow columns: the gutters edges and labels use
 const GROUP_PAD_X = 12
 const GROUP_HEADER_H = 58     // the group's title bar (50px) and breathing room
 const GROUP_PAD_BOTTOM = 14

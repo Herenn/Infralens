@@ -13,7 +13,6 @@ import {
   BackgroundVariant,
   Viewport,
   getNodesBounds,
-  getViewportForBounds,
 } from '@xyflow/react'
 import { toPng } from 'html-to-image'
 import { Loader2, Radio } from 'lucide-react'
@@ -264,7 +263,7 @@ function formatRate(bytesPerSec: number): string {
   const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s']
   const i = Math.min(Math.floor(Math.log(bytesPerSec) / Math.log(k)), sizes.length - 1)
   const v = bytesPerSec / Math.pow(k, i)
-  return `${v >= 100 ? Math.round(v) : parseFloat(v.toFixed(1))} ${sizes[i]}`
+  return `${v >= 10 ? Math.round(v) : parseFloat(v.toFixed(1))} ${sizes[i]}`
 }
 
 type ImpactDirection = 'upstream' | 'downstream'
@@ -446,25 +445,46 @@ function App() {
     return () => { cancelled = true }
   }, [impactRoot, timelineAt])
 
+  // Architecture drift feed ("Changes"): unread badge, and focusing a change
+  // on the graph. When the feed becomes unavailable its panel goes, and with
+  // it any focus it held.
+  const driftFeed = useDriftFeed(panel === 'changes')
+  const changesOpen = panel === 'changes' && driftFeed.available
+  const driftFocus = useDriftFocus(nodes, changesOpen)
+  const { clear: clearDriftFocus, setFocus: setDriftFocusRaw } = driftFocus
+  useEffect(() => {
+    if (!driftFeed.available && panel === 'changes') setPanel(null)
+  }, [driftFeed.available, panel])
+
+  // One highlight at a time. Four things can light up part of the graph: a
+  // service picked in a panel (Idle spend, Orphans), a blast radius, a change
+  // focused in the Changes feed, and search matches. Each is an explicit
+  // request, and the latest one wins: starting any of them clears the
+  // others, so no stale state is left behind to mask or outlive it.
+  const startPanelFocus = useCallback((id: string | null) => {
+    setPanelFocusId(id)
+    if (id) { setImpactRoot(null); clearDriftFocus(); setSearchQuery('') }
+  }, [clearDriftFocus])
   const handleShowImpact = useCallback((serviceId: string, direction: ImpactDirection) => {
     setImpactRoot({ id: serviceId, direction })
-  }, [])
-
+    setPanelFocusId(null); clearDriftFocus(); setSearchQuery('')
+  }, [clearDriftFocus])
   const handleClearImpact = useCallback(() => {
     setImpactRoot(null)
   }, [])
-
-  // Architecture drift feed ("Changes"): unread badge, and focusing a change
-  // on the graph.
-  const changesOpen = panel === 'changes'
-  const driftFeed = useDriftFeed(changesOpen)
-  const driftFocus = useDriftFocus(nodes, changesOpen)
-  const { clear: clearDriftFocus } = driftFocus
+  const setDriftFocus = useCallback((ev: Parameters<typeof setDriftFocusRaw>[0]) => {
+    setDriftFocusRaw(ev)
+    if (ev) { setImpactRoot(null); setPanelFocusId(null); setSearchQuery('') }
+  }, [setDriftFocusRaw])
+  const handleSearchChange = useCallback((q: string) => {
+    setSearchQuery(q)
+    if (q.trim()) { setImpactRoot(null); setPanelFocusId(null); clearDriftFocus() }
+  }, [clearDriftFocus])
 
   const panelFocusIds = useMemo(() => (panelFocusId ? new Set([panelFocusId]) : null), [panelFocusId])
 
-  // What the graph lights up, most specific intent first: a service picked in
-  // a panel, a blast radius, a focused change, search matches.
+  // Normally only one is set (see above); the order only settles the moment
+  // between a request and its data arriving.
   const highlightIds = panelFocusIds || impactIds || driftFocus.highlightIds || searchMatchIds
   const highlightKind: 'panel' | 'impact' | 'drift' | 'search' | null =
     panelFocusIds ? 'panel' : impactIds ? 'impact' : driftFocus.highlightIds ? 'drift' : searchMatchIds ? 'search' : null
@@ -625,7 +645,7 @@ function App() {
           top: `${parseInt(paddingRef.current.top) + 40}px`,
           bottom: `${parseInt(paddingRef.current.bottom) + 40}px`,
         },
-        maxZoom: ids.length === 1 ? 0.95 : 1,
+        maxZoom: ids.length === 1 ? 0.85 : 1,
         minZoom: 0.05,
       })
     }, 250) // debounce while typing
@@ -680,10 +700,12 @@ function App() {
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false)
     setSelectedServiceId(null)
+    // Closing the drawer ends the selection too: no card stays outlined.
+    setNodes(ns => (ns.some(n => n.selected) ? ns.map(n => (n.selected ? { ...n, selected: false } : n)) : ns))
     const saved = drawerViewportRef.current
     drawerViewportRef.current = null
     if (saved && !savedViewportRef.current) reactFlowInstanceRef.current?.setViewport(saved, { duration: 300 })
-  }, [])
+  }, [setNodes])
 
   // Handle node click - open drawer with appropriate data
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
@@ -698,6 +720,8 @@ function App() {
       const service = activeTopology?.services.find((s) => s.id === node.id) ||
         filteredTopology?.services.find((s) => s.id === node.id)
       const ports = (node.data as { ports?: number[] })?.ports || []
+      // A service picked in a panel gives way to the one clicked on the map.
+      setPanelFocusId(cur => (cur === node.id ? cur : null))
       setSelectedNode({ type: 'service', service: service || null, serverData: null, ports })
       setSelectedServiceId(node.id)
       setDrawerOpen(true)
@@ -798,7 +822,7 @@ function App() {
       }
     }
     const drift = driftFocus.focus
-    if (drift && driftFocus.highlightIds) {
+    if (drift && highlightKind === 'drift') {
       for (const e of edges) {
         if (e.id === drift.connection_id || (e.source === drift.source_id && e.target === drift.target_id)) lit.set(e.id, 'outgoing')
       }
@@ -858,7 +882,7 @@ function App() {
         data: { ...e.data, highlighted: focus, label: at ? { ...at, text: texts.get(e.id)! } : undefined },
       }
     })
-  }, [edges, highlightIds, highlightKind, driftFocus.focus, driftFocus.highlightIds, focusNodeId, hoverEdgeId, connectionById, obstacles, timelineAt])
+  }, [edges, highlightIds, highlightKind, driftFocus.focus, focusNodeId, hoverEdgeId, connectionById, obstacles, timelineAt])
 
   const animate = !reducedMotion && !timelineAt && edges.length <= FLOW_ANIMATION_MAX_EDGES
   const edgeSettings = useMemo(() => ({ animate }), [animate])
@@ -881,14 +905,20 @@ function App() {
     const flowElement = document.querySelector('.react-flow') as HTMLElement
     if (!flowElement) return
 
-    // Calculate bounds of all nodes
-    const nodesBounds = getNodesBounds(nodes)
-    const pad = 100
-    const imageWidth = nodesBounds.width + pad * 2
-    const imageHeight = nodesBounds.height + pad * 2
-
-    // Get viewport to fit all nodes
-    const viewport = getViewportForBounds(nodesBounds, imageWidth, imageHeight, 0.5, 2, pad)
+    // Bounds of all nodes - through the instance, which resolves child
+    // nodes' positions inside their groups (the bare helper cannot).
+    const nodesBounds = reactFlowInstanceRef.current?.getNodesBounds(nodes) ?? getNodesBounds(nodes)
+    // The whole graph at 1:1 (scaled down only past what a canvas can hold),
+    // with a margin. getViewportForBounds took its padding as a fraction, so
+    // the old "100" pinned every export to its minimum zoom.
+    const pad = 80
+    const MAX_SIDE = 8000
+    const zoom = Math.min(1, MAX_SIDE / Math.max(nodesBounds.width + pad * 2, nodesBounds.height + pad * 2))
+    const imageWidth = Math.ceil((nodesBounds.width + pad * 2) * zoom)
+    const imageHeight = Math.ceil((nodesBounds.height + pad * 2) * zoom)
+    const viewport = { x: (pad - nodesBounds.x) * zoom, y: (pad - nodesBounds.y) * zoom, zoom }
+    // Sharp, but never a canvas wider than ~16k device pixels.
+    const pixelRatio = Math.max(1, Math.min(3, 16000 / Math.max(imageWidth, imageHeight)))
 
     // Hide controls, minimap and the flow animation during export
     const controls = flowElement.querySelector('.react-flow__controls') as HTMLElement
@@ -909,12 +939,12 @@ function App() {
     // High quality export with 3x pixel ratio
     toPng(flowElement, {
       backgroundColor: '#0a0f1a',
-      width: Math.max(imageWidth, flowElement.offsetWidth),
-      height: Math.max(imageHeight, flowElement.offsetHeight),
-      pixelRatio: 3,
+      width: imageWidth,
+      height: imageHeight,
+      pixelRatio,
       style: {
-        width: `${Math.max(imageWidth, flowElement.offsetWidth)}px`,
-        height: `${Math.max(imageHeight, flowElement.offsetHeight)}px`,
+        width: `${imageWidth}px`,
+        height: `${imageHeight}px`,
       },
     })
       .then((dataUrl: string) => {
@@ -1005,7 +1035,7 @@ function App() {
         onFiltersChange={setFilters}
         filteredStats={filteredStats}
         searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
+        onSearchChange={handleSearchChange}
         searchMatchCount={searchMatchIds?.size}
         onExportPng={handleExportPng}
         onExportJson={handleExportJson}
@@ -1144,7 +1174,7 @@ function App() {
                   direction={impactRoot.direction}
                   count={impactIds ? impactIds.size - 1 : null}
                   loading={impactLoading}
-                  onDirection={d => setImpactRoot({ id: impactRoot.id, direction: d })}
+                  onDirection={d => handleShowImpact(impactRoot.id, d)}
                   onClear={handleClearImpact}
                 />
               )}
@@ -1167,12 +1197,12 @@ function App() {
               onClose={closePanel}
               seenAtOpen={driftFeed.seenAtOpen}
               selectedId={driftFocus.focus?.id ?? null}
-              onSelect={driftFocus.setFocus}
+              onSelect={setDriftFocus}
               isOnGraph={driftFocus.isOnGraph}
               viewingAt={timelineAt}
               onViewAt={(ev, at) => {
                 setTimelineAt(at)
-                if (ev && at) driftFocus.setFocus(ev)
+                if (ev && at) setDriftFocus(ev)
               }}
             />
           )}
@@ -1180,7 +1210,7 @@ function App() {
           {panel === 'idle' && (
             <IdleSpendPanel
               onClose={closePanel}
-              onFocusService={id => setPanelFocusId(id)}
+              onFocusService={id => startPanelFocus(id)}
               focusedId={panelFocusId}
             />
           )}
@@ -1188,14 +1218,14 @@ function App() {
           {panel === 'critical' && (
             <CriticalityPanel
               onClose={closePanel}
-              onSelect={id => setImpactRoot(cur => (cur && cur.id === id ? null : { id, direction: 'upstream' }))}
+              onSelect={id => (impactRoot?.id === id ? handleClearImpact() : handleShowImpact(id, 'upstream'))}
               selectedId={impactRoot?.direction === 'upstream' ? impactRoot.id : null}
             />
           )}
           {panel === 'orphans' && (
             <OrphansPanel
               onClose={closePanel}
-              onSelect={id => setPanelFocusId(cur => (cur === id ? null : id))}
+              onSelect={id => startPanelFocus(panelFocusId === id ? null : id)}
               selectedId={panelFocusId}
             />
           )}

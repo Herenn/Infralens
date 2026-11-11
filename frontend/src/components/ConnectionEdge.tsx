@@ -68,6 +68,7 @@ function ConnectionEdge({ id, sourceX, sourceY, targetX, targetY, data }: Connec
       {animate && step > 0 && (
         <path
           d={path}
+          fill="none"
           className="il-edge-flow"
           style={{
             stroke: focus ? tone.stroke : '#94a3b8',

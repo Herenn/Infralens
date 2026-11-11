@@ -8,8 +8,13 @@ import { pointAt } from './edgeRoute'
 export interface Rect { x: number; y: number; w: number; h: number }
 
 const CELL = 160
-// Spots along the edge, best first: the middle, then outwards.
-const FRACTIONS = [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82]
+// Spots along the edge, best first: the middle, then outwards in small
+// steps (a long edge may only have room near one of its ends).
+const FRACTIONS = (() => {
+  const out = [0.5]
+  for (let d = 0.04; d <= 0.441; d += 0.04) out.push(0.5 - d, 0.5 + d)
+  return out
+})()
 
 class Grid {
   private cells = new Map<string, Rect[]>()
