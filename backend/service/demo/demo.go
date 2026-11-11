@@ -73,6 +73,21 @@ type demoNode struct {
 
 	cpuPercent float64
 	memPercent float64
+
+	// The values wander within base +/- these bands, never above
+	// demoMaxUsage: the demo is the product's shop window and should look
+	// like a calm, healthy cluster.
+	cpuBase, cpuBand float64
+	memBase, memBand float64
+}
+
+// demoMaxUsage keeps every demo meter in the UI's green band (ServerNode
+// colours usage amber from 60% and red from 85%).
+const demoMaxUsage = 55
+
+func newDemoNode(name string, memTotal uint64, cpu, cpuBand, mem, memBand float64) *demoNode {
+	return &demoNode{name: name, memTotal: memTotal, cpuPercent: cpu, memPercent: mem,
+		cpuBase: cpu, cpuBand: cpuBand, memBase: mem, memBand: memBand}
 }
 
 // Simulator seeds and animates a demo topology.
@@ -269,10 +284,10 @@ func (s *Simulator) buildScenario() {
 
 	gib := func(n uint64) uint64 { return n * 1024 * 1024 * 1024 }
 	s.nodes = []*demoNode{
-		{name: "demo-edge-1", memTotal: gib(8), cpuPercent: 22, memPercent: 38},
-		{name: "demo-app-1", memTotal: gib(16), cpuPercent: 45, memPercent: 55},
-		{name: "demo-data-1", memTotal: gib(32), cpuPercent: 30, memPercent: 68},
-		{name: nodeLegacy, memTotal: gib(8), cpuPercent: 6, memPercent: 31},
+		newDemoNode("demo-edge-1", gib(8), 22, 8, 36, 4),
+		newDemoNode("demo-app-1", gib(16), 38, 9, 46, 4),
+		newDemoNode("demo-data-1", gib(32), 28, 7, 49, 4),
+		newDemoNode(nodeLegacy, gib(8), 5, 3, 30, 2), // nothing runs there any more
 	}
 
 	s.buildTimeline(svc, conn)
@@ -374,8 +389,7 @@ func (s *Simulator) tick(ctx context.Context) {
 	}
 
 	for _, n := range s.nodes {
-		n.cpuPercent = s.drift(n.cpuPercent, 5, 3, 95)
-		n.memPercent = s.drift(n.memPercent, 2, 10, 95)
+		s.wander(n)
 
 		memUsed := uint64(float64(n.memTotal) * n.memPercent / 100)
 		if err := s.topology.UpdateNodeMetrics(ctx, &storage.NodeMetrics{
@@ -389,6 +403,12 @@ func (s *Simulator) tick(ctx context.Context) {
 			log.WithError(err).WithField("node", n.name).Debug("Demo simulator failed to update metrics")
 		}
 	}
+}
+
+// wander moves a node's CPU and memory one step within its bands.
+func (s *Simulator) wander(n *demoNode) {
+	n.cpuPercent = s.drift(n.cpuPercent, 3, math.Max(1, n.cpuBase-n.cpuBand), math.Min(demoMaxUsage, n.cpuBase+n.cpuBand))
+	n.memPercent = s.drift(n.memPercent, 1, math.Max(1, n.memBase-n.memBand), math.Min(demoMaxUsage, n.memBase+n.memBand))
 }
 
 // jitter returns base scaled by a random factor in [1-amount, 1+amount].

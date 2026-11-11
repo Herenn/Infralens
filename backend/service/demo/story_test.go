@@ -220,3 +220,32 @@ func TestDemoWithoutDriftFeed(t *testing.T) {
 		t.Error("history should still be backfilled")
 	}
 }
+
+// The demo is the product's shop window (and the README GIF is recorded from
+// it): host meters stay in the UI's green band (< 60%) however long it runs,
+// with some variation.
+func TestDemoNodeMetersStayCalm(t *testing.T) {
+	sim := NewSimulator(newDemoTopology(t))
+	lo, hi := map[string]float64{}, map[string]float64{}
+	for i := 0; i < 5000; i++ {
+		for _, n := range sim.nodes {
+			sim.wander(n)
+			for k, v := range map[string]float64{n.name + " cpu": n.cpuPercent, n.name + " mem": n.memPercent} {
+				if v >= 60 {
+					t.Fatalf("%s at %.1f%%: amber/red in the demo", k, v)
+				}
+				if _, ok := lo[k]; !ok || v < lo[k] {
+					lo[k] = v
+				}
+				if v > hi[k] {
+					hi[k] = v
+				}
+			}
+		}
+	}
+	for k := range lo {
+		if hi[k]-lo[k] < 1 {
+			t.Errorf("%s never moves (%.1f..%.1f)", k, lo[k], hi[k])
+		}
+	}
+}
