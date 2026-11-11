@@ -13,7 +13,7 @@ export default function ChangesButton({ open, unread, onToggle }: ChangesButtonP
     <button
       onClick={onToggle}
       className={`
-        relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+        relative flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all
         ${open
           ? 'bg-lens-500/15 text-lens-300 border border-lens-500/40'
           : 'bg-dark-800 text-dark-300 border border-dark-700 hover:text-dark-100 hover:border-dark-600'

@@ -129,7 +129,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder="Search services...  ( / )"
-            className="w-56 pl-9 pr-8 py-1.5 rounded-lg text-xs bg-dark-800 text-dark-200 border border-dark-700 
+            className="w-48 min-[1440px]:w-56 pl-9 pr-8 py-1.5 rounded-lg text-xs bg-dark-800 text-dark-200 border border-dark-700 
               placeholder:text-dark-500 focus:outline-none focus:border-lens-500/50 focus:ring-1 focus:ring-lens-500/30 transition-all"
           />
           {searchQuery && (
@@ -155,7 +155,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
         <button
           onClick={() => onFiltersChange({ ...filters, hideLocalhost: !filters.hideLocalhost })}
           className={`
-            flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+            flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all
             ${filters.hideLocalhost 
               ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' 
               : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
@@ -175,7 +175,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             setExportDropdownOpen(false)
           }}
           className={`
-            flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+            flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all
             ${filters.minConnections > 1 
               ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' 
               : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
@@ -222,7 +222,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
         <button
           onClick={() => onFiltersChange({ ...filters, collapseExternal: !filters.collapseExternal })}
           className={`
-            flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+            flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all
             ${filters.collapseExternal 
               ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' 
               : 'bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300'
@@ -241,7 +241,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
             setExportDropdownOpen(!exportDropdownOpen)
             setFilterDropdownOpen(false)
           }}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300 hover:bg-dark-700"
+          className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all bg-dark-800 text-dark-400 border border-dark-700 hover:text-dark-300 hover:bg-dark-700"
           title="Export topology"
         >
           <Download size={14} />
@@ -330,7 +330,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
                 onClick={onToggleIdleSpend}
                 aria-pressed={!!idleSpendOpen}
                 className={`
-                  flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+                  flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all
                   ${idleSpendOpen
                     ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                     : 'bg-dark-800 text-dark-300 border border-dark-700 hover:text-dark-100 hover:border-dark-600'
