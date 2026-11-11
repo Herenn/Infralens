@@ -104,32 +104,30 @@ func New(cfg storage.Config) (*Store, error) {
 	store.history = &HistoryRepo{db: db}
 	store.drift = &DriftRepo{db: db}
 
-	// Run migrations if enabled
+	// Run migrations if enabled; otherwise the schema must already be
+	// current (see storage.CheckSchema).
 	if cfg.AutoMigrate {
 		if err := store.migrate(ctx); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("running migrations: %w", err)
 		}
+	} else {
+		version, dirty, ok := store.schemaVersion(ctx)
+		if err := storage.CheckSchema(migrations.FS, version, dirty, ok); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("DB_AUTO_MIGRATE=false: %w", err)
+		}
 	}
 
-	// Rows written before v3.1 store local-zone text; see dbTime. Normalised
-	// whenever the schema is at a version whose code expects UTC - also when
-	// migrations are run out of band (DB_AUTO_MIGRATE=false), which would
-	// otherwise leave v3.0 rows mis-comparing forever. Not bounded by the 5s
-	// connect timeout above - a large database takes longer - and not fatal:
-	// an unconverted row only mis-compares, and the next start resumes where
-	// this one stopped.
-	switch version, dirty, ok := store.schemaVersion(context.Background()); {
-	case !ok:
-		// No migrations table: nothing has been created yet.
-	case dirty:
-		log.WithField("version", version).Warn("Database schema is marked dirty (an interrupted migration); not normalizing stored timestamps")
-	case version < utcSchemaVersion:
-		log.WithField("version", version).Warn("Database schema is older than this backend expects; run the migrations (or set DB_AUTO_MIGRATE=true)")
-	default:
-		if _, err := store.NormalizeTimestamps(context.Background()); err != nil {
-			log.WithError(err).Warn("Could not normalize stored timestamps to UTC; will retry on next start")
-		}
+	// Rows written before v3.1 store local-zone text; see dbTime. The schema
+	// is current here (migrated above or checked), so the code expects UTC -
+	// also when migrations are run out of band, which would otherwise leave
+	// v3.0 rows mis-comparing forever. Not bounded by the 5s connect timeout
+	// above - a large database takes longer - and not fatal: an unconverted
+	// row only mis-compares, and the next start resumes where this one
+	// stopped.
+	if _, err := store.NormalizeTimestamps(context.Background()); err != nil {
+		log.WithError(err).Warn("Could not normalize stored timestamps to UTC; will retry on next start")
 	}
 
 	// Start pruning goroutine if enabled.
@@ -150,11 +148,6 @@ func New(cfg storage.Config) (*Store, error) {
 
 	return store, nil
 }
-
-// utcSchemaVersion is the first schema version written by code that stores
-// times as UTC (migration 000004 shipped with that change); from it on,
-// startup normalises any older rows.
-const utcSchemaVersion = 4
 
 // schemaVersion reads golang-migrate's bookkeeping. ok is false when the
 // table does not exist or holds no version.

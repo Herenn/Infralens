@@ -496,7 +496,7 @@ export DB_DRIVER=postgres
 export DB_DSN="postgres://user:password@localhost:5432/infralens?sslmode=disable"
 ```
 
-Migrations run automatically at startup (`DB_AUTO_MIGRATE=true`). **Back up before upgrading**: an older InfraLens will not start on a database a newer one has migrated.
+Migrations run automatically at startup (`DB_AUTO_MIGRATE=true`); with `DB_AUTO_MIGRATE=false` the backend refuses to start on an older schema and names the missing migrations. **Back up before upgrading**: an older InfraLens will not start on a database a newer one has migrated.
 
 </details>
 

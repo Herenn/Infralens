@@ -83,11 +83,20 @@ func New(cfg storage.Config) (*Store, error) {
 	store.history = &HistoryRepo{db: db}
 	store.drift = &DriftRepo{db: db}
 
-	// Run migrations if enabled
+	// Run migrations if enabled; otherwise the schema must already be
+	// current (see storage.CheckSchema).
 	if cfg.AutoMigrate {
 		if err := store.migrate(ctx); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("running migrations: %w", err)
+		}
+	} else {
+		var version int
+		var dirty bool
+		ok := db.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations LIMIT 1`).Scan(&version, &dirty) == nil
+		if err := storage.CheckSchema(pgmigrations.FS, version, dirty, ok); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("DB_AUTO_MIGRATE=false: %w", err)
 		}
 	}
 

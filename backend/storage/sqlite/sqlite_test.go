@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -639,4 +640,40 @@ func TestStore_Ping(t *testing.T) {
 func TestSQLiteMigrationsRoundTrip(t *testing.T) {
 	store := newTestStore(t)
 	storage.MigrationRoundTripSuite(t, store, store, 7)
+}
+
+// With DB_AUTO_MIGRATE=false the store refuses to open a schema older than
+// this binary's newest migration, naming what is missing, instead of
+// half-working ("no such table" on every request).
+func TestOutdatedSchemaWithoutAutoMigrateFailsFast(t *testing.T) {
+	dsn := t.TempDir() + "/old.db"
+	s, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MigrateTo(6); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+
+	_, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: false})
+	if err == nil || !strings.Contains(err.Error(), "000007_add_node_intervals") || !strings.Contains(err.Error(), "version 6") {
+		t.Fatalf("opening a version-6 schema without auto-migrate: %v, want a clear error naming 000007", err)
+	}
+	// An empty database is "version 0": everything is missing.
+	_, err = New(storage.Config{Driver: "sqlite", DSN: t.TempDir() + "/empty.db", AutoMigrate: false})
+	if err == nil || !strings.Contains(err.Error(), "000001_init_schema") {
+		t.Fatalf("empty database without auto-migrate: %v", err)
+	}
+	// Current: opens.
+	s, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	s, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: false})
+	if err != nil {
+		t.Fatalf("current schema without auto-migrate: %v", err)
+	}
+	_ = s.Close()
 }

@@ -23,10 +23,10 @@ destinations (experimental, off by default).
   write local-zone timestamps into a database that is now UTC.
 - **SQLite timestamps are rewritten to UTC once, at startup.** No action is
   needed. It runs in batches, resumes where it stopped if interrupted, and
-  also runs when migrations are applied out of band (`DB_AUTO_MIGRATE=false`)
-  — but only once the schema is at v3.1; on an older schema the backend logs
-  a warning and leaves the rows alone. Large databases add a few seconds to
-  the first start.
+  also runs when migrations are applied out of band (`DB_AUTO_MIGRATE=false`).
+  With `DB_AUTO_MIGRATE=false` the backend refuses to start on a schema older
+  than it needs and names the missing migrations. Large databases add a few
+  seconds to the first start.
 - **Drift detection is now on whenever history is** (`DRIFT_ENABLED=true` by
   default), with or without a webhook. It starts from the history you
   already have as a known baseline, so upgrading does not announce existing
