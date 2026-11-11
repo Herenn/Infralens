@@ -121,7 +121,7 @@ func TestOpenAIModelNotFoundIsModelError(t *testing.T) {
 }
 
 func TestOpenAIAuthErrorIsRedacted(t *testing.T) {
-	const leaked = "sk-abcdefghijklmnopqrstuvwxyz0123456789"
+	leaked := "sk-" + "abcdefghijklmnopqrstuvwxyz0123456789"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		io.WriteString(w, `{"error":{"message":"Incorrect API key provided: `+leaked+`.","type":"invalid_request_error","code":"invalid_api_key"}}`)
@@ -283,7 +283,7 @@ func TestAnthropicListModelsPaginatesAndSkipsDeprecated(t *testing.T) {
 // --- Gemini --------------------------------------------------------------
 
 func TestGeminiKeyInHeaderNotURL(t *testing.T) {
-	const key = "AIzaSyD-this-would-be-a-live-secret-key-value"
+	key := "AIza" + "SyD-this-would-be-a-live-secret-key-value" // split: see transport_test.go
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.String(), key) || r.URL.Query().Get("key") != "" {
 			t.Errorf("API key must not be in the URL: %s", r.URL)
@@ -649,7 +649,7 @@ func TestCloudClientDoesNotFollowRedirects(t *testing.T) {
 }
 
 func TestListModelsTransportErrorIsSanitized(t *testing.T) {
-	g := NewGeminiProvider(&Config{GeminiAPIKey: "AIzaSyD-this-would-be-a-live-secret-key-value"})
+	g := NewGeminiProvider(&Config{GeminiAPIKey: "AIza" + "SyD-this-would-be-a-live-secret-key-value"})
 	g.baseURL = "http://127.0.0.1:1/v1beta"
 	_, err := g.ListModels(context.Background())
 	if err == nil {
@@ -906,9 +906,9 @@ func TestManagerModelsCoalescesConcurrentColdCalls(t *testing.T) {
 
 func TestRedactsCurrentOpenAIKeyFormats(t *testing.T) {
 	for _, key := range []string{
-		"sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcd",
-		"sk-svcacct-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
-		"sk-admin-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+		"sk-proj-" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcd",
+		"sk-svcacct-" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+		"sk-admin-" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
 	} {
 		out := redactSecrets("Incorrect API key provided: " + key + ".")
 		if strings.Contains(out, "AbCdEfGhIjKl") {
@@ -918,7 +918,7 @@ func TestRedactsCurrentOpenAIKeyFormats(t *testing.T) {
 }
 
 func TestUpstreamErrorRedactsBeforeTruncating(t *testing.T) {
-	const key = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+	key := "sk-proj-" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
 	// Place the key so it straddles the maxErrorDetail cut.
 	msg := strings.Repeat("x", maxErrorDetail-10) + " " + key + " tail"
 	err := upstreamError("openai", "", 401, "", msg, nil)
