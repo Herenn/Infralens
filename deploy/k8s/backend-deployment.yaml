@@ -74,6 +74,18 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
           env:
+            # Agent/API authentication. Required: the backend refuses to start
+            # without API_KEY (or ALLOW_NO_AUTH=true). Create the Secret first:
+            #      kubectl -n infralens create secret generic infralens-api-key \
+            #        --from-literal=api-key="$(openssl rand -hex 32)"
+            # The agents read the same Secret. Not optional, so a missing
+            # Secret stops the pod (CreateContainerConfigError) instead of the
+            # backend exiting at startup.
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: infralens-api-key
+                  key: api-key
             # UI login (opt-in; without it reads are public as in v3.0).
             # 1. Create the Secret:
             #      kubectl -n infralens create secret generic infralens-ui-auth \

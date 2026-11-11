@@ -23,8 +23,12 @@ FROM nginx:alpine
 # Copy built assets
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Copy nginx config
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# nginx config, as a template: the image's entrypoint renders it into
+# /etc/nginx/conf.d/default.conf with INFRALENS_BACKEND_URL substituted (see
+# the top of nginx.conf). The default is the docker-compose service name.
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+RUN rm -f /etc/nginx/conf.d/default.conf
+ENV INFRALENS_BACKEND_URL=http://backend:8080
 
 EXPOSE 3000
 
