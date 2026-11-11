@@ -254,14 +254,14 @@ agent:
   # labels. If capture cannot start, the agent logs once and reports IPs.
   dnsNames: false
   # Tuning for DNS name capture, used only with dnsNames: true. Empty keeps
-  # the agent's defaults.
+  # the agent's defaults; any other value (0 included) is passed on.
   dns:
-    # Max captured DNS packets processed per second (agent default 5000);
-    # the excess is dropped by the kernel.
+    # Max captured DNS packets processed per second (agent default 5000; 0
+    # means the default); the excess is dropped by the kernel.
     maxPPS: ""
-    # Max (client, IP) pairs kept in the name cache.
+    # Max (client, IP) pairs kept in the name cache (0 means the default).
     cacheSize: ""
-    # How often to log capture counters, e.g. "5m"; "0" disables.
+    # How often to log capture counters, e.g. "5m"; 0 disables the log.
     statsInterval: ""
 
   # Agent runs with elevated privileges for eBPF

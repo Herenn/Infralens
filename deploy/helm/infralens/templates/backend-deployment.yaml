@@ -143,15 +143,17 @@ spec:
             # defaults (demo mode has its own, much faster ones).
             - name: DRIFT_ENABLED
               value: {{ .Values.backend.drift.enabled | quote }}
-            {{- with .Values.backend.drift.checkInterval }}
+            {{- with .Values.backend.drift }}
+            {{- if and (not (kindIs "invalid" .checkInterval)) (ne (toString .checkInterval) "") }}
             - name: DRIFT_CHECK_INTERVAL
-              value: {{ . | quote }}
+              value: {{ .checkInterval | quote }}
             {{- end }}
-            {{- with .Values.backend.drift.goneAfter }}
+            {{- if and (not (kindIs "invalid" .goneAfter)) (ne (toString .goneAfter) "") }}
             - name: DRIFT_GONE_AFTER
-              value: {{ . | quote }}
+              value: {{ .goneAfter | quote }}
             {{- end }}
-            {{- if ne (toString .Values.backend.drift.warmup) "" }}
+            {{- end }}
+            {{- if and (not (kindIs "invalid" .Values.backend.drift.warmup)) (ne (toString .Values.backend.drift.warmup) "") }}
             - name: DRIFT_WARMUP
               value: {{ .Values.backend.drift.warmup | quote }}
             {{- end }}
