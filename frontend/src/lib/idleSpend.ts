@@ -55,8 +55,14 @@ export interface IdleServiceItem {
   cost_confidence: Confidence
   confidence: Confidence
   in_total: boolean
+  // Why the cost is kept out of the total; absent when it is in it.
+  not_in_total_reason?: NotInTotalReason
   score: number
 }
+
+// Known reasons are 'current_window' and 'silent_agent'; anything else is
+// shown with neutral wording.
+export type NotInTotalReason = string
 
 export interface IdleNodeSummary {
   node: string
@@ -65,7 +71,8 @@ export interface IdleNodeSummary {
   price_rule?: string
   services: number
   idle_services: number
-  idle_monthly: number
+  idle_monthly: number // in the report's total
+  idle_monthly_not_in_total?: number // shown but kept out of it
   fully_idle: boolean
   cluster: boolean
   agent_nodes?: string[]
@@ -82,13 +89,17 @@ export interface IdleExclusion {
   detail: string
 }
 
-// A CLUSTER_NAME member that stopped reporting within the evidence window.
-// While a group has one, its candidates are low confidence and left out of
-// the total (and report.notes opens with a sentence per group saying so).
+// A CLUSTER_NAME member that was out within the evidence window - still
+// silent (no returned_at) or reporting again. While a group has one, its
+// candidates are low confidence and left out of the total (and
+// report.notes opens with a sentence per group saying so).
 export interface IdleSilentAgent {
   group: string
   node: string
-  last_seen: string
+  last_seen: string // its most recent heartbeat
+  silent_since?: string // its last heartbeat before the outage
+  returned_at?: string // absent while it is still out
+  intermittent?: boolean // flapping rather than silent throughout
 }
 
 export interface IdleSpendReport {
@@ -126,35 +137,58 @@ export interface IdleSpendReport {
     unpriced: number
     monthly_by_confidence: Record<'high' | 'medium' | 'low', number>
     not_in_total_monthly: number
+    not_in_total_by_reason?: Record<string, number>
   }
   items: IdleServiceItem[]
   nodes: IdleNodeSummary[]
   excluded: IdleExclusion[]
   excluded_count: number
   notes: string[]
-  // Newest silence first, at most 20. Absent from older backends.
+  // Still-silent agents first, at most 20. Absent from older backends.
   silent_agents?: IdleSilentAgent[]
 }
 
-/**
- * Why an item's cost is shown but kept out of the total. The report has no
- * per-item reason, so it is inferred: without history every out-of-total
- * item is current-window evidence only; with history the only cause is a
- * silent agent in the item's group. Anything else gets neutral wording.
- */
-export function notInTotalReason(report: IdleSpendReport): 'current_window' | 'silent_agent' | 'unknown' {
-  if (!report.evidence_window.history_enabled) return 'current_window'
-  if ((report.silent_agents?.length ?? 0) > 0) return 'silent_agent'
-  return 'unknown'
-}
-
-export const NOT_IN_TOTAL_TEXT: Record<ReturnType<typeof notInTotalReason>, { short: string; long: string }> = {
+const NOT_IN_TOTAL_TEXT: Record<'current_window' | 'silent_agent' | 'unknown', { short: string; long: string }> = {
   current_window: { short: 'current-window only, not in total', long: 'Not in the total: current-window evidence only' },
   silent_agent: {
-    short: 'not in total: an agent in its group stopped reporting',
-    long: 'Not in the total: an agent in this group stopped reporting, so this may be in use',
+    short: 'not in total: an agent in its group was not reporting',
+    long: 'Not in the total: an agent in this group was not reporting, so this may be in use',
   },
   unknown: { short: 'not in total, see note', long: 'Not in the total: see the note' },
+}
+
+function notInTotalText(reason: string | undefined) {
+  return reason === 'current_window' || reason === 'silent_agent' ? NOT_IN_TOTAL_TEXT[reason] : NOT_IN_TOTAL_TEXT.unknown
+}
+
+/** Tooltip for an item kept out of the total, from its not_in_total_reason. */
+export function itemNotInTotalText(item: IdleServiceItem): string {
+  return notInTotalText(item.not_in_total_reason).long
+}
+
+/**
+ * The label next to the not-in-total amount: the reason when every excluded
+ * amount has the same one (totals.not_in_total_by_reason), neutral wording
+ * when they differ or the backend does not say.
+ */
+export function totalsNotInTotalText(report: IdleSpendReport): string {
+  const reasons = Object.keys(report.totals.not_in_total_by_reason ?? {})
+  return notInTotalText(reasons.length === 1 ? reasons[0] : undefined).short
+}
+
+/**
+ * Headline of the silent-agent warning: agents still out first, then those
+ * that were out earlier in the window and are reporting again.
+ */
+export function silentAgentsHeadline(agents: IdleSilentAgent[]): string {
+  const count = (n: number) => (n >= 20 ? '20+' : String(n))
+  const out = agents.filter(a => !a.returned_at).length
+  const back = agents.length - out
+  if (out > 0) {
+    const head = out === 1 ? 'An agent stopped reporting' : `${count(out)} agents stopped reporting`
+    return back > 0 ? `${head}, ${count(back)} more ${back === 1 ? 'was' : 'were'} out earlier` : head
+  }
+  return back === 1 ? 'An agent was not reporting for a while' : `${count(back)} agents were not reporting for a while`
 }
 
 /** The notes about silent agents: report.notes opens with one per group. */

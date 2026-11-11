@@ -7,7 +7,7 @@ import { apiUrl } from '../lib/api'
 import { DOCK_CLASS } from './dock'
 import {
   CATEGORY_LABELS, Confidence, EXCLUSION_LABELS, IdleServiceItem, IdleSpendReport,
-  NOT_IN_TOTAL_TEXT, formatDuration, formatMoney, notInTotalReason, splitSilentNotes,
+  formatDuration, formatMoney, itemNotInTotalText, silentAgentsHeadline, splitSilentNotes, totalsNotInTotalText,
 } from '../lib/idleSpend'
 
 interface IdleSpendPanelProps {
@@ -166,7 +166,6 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
   const priced = (totals?.priced ?? 0) > 0
   const chip = report ? pricingChip(report) : null
   const needsPrice = report && !report.pricing.configured
-  const outOfTotal = report ? NOT_IN_TOTAL_TEXT[notInTotalReason(report)] : NOT_IN_TOTAL_TEXT.current_window
   const notes = report ? splitSilentNotes(report) : { silent: [], other: [] }
   const silentAgents = report?.silent_agents ?? []
 
@@ -215,7 +214,7 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
                 <AlertTriangle size={14} className="shrink-0 mt-px text-orange-300" />
                 <p className="leading-snug">
                   <span className="font-semibold text-orange-200">
-                    {silentAgents.length === 1 ? 'An agent stopped reporting' : `${silentAgents.length >= 20 ? '20+' : silentAgents.length} agents stopped reporting`}
+                    {silentAgentsHeadline(silentAgents)}
                   </span>{' '}
                   <span className="text-orange-200/70">- this list may be wrong for {silentAgents.length === 1 ? 'its group' : 'their groups'}</span>
                 </p>
@@ -243,7 +242,7 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
                     </div>
                     {totals.not_in_total_monthly > 0 && (
                       <div className="text-[10px] text-dark-500 mt-0.5">
-                        +{formatMoney(sym, totals.not_in_total_monthly)}/mo {outOfTotal.short}
+                        +{formatMoney(sym, totals.not_in_total_monthly)}/mo {totalsNotInTotalText(report)}
                       </div>
                     )}
                   </>
@@ -361,7 +360,6 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
                 rank={i + 1}
                 item={item}
                 symbol={sym}
-                outOfTotal={outOfTotal.long}
                 expanded={expanded === item.id}
                 focused={focusedId === item.id}
                 onClick={() => {
@@ -451,11 +449,10 @@ export default function IdleSpendPanel({ onClose, onFocusService, focusedId }: I
   )
 }
 
-function IdleRow({ rank, item, symbol, outOfTotal, expanded, focused, onClick }: {
+function IdleRow({ rank, item, symbol, expanded, focused, onClick }: {
   rank: number
   item: IdleServiceItem
   symbol: string
-  outOfTotal: string
   expanded: boolean
   focused: boolean
   onClick: () => void
@@ -473,7 +470,7 @@ function IdleRow({ rank, item, symbol, outOfTotal, expanded, focused, onClick }:
         <span className="flex-1 min-w-0 text-sm font-medium text-dark-100 truncate" title={item.id}>{item.name}</span>
         {item.cost ? (
           <span className={`text-sm font-semibold tabular-nums ${item.in_total ? 'text-white' : 'text-dark-400'}`}
-            title={item.in_total ? undefined : outOfTotal}>
+            title={item.in_total ? undefined : itemNotInTotalText(item)}>
             {formatMoney(symbol, item.cost.monthly)}<span className="text-[10px] font-normal text-dark-500">/mo</span>
           </span>
         ) : (
