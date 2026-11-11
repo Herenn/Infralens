@@ -14,6 +14,27 @@ import (
 // than the throughput report rate.
 const endpointRefreshInterval = time.Minute
 
+// SetPruneMaxAge tells the service how old current state may get before the
+// store prunes it (PRUNE_MAX_AGE), so the endpoint refresh below stays well
+// inside it: with a prune age under a few minutes a fixed one-minute throttle
+// would let a live connection's endpoints be pruned between refreshes.
+func (ts *TopologyService) SetPruneMaxAge(d time.Duration) {
+	ts.idle.liveMu.Lock()
+	defer ts.idle.liveMu.Unlock()
+	ts.idle.pruneMaxAge = d
+}
+
+// liveRefreshInterval is endpointRefreshInterval, capped at a third of the
+// prune age so at least two refreshes land inside every prune window.
+// liveMu must be held.
+func (ts *TopologyService) liveRefreshInterval() time.Duration {
+	iv := endpointRefreshInterval
+	if p := ts.idle.pruneMaxAge; p > 0 && p/3 < iv {
+		iv = p / 3
+	}
+	return iv
+}
+
 // refreshEndpointsFromStats keeps both endpoints of a connection that is
 // carrying traffic alive in current state.
 //
@@ -54,13 +75,14 @@ func (ts *TopologyService) claimEndpointRefresh(id string, now time.Time) bool {
 	if st.liveSeen == nil {
 		st.liveSeen = map[string]time.Time{}
 	}
-	if last, ok := st.liveSeen[id]; ok && now.Sub(last) < endpointRefreshInterval {
+	interval := ts.liveRefreshInterval()
+	if last, ok := st.liveSeen[id]; ok && now.Sub(last) < interval {
 		return false
 	}
 	st.liveSeen[id] = now
-	if now.Sub(st.liveSwept) > 10*endpointRefreshInterval {
+	if now.Sub(st.liveSwept) > 10*interval {
 		for k, at := range st.liveSeen {
-			if now.Sub(at) >= endpointRefreshInterval {
+			if now.Sub(at) >= interval {
 				delete(st.liveSeen, k)
 			}
 		}

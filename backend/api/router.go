@@ -60,6 +60,7 @@ func NewServer(
 	if cfg.Storage.HistoryEnabled {
 		topologySvc.EnableHistory(cfg.Storage.HistoryMaxGap, cfg.Storage.HistoryRetention)
 	}
+	topologySvc.SetPruneMaxAge(cfg.Storage.PruneMaxAge)
 
 	topologySvc.ConfigureIdleCost(cfg.IdleCost)
 	for _, w := range cfg.IdleCost.Warnings {

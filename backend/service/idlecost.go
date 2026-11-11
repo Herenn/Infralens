@@ -380,12 +380,15 @@ type idleState struct {
 	cacheMu sync.Mutex
 	cache   map[string]*idleCacheEntry
 
-	groupsMu sync.Mutex
-	groups   map[string]map[string]time.Time // group -> agent node -> last heard
+	groupsMu    sync.Mutex
+	groups      map[string]map[string]time.Time // group -> agent node -> last heard
+	groupsSwept time.Time
+	groupsSize  int // agent nodes across all groups
 
-	liveMu    sync.Mutex
-	liveSeen  map[string]time.Time
-	liveSwept time.Time
+	liveMu      sync.Mutex
+	liveSeen    map[string]time.Time
+	liveSwept   time.Time
+	pruneMaxAge time.Duration // see SetPruneMaxAge
 
 	computations atomic.Int64 // reports computed (not served from cache); for tests
 }
@@ -422,33 +425,62 @@ func (ts *TopologyService) NoteAgentNode(group, node string) {
 	if group == "" || node == "" {
 		return
 	}
+	now := time.Now()
 	ts.idle.groupsMu.Lock()
 	defer ts.idle.groupsMu.Unlock()
 	if ts.idle.groups == nil {
 		ts.idle.groups = map[string]map[string]time.Time{}
 	}
-	if ts.idle.groups[group] == nil {
-		ts.idle.groups[group] = map[string]time.Time{}
+	// Expire on write too, not only when a report is computed: node names
+	// churn (autoscaling, rebuilt hosts) and nothing else bounds the map.
+	if now.Sub(ts.idle.groupsSwept) > agentGroupTTL/2 {
+		ts.sweepAgentGroupsLocked(now)
 	}
-	ts.idle.groups[group][node] = time.Now()
+	members := ts.idle.groups[group]
+	if _, known := members[node]; !known {
+		if ts.idle.groupsSize >= maxAgentNodes {
+			return // pathological; the registry only refines idle pricing
+		}
+		if members == nil {
+			members = map[string]time.Time{}
+			ts.idle.groups[group] = members
+		}
+		ts.idle.groupsSize++
+	}
+	members[node] = now
+}
+
+// maxAgentNodes caps the agent-node registry. Agent node names come from
+// whoever can post host metrics; far beyond any real cluster.
+const maxAgentNodes = 10000
+
+// sweepAgentGroupsLocked drops agent nodes not heard from within
+// agentGroupTTL, and groups left empty. groupsMu must be held.
+func (ts *TopologyService) sweepAgentGroupsLocked(now time.Time) {
+	for g, nodes := range ts.idle.groups {
+		for n, at := range nodes {
+			if now.Sub(at) > agentGroupTTL {
+				delete(nodes, n)
+				ts.idle.groupsSize--
+			}
+		}
+		if len(nodes) == 0 {
+			delete(ts.idle.groups, g)
+		}
+	}
+	ts.idle.groupsSwept = now
 }
 
 func (ts *TopologyService) agentGroups(now time.Time) map[string][]string {
 	ts.idle.groupsMu.Lock()
 	defer ts.idle.groupsMu.Unlock()
+	ts.sweepAgentGroupsLocked(now)
 	out := map[string][]string{}
 	for g, nodes := range ts.idle.groups {
-		for n, at := range nodes {
-			if now.Sub(at) > agentGroupTTL {
-				delete(nodes, n)
-				continue
-			}
+		for n := range nodes {
 			out[g] = append(out[g], n)
 		}
 		sort.Strings(out[g])
-		if len(out[g]) == 0 {
-			delete(out, g)
-		}
 	}
 	return out
 }
