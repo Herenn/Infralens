@@ -283,11 +283,11 @@ The **Idle spend** panel lists cleanup candidates — services nothing talks to 
 <summary><b>How it decides, what it can't see, and settings</b></summary>
 
 - **Categories:** no connections at all · no inbound · inbound stopped · reached only by other idle services · not seen at all recently.
-- **Silence is observed, not assumed:** it counts only while that node's own agent was reporting, so an agent outage never makes a service look idle. Anything still carrying traffic is never a candidate. Per-node figures never add up to more than the node's price.
+- **Silence is observed, not assumed:** it counts only while that node's own agent was reporting, so an agent outage never makes a service look idle (in a `--cluster` group, see below). Anything still carrying traffic is never a candidate. Per-node figures never add up to more than the node's price.
 - **Confidence:** high needs more than 31 observed days of silence, so with the default 30-day history retention the best you will see is medium.
 - **Held back, with the reason shown:** outbound-only workers and cron jobs, monitoring, possible replicas/standbys, UDP services, servers reached by address, services younger than `IDLE_COST_WARMUP`, InfraLens itself, anything in `IDLE_COST_EXCLUDE`, and everything except true orphans when history is off.
 - **Blind spots:** servers reached through a differently named Kubernetes Service, hostPort/NodePort traffic to the node's IP, receive-only UDP, and jobs that run less often than the retention window.
-- **Per-node prices need per-node agents.** Agents started with `--cluster` (the Helm chart's default `agent.clusterName: "Kubernetes"`) report every node under one name, which allows only a low-confidence cluster-wide split, and silence there counts only while every agent in the group is reporting; set `agent.clusterName=""` for per-node attribution.
+- **Per-node prices need per-node agents.** Agents started with `--cluster` (the Helm chart's default `agent.clusterName: "Kubernetes"`) report every node under one name, which allows only a low-confidence cluster-wide split. Silence there counts only while every member agent is reporting, but a member silent for more than an hour (scaled in, replaced, crashed) stops holding the group back; while any member has gone silent within the evidence window, the group's candidates are low confidence and left out of the total, and the panel names the silent agents. Set `agent.clusterName=""` for per-node attribution.
 - **After upgrading from v3.0**, services on nodes without agent heartbeats yet are held back until about `IDLE_COST_QUIET_AFTER` (72h) of heartbeats exist.
 
 ```bash
@@ -401,9 +401,12 @@ DRIFT_WEBHOOK_URL=             # Also POST changes here (optional; empty = feed 
                                # the payload has a "text" field plus structured
                                # "appeared"/"disappeared" lists for custom receivers
 DRIFT_CHECK_INTERVAL=5m        # How often history is checked for changes
-DRIFT_GONE_AFTER=24h           # Unobserved this long = reported as gone (time when
-                               # collection was down does not count; a node silent
-                               # for 3x this, at least 6h, counts as retired)
+DRIFT_GONE_AFTER=24h           # Unobserved this long = reported as gone. Time the agent
+                               # that sees a dependency was down does not count (in a
+                               # --cluster group: only a member's first silent hour).
+                               # A node silent for 3x this (at least 6h) counts as
+                               # retired: its dependencies are reported gone once and,
+                               # if it returns, re-armed without a "reappeared" event
 DRIFT_WARMUP=1h                # No "new dependency" reports for the first hour of
                                # history, so a fresh install doesn't announce everything
 
@@ -497,7 +500,7 @@ export DB_DRIVER=postgres
 export DB_DSN="postgres://user:password@localhost:5432/infralens?sslmode=disable"
 ```
 
-Migrations run automatically at startup (`DB_AUTO_MIGRATE=true`); with `DB_AUTO_MIGRATE=false` the backend refuses to start on an older schema and names the missing migrations. **Back up before upgrading**: an older InfraLens will not start on a database a newer one has migrated.
+Migrations run automatically at startup (`DB_AUTO_MIGRATE=true`); with `DB_AUTO_MIGRATE=false` the backend refuses to start on an older schema and names the missing migrations. **Back up before upgrading**: downgrades are not supported — in either mode, a backend refuses to start on a schema newer than it knows.
 
 </details>
 
@@ -533,7 +536,7 @@ Inspection is **read-only** by design: environment variable *names* only (never 
 
 ### Storage & History
 
-Current state (services, connections, node metrics) is kept for `PRUNE_MAX_AGE` and refreshed by the agents; long-lived connections stay on the map as long as traffic flows. History is recorded as intervals — one row per continuous observation, extended in place — so write volume follows how often the architecture changes, not how often agents report. Each agent's host-metrics reports double as a **heartbeat**, recorded per node, so drift and Idle spend can tell "quiet" from "not watched": silence only counts while that node's own agent was reporting. All times are stored in UTC. Schema migrations (`backend/migrations`, currently 000001–000007, mirrored for PostgreSQL) run at startup.
+Current state (services, connections, node metrics) is kept for `PRUNE_MAX_AGE` and refreshed by the agents; long-lived connections stay on the map as long as traffic flows. History is recorded as intervals — one row per continuous observation, extended in place — so write volume follows how often the architecture changes, not how often agents report. Each agent's host-metrics reports double as a **heartbeat**, recorded per node (and `--cluster` group), so drift and Idle spend can tell "quiet" from "not watched": silence only counts while that node's own agent was reporting. The drift detector's memory grows with the number of distinct dependencies and nodes, not with the number of history intervals. All times are stored in UTC. Schema migrations (`backend/migrations`, currently 000001–000007, mirrored for PostgreSQL) run at startup.
 
 <details>
 <summary><b>Project structure</b></summary>

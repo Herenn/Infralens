@@ -20,7 +20,9 @@ destinations (experimental, off by default).
   backup.** v3.1 adds migrations 000004–000007 (SQLite and PostgreSQL).
   Once v3.1 has run, v3.0 refuses to start on the same database (it does not
   know the schema version); with `DB_AUTO_MIGRATE=false` it would start and
-  write local-zone timestamps into a database that is now UTC.
+  write local-zone timestamps into a database that is now UTC. From v3.1 on,
+  a backend refuses to start on a schema newer than it knows in either
+  `DB_AUTO_MIGRATE` mode.
 - **SQLite timestamps are rewritten to UTC once, at startup.** No action is
   needed. It runs in batches, resumes where it stopped if interrupted, and
   also runs when migrations are applied out of band (`DB_AUTO_MIGRATE=false`).
@@ -137,8 +139,13 @@ destinations (experimental, off by default).
     Reports are cached for 60 s. Helm `backend.idleCost.*`.
   - Agents started with `--cluster` (Helm's default
     `agent.clusterName: "Kubernetes"`) report every node under one name, so
-    only a low-confidence cluster-wide split is possible there, and silence
-    counts only while every agent in the group is reporting.
+    only a low-confidence cluster-wide split is possible there. Silence
+    counts only while every member agent is reporting; a member silent for
+    more than an hour (scale-in, a replaced or crashed node) stops holding
+    the group back, and while any member has gone silent within the evidence
+    window the group's candidates are low confidence, left out of the total
+    and listed under a note naming the silent agents (`silent_agents`).
+    Set `agent.clusterName: ""` for per-node attribution.
 - **DNS names for external destinations (experimental, off by default).**
   The agent can label external destinations with the name the workload
   resolved (`api.stripe.com` instead of an IP): `--dns-names` /
@@ -163,9 +170,16 @@ destinations (experimental, off by default).
   like `/topology`.
 - `scripts/demo-gif`: a scripted, reproducible recorder for the README GIF.
 - Agent heartbeats: the backend records when each agent was reporting, per
-  real node and with its `--cluster` group (migration 000007), which is what
-  Idle spend and drift use to tell "quiet" from "not watched". A group counts
-  as watched only while every member agent reports.
+  real node and `--cluster` group (migration 000007), which is what Idle
+  spend and drift use to tell "quiet" from "not watched". A group counts as
+  watched only while every current member agent reports: a member is current
+  from its first heartbeat until it has been silent for an hour, except while
+  it has reported for less than half of the last two hours (a crash loop). A
+  group with no member heartbeats yet is not watched. A database whose
+  `node_intervals` table was created by a pre-release build is refused at
+  startup with recovery steps. The drift status
+  (`/api/v1/drift/summary`, `detector.silent_agents`) lists agents that
+  stopped reporting recently.
 
 ### Changed
 
@@ -186,13 +200,20 @@ destinations (experimental, off by default).
   one at a time from a left rail. Blast radius stays on the map until
   cleared. A banner marks historical views. PNG export renders at 1:1.
 - Drift "gone" is measured in observed time: an outage of collection — the
-  whole backend or a single node's agent — does not count towards
-  `DRIFT_GONE_AFTER`. A node whose agent stays silent for three times
-  `DRIFT_GONE_AFTER` (at least 6h) while the rest keeps reporting is treated
-  as retired, and its dependencies are then reported gone once. Detection
-  resumes from a checkpoint after a restart, replicas sharing a database do
-  not notify the same change twice, and failed feed writes are retried. A
-  dependency reported gone that later returns is re-armed silently.
+  whole backend or the agent of the node a dependency belongs to (the node of
+  its process, else the node recorded for its source, else its target, so
+  also for Kubernetes-named services) — does not count towards
+  `DRIFT_GONE_AFTER`; only dependencies with no node at either end are
+  measured against the whole installation. In a `--cluster` group only the
+  first hour of a member's silence does not count. A node whose agent stays
+  silent for three times `DRIFT_GONE_AFTER` (at least 6h) while the rest
+  keeps reporting is treated as retired, and its dependencies are then
+  reported gone once. The detector's memory grows with distinct dependencies
+  and nodes, not with history intervals. Detection resumes from a checkpoint
+  after a restart, replicas sharing a database do not notify the same change
+  twice, and failed feed writes are retried. A
+  dependency reported gone that later returns — also one of a retired node
+  that comes back — is re-armed silently, without a "reappeared" event.
 - The frontend's nginx forwards `X-Forwarded-Proto` and `X-Forwarded-Host`
   and routes `/mcp` to the backend. The Vite dev proxy keeps the browser's
   `Host` header (needed for the WebSocket same-origin check under login).
