@@ -1,88 +1,113 @@
 # README demo recorder
 
-Scripted, reproducible recording of `docs/demo.gif` (plus `docs/demo.mp4` and
-the `docs/demo-hero.png` still). One command builds and starts InfraLens in
-demo mode on private ports, drives a real Chrome through the storyboard with a
-visible cursor, captures it at 2x resolution, encodes it, and stops
-everything it started.
+Scripted, reproducible recording of `docs/demo.gif`. One command builds and
+starts InfraLens in demo mode on private ports, drives a real Chrome through
+the storyboard with a visible cursor, captures it at 2x resolution, encodes
+it, and stops everything it started. It also writes an MP4 of the same take
+(for the GitHub release page / social) and a still of the opening frame;
+those stay in `out/` and are not committed.
 
 ## Re-record
 
 ```sh
 cd scripts/demo-gif
 npm ci                        # first time only
-npm run record -- --install   # ~3 min; writes out/ and copies the results into docs/
+npm run record -- --install   # ~5 min; writes out/ and copies demo.gif into docs/
 ```
 
-Without `--install` the results stay in `scripts/demo-gif/out/` (`demo.gif`,
-`demo.mp4`, `demo-hero.png`) for review first. `npm run record -- --help`
-lists every option. The ones you'll use most:
+Without `--install` everything stays in `scripts/demo-gif/out/`
+(`demo.gif`, `demo.mp4`, `demo-hero.png`) for review first.
+`npm run record -- --help` lists every option. The ones you'll use most:
 
 | Option | Default | |
 |---|---|---|
 | `--backend-port` / `--frontend-port` | 18931 / 18932 | also `DEMO_BACKEND_PORT` / `DEMO_FRONTEND_PORT` |
-| `--gif-width`, `--gif-fps`, `--gif-quality` | 1200, 15, 90 | size/quality trade-off, see below |
+| `--gif-width`, `--gif-fps`, `--gif-quality` | 1000, 12, 85 | size/quality trade-off, see below |
 | `--no-captions` | | record without the caption pills |
-| `--no-scenario` | | don't inject the extra workload (bare simulator) |
+| `--flow-dots` | | keep the live-edge flow dots (see *Reduced motion*) |
 | `--encode-only` | | re-encode the last capture in `out/raw` with new GIF settings, no browser |
-| `--keep-running` | | leave the stack up after recording, to poke at it |
+| `--serve` | | only start the demo stack and keep it up, to explore the UI while editing the storyboard |
 | `--headed` | | watch the browser while it records |
+| `--out DIR` | `out/` | a directory outside `scripts/demo-gif` is refused unless `--force-out` is given, because `<out>/raw` is deleted and rewritten on every run |
+
+Why ~5 minutes: the recording is timed around a change demo mode makes on
+its own 3 m 30 s after start (see *Timing* below).
 
 ## Prerequisites
 
-- Go (builds `backend/` into `.cache/`), Node 20+ (the frontend's own
-  `node_modules` are installed with `npm ci` if missing)
+- Go (builds `backend/` into `.cache/`), Node 20+
+- `frontend/node_modules`: if missing, the recorder runs `npm ci` in
+  `frontend/` for you (the frontend is built from source with its own
+  locked dependencies)
 - Google Chrome installed (Playwright drives it via `channel: 'chrome'`; no
   browser download)
 - `ffmpeg` and `gifski` on `PATH` (`brew install ffmpeg gifski`)
+
+## What gets recorded
+
+Only what a user gets from `DEMO_MODE=true`: the recorder injects no data.
+Demo mode seeds 14 days of history, a Changes feed and idle-spend prices,
+then plays a short live script (new internet dependencies, a retired
+service). The backend runs with `ALLOW_NO_AUTH=true` (no login screen) and a
+fresh SQLite database in `.cache/demo.db`.
+
+## Reduced motion
+
+The browser records with `prefers-reduced-motion: reduce`, which the UI
+honours by hiding the small "flow dots" that travel along live edges (and by
+snapping instead of animating node re-layouts). At README size those dots are
+sub-pixel shimmer, yet they change pixels along every edge on every frame and
+cost well over half of the GIF's bytes. Pass `--flow-dots` to keep them.
 
 ## Editing the storyboard
 
 Everything about *what* is shown lives in [`storyboard.mjs`](storyboard.mjs):
 
-- `settings` - viewport, warm-up timing, GIF/MP4 encode settings
-- `scenario` - the workload injected during warm-up (see below)
+- `settings` - viewport, page settle time, GIF/MP4 encode settings, cursor rest point
+- `liveArrival` - which live Changes event the feed scene waits for, and how
+  long before it capture starts
+- `sel` - selectors (the UI's `data-testid` / `data-rail` / `data-panel` hooks)
 - `scenes` - an ordered list of `{ name, run(ctx) }`; each uses the
-  `Director` helpers (`d.click(selector)`, `d.move`, `d.drag`, `d.type`,
-  `d.press`, `d.wait`, `d.caption(html, position)`)
+  `Director` helpers (`d.click(selector)`, `d.move`, `d.drag`, `d.scroll`,
+  `d.type`, `d.press`, `d.wait`, `d.caption(html, position)`)
 
 Keep ~2 s of stillness after each reveal, and make the last scene restore the
 first frame's UI state - the GIF loops, and the encoder crossfades the final
-0.6 s into frame 1. The first scene's `setup()` runs before capture starts, so
+0.4 s into frame 1. The first scene's `setup()` runs before capture starts, so
 frame 1 (which GitHub shows before the GIF loads) is already fully composed.
+
+## Timing
+
+Demo mode applies "api-gateway starts posting alerts to Slack" 210 s after
+the backend starts, and the drift detector reports it on its next pass
+(every 15 s in demo mode). The recorder reads the detector's phase from the
+first live detection (SendGrid, ~40 s in), predicts when the Slack event
+will land, and starts capture `liveArrival.leadSeconds` before it, so the
+row slides into an already open feed. The feed scene then waits for the row
+in the DOM rather than for a fixed time; the log prints the predicted and
+actual arrival so a mistimed take is obvious.
 
 ## How it works
 
 | File | |
 |---|---|
-| `record.mjs` | CLI: orchestrates stack, warm-up, browser, capture, encode, cleanup |
-| `lib/stack.mjs` | backend (`DEMO_MODE=true`, `ALLOW_NO_AUTH=true`, fresh SQLite in `.cache/`, `TZ=UTC`) and Vite (production build + preview, proxy pointed at the backend port) - configured only through env and Vite's inline config, no app files touched |
-| `lib/scenario.mjs` | reports a new workload through the public ingest API (`/api/v1/events`, `/api/v1/stats`), like an agent would |
-| `lib/director.mjs` | cursor overlay, eased mouse movement, click ripples, typing cadence, captions |
+| `record.mjs` | CLI: orchestrates stack, timing, browser, capture, encode, cleanup |
+| `lib/stack.mjs` | backend and frontend lifecycle: own process groups, PID files in `.cache/pids/`, stale-process reaping |
+| `lib/vite-server.mjs` | child process (cwd `frontend/`) that runs `vite build` + `vite preview` with an inline config merged over `frontend/vite.config.ts`: ports, proxy target, output dir |
+| `lib/director.mjs` | cursor overlay, eased mouse movement and scrolling, click ripples, typing cadence, captions |
 | `lib/capture.mjs` | Chrome DevTools screencast: full device-pixel frames with timestamps (~55 fps), written asynchronously |
 | `lib/encode.mjs` | timestamps -> constant-fps lossless master (+ loop crossfade) -> H.264 MP4 and gifski GIF |
 
-Why the scenario: it was written for the v3.0 simulator, whose topology never
-changed shape, so time travel and "Compare to now" had nothing to show. 40 s
-into warm-up an `inventory-sync` job appears on `demo-app-1` (10.0.2.18, an
-address the demo cast does not use) and starts talking to postgres and kafka;
-the time-travel and diff scenes scrub back to before that. Since v3.1 the
-demo itself has two weeks of history, a drift feed and a live script
-(`backend/service/demo/story.go`), so the scenario is optional
-(`--no-scenario`) and the storyboard can show those instead.
+The frontend is built in a child process with `cwd` set to `frontend/`
+because PostCSS/Tailwind resolve their config and `content` globs against the
+process cwd; the recorder itself never changes directory.
 
-Why `TZ=UTC`: v3.0's SQLite history store compared timestamps as text in the
-process's local zone, so on a non-UTC machine time travel rendered an empty
-graph. v3.1 stores every time as UTC and no longer needs it; it is kept so
-captions and clock labels in the recording are the same on every machine.
+Process hygiene: if the recorder is killed outright (e.g. `kill -9`) and
+leaves its servers running, the next run finds `.cache/pids/*.json`, checks
+that each PID's command line is still this script's backend binary or Vite
+wrapper, and stops it before starting.
 
-## Size / quality trade-off (1200 px, ~32 s)
+## Size / quality trade-off
 
-| gifski quality | size | |
-|---|---|---|
-| 90 (default) | ~5.7 MB | clean gradients, no visible banding |
-| 80 | ~3.8 MB | slight banding behind the drawer blur |
-| 70 | ~2.6 MB | visible posterisation on the dark UI |
-
-Going to 1000 px wide at quality 90 gives ~4.8 MB but makes the small text in
-the overview noticeably softer on retina screens.
+See the comment above `settings.gif` in `storyboard.mjs` for the measured
+options of the current take.

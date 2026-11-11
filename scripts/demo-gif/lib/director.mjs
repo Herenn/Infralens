@@ -26,7 +26,8 @@ const OVERLAY_SCRIPT = () => {
         box-shadow: 0 10px 30px rgba(0,0,0,.45); }
       #__demo_caption.show { opacity: 1; transform: translate(-50%, 0); }
       #__demo_caption.top { bottom: auto; top: 66px; }
-      #__demo_caption.drawer { left: calc((100% - 420px) / 2); }
+      #__demo_caption.drawer { left: calc((100% - 400px) / 2); }
+      #__demo_caption.right { left: calc((100% + 230px) / 2); bottom: 28px; }
       #__demo_caption b { color: #4ade80; font-weight: 700; }
     `
     document.documentElement.appendChild(style)
@@ -52,8 +53,9 @@ const OVERLAY_SCRIPT = () => {
       document.documentElement.appendChild(r)
       setTimeout(() => r.remove(), 700)
     }, true)
-    // position: 'bottom' (default), 'top' (when the timeline occupies the
-    // bottom), 'drawer' (bottom, centred on the canvas left of the drawer).
+    // position: 'bottom' (default), 'top', 'drawer' (centred on the map left
+    // of the 400 px service drawer), 'right' (low, between a docked
+    // rail panel - x 80-480 - and the zoom controls/minimap at bottom right).
     window.__demoCaption = (html, position) => {
       if (html) {
         caption.innerHTML = html
@@ -80,6 +82,13 @@ export class Director {
   }
 
   wait(ms) { return this.page.waitForTimeout(ms) }
+
+  /** Waits until epoch-ms `t`, but at least `min` ms (to sync a scene to a live event). */
+  async waitUntil(t, { min = 0 } = {}) {
+    const ms = Math.max(min, t - Date.now())
+    if (t - Date.now() < min) console.log(`[director] running ${((min - (t - Date.now())) / 1000).toFixed(1)} s late for a timed cue`)
+    await this.wait(ms)
+  }
 
   /** Resolves a target to a point: {x,y}, a selector string, or a Locator. */
   async point(target, { dx = 0, dy = 0, anchor = 'center' } = {}) {
@@ -141,6 +150,23 @@ export class Director {
     this.pos = b
     await this.wait(holdAfter)
     await this.page.mouse.up()
+  }
+
+  /** Smooth wheel scroll of whatever is under the cursor (move there first). */
+  async scroll(dy, { ms = 700 } = {}) {
+    // Time-based, not step-based: each wheel event can take tens of ms to
+    // dispatch while the page re-renders, which would stretch a fixed number
+    // of steps far past `ms`.
+    const start = Date.now()
+    let done = 0
+    for (;;) {
+      const t = Math.min(1, (Date.now() - start) / ms)
+      const target = dy * easeInOut(t)
+      if (target - done !== 0) await this.page.mouse.wheel(0, target - done)
+      done = target
+      if (t >= 1) break
+      await this.page.waitForTimeout(16)
+    }
   }
 
   async press(key, { pauseAfter = 300 } = {}) {

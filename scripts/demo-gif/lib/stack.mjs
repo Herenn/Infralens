@@ -2,20 +2,31 @@
 // the Go backend in DEMO_MODE and the frontend served by Vite, proxied to it.
 //
 // Nothing here edits application code or config: the backend is configured
-// purely through env vars, and Vite is driven through its JS API with an
-// inline config that only overrides ports, the proxy target and the build
-// output directory (merged on top of frontend/vite.config.ts).
+// purely through env vars, and Vite gets an inline config merged on top of
+// frontend/vite.config.ts that only overrides ports, the proxy target and the
+// build output directory (see vite-server.mjs).
+//
+// Process hygiene: both servers run in their own process group, and their
+// PIDs are recorded in .cache/pids/. If this recorder is killed outright
+// (SIGKILL, a crashed terminal) and leaves them running, the next run finds
+// the PID files, verifies each PID still belongs to *this* script's binary or
+// Vite wrapper, and stops it before starting fresh.
 
 import { spawn, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 export const REPO_ROOT = path.resolve(import.meta.dirname, '../../..')
 export const FRONTEND_DIR = path.join(REPO_ROOT, 'frontend')
 export const CACHE_DIR = path.resolve(import.meta.dirname, '../.cache')
+const PID_DIR = path.join(CACHE_DIR, 'pids')
+// Uniquely named so it is never mistaken for (or by) any other InfraLens
+// backend running on the same machine.
+const BACKEND_BIN = path.join(CACHE_DIR, 'demo-gif-backend')
+const VITE_SERVER = path.join(import.meta.dirname, 'vite-server.mjs')
 
 const log = (...a) => console.log('[stack]', ...a)
+const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 async function waitFor(url, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs
@@ -28,7 +39,7 @@ async function waitFor(url, timeoutMs, label) {
     } catch (err) {
       lastErr = err
     }
-    await new Promise(r => setTimeout(r, 250))
+    await sleep(250)
   }
   throw new Error(`${label} did not become ready at ${url}: ${lastErr?.message}`)
 }
@@ -44,27 +55,89 @@ async function assertPortFree(port) {
   throw new Error(`port ${port} is already in use - pass a different port (see README)`)
 }
 
-export function buildBackend() {
-  fs.mkdirSync(CACHE_DIR, { recursive: true })
-  // Deliberately not named "infralens-backend": other developers on this
-  // machine run `pkill -f infralens-backend` for their own servers, which
-  // would otherwise kill this one mid-recording.
-  const bin = path.join(CACHE_DIR, 'demo-gif-backend')
-  log('building backend ->', path.relative(REPO_ROOT, bin))
-  execFileSync('go', ['build', '-o', bin, './backend'], { cwd: REPO_ROOT, stdio: 'inherit' })
-  return bin
+function commandOf(pid) {
+  try {
+    return execFileSync('ps', ['-p', String(pid), '-o', 'command='], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+  } catch {
+    return null // no such process
+  }
 }
 
-export async function startBackend({ port, bin }) {
+function alive(pid) {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+function killGroup(pid, signal) {
+  try { process.kill(-pid, signal) } catch { try { process.kill(pid, signal) } catch { /* gone */ } }
+}
+
+/** Stops leftovers of an earlier run that died without cleaning up. */
+export async function reapStale() {
+  if (!fs.existsSync(PID_DIR)) return
+  for (const f of fs.readdirSync(PID_DIR)) {
+    const file = path.join(PID_DIR, f)
+    const { pid, marker } = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const cmd = commandOf(pid)
+    if (cmd && cmd.includes(marker)) {
+      log(`stopping stale ${f.replace(/\.json$/, '')} from an earlier run (pid ${pid})`)
+      killGroup(pid, 'SIGTERM')
+      for (let i = 0; i < 20 && alive(pid); i++) await sleep(250)
+      if (alive(pid)) killGroup(pid, 'SIGKILL')
+    } else if (cmd) {
+      log(`pid ${pid} from ${f} is now a different process - leaving it alone`)
+    }
+    fs.rmSync(file, { force: true })
+  }
+}
+
+/**
+ * Spawns a server in its own process group and records its PID. `marker` is
+ * a string that must appear in the process's command line for a later run to
+ * treat the PID as ours.
+ */
+function spawnManaged(name, cmd, args, { marker, onUnexpectedExit, ...opts }) {
+  fs.mkdirSync(PID_DIR, { recursive: true })
+  const child = spawn(cmd, args, { ...opts, detached: true })
+  const pidFile = path.join(PID_DIR, `${name}.json`)
+  fs.writeFileSync(pidFile, JSON.stringify({ pid: child.pid, marker }))
+  let stopping = false
+  child.on('exit', (code, signal) => {
+    fs.rmSync(pidFile, { force: true })
+    if (!stopping) onUnexpectedExit?.(code, signal)
+  })
+  // Last resort if this process exits without running stop(); SIGKILL of
+  // the recorder itself is covered by reapStale() on the next run.
+  process.on('exit', () => { if (child.exitCode === null && child.signalCode === null) killGroup(child.pid, 'SIGKILL') })
+  const stop = () => new Promise(resolve => {
+    stopping = true
+    if (child.exitCode !== null || child.signalCode !== null) return resolve()
+    child.once('exit', () => resolve())
+    killGroup(child.pid, 'SIGTERM')
+    setTimeout(() => killGroup(child.pid, 'SIGKILL'), 5000).unref()
+  })
+  return { child, stop }
+}
+
+export function buildBackend() {
+  fs.mkdirSync(CACHE_DIR, { recursive: true })
+  log('building backend ->', path.relative(REPO_ROOT, BACKEND_BIN))
+  execFileSync('go', ['build', '-o', BACKEND_BIN, './backend'], { cwd: REPO_ROOT, stdio: 'inherit' })
+  return BACKEND_BIN
+}
+
+export async function startBackend({ port, bin, onDeath }) {
   await assertPortFree(port)
-  // A fresh database every run, so history starts at the moment of this run
-  // and the recording never depends on leftovers from a previous one.
+  // A fresh database every run: demo mode seeds its 14-day past and drift
+  // feed only into an empty database, and its live script is timed from the
+  // simulator's start.
   const dbPath = path.join(CACHE_DIR, 'demo.db')
   for (const suffix of ['', '-wal', '-shm', '-journal']) fs.rmSync(dbPath + suffix, { force: true })
 
   const logFile = path.join(CACHE_DIR, 'backend.log')
   const out = fs.openSync(logFile, 'w')
-  const child = spawn(bin, [], {
+  const startedAt = Date.now()
+  const { stop } = spawnManaged('backend', bin, [], {
+    marker: bin,
     cwd: CACHE_DIR,
     env: {
       ...process.env,
@@ -73,88 +146,47 @@ export async function startBackend({ port, bin }) {
       LISTEN_ADDR: `127.0.0.1:${port}`,
       DB_DRIVER: 'sqlite',
       DB_DSN: dbPath,
-      // Workaround, not a preference: in v3.0 the SQLite history store
-      // persists timestamps as Go time strings in the process's local zone
-      // and compares them as text against the UTC instants the UI sends, so
-      // on a non-UTC host time travel shows an empty graph and "Compare to
-      // now" always reports 0 changes. The Docker images run in UTC, which is
-      // why the shipped demo looks fine there. See the phase-1 report.
-      TZ: 'UTC',
     },
     stdio: ['ignore', out, out],
+    // A recording of a dead backend is worthless: abort the whole run.
+    onUnexpectedExit: (code, signal) => {
+      log(`backend died unexpectedly (code ${code}, signal ${signal}) - see ${logFile}`)
+      onDeath?.()
+    },
   })
-  let stopping = false
-  child.on('exit', (code, signal) => {
-    if (stopping) return
-    // A recording of a dead backend is worthless: abort the whole run (the
-    // SIGTERM handler in record.mjs cleans up the rest).
-    log(`backend died unexpectedly (code ${code}, signal ${signal}) - see ${logFile}; aborting`)
-    process.kill(process.pid, 'SIGTERM')
-  })
-  // Last-resort cleanup: never leave a backend behind on another developer's
-  // machine, whatever way this process ends.
-  process.on('exit', () => { if (child.exitCode === null) child.kill('SIGKILL') })
   await waitFor(`http://127.0.0.1:${port}/health`, 30000, 'backend')
   log(`backend ready on :${port} (log: ${path.relative(REPO_ROOT, logFile)})`)
-  return {
-    url: `http://127.0.0.1:${port}`,
-    stop: () => new Promise(resolve => {
-      stopping = true
-      if (child.exitCode !== null || child.signalCode !== null) return resolve()
-      child.once('exit', resolve)
-      child.kill('SIGTERM')
-      setTimeout(() => child.kill('SIGKILL'), 5000).unref()
-    }),
-  }
+  return { url: `http://127.0.0.1:${port}`, startedAt, stop }
 }
 
-async function loadVite() {
-  const pkg = JSON.parse(fs.readFileSync(path.join(FRONTEND_DIR, 'node_modules/vite/package.json'), 'utf8'))
-  const entry = typeof pkg.exports['.'] === 'string' ? pkg.exports['.'] : pkg.exports['.'].import
-  return import(pathToFileURL(path.join(FRONTEND_DIR, 'node_modules/vite', entry)).href)
-}
-
-export async function startFrontend({ port, backendPort, dev = false }) {
+export async function startFrontend({ port, backendPort, dev = false, onDeath }) {
   if (!fs.existsSync(path.join(FRONTEND_DIR, 'node_modules'))) {
-    log('installing frontend dependencies (npm ci)')
+    log('frontend/node_modules missing - installing (npm ci in frontend/)')
     execFileSync('npm', ['ci', '--no-audit', '--no-fund'], { cwd: FRONTEND_DIR, stdio: 'inherit' })
   }
   await assertPortFree(port)
-  // PostCSS/Tailwind resolve their config and `content` globs against the
-  // process cwd, not Vite's root: building from anywhere else silently ships
-  // a page with almost no styles.
-  process.chdir(FRONTEND_DIR)
-  const vite = await loadVite()
-  const proxy = {
-    '/api': { target: `http://127.0.0.1:${backendPort}`, changeOrigin: true, ws: true },
-  }
-  const common = {
-    root: FRONTEND_DIR,
-    configFile: path.join(FRONTEND_DIR, 'vite.config.ts'),
-    logLevel: 'warn',
-    clearScreen: false,
-  }
-
-  let server
-  if (dev) {
-    server = await vite.createServer({ ...common, server: { port, strictPort: true, host: '127.0.0.1', proxy } })
-    await server.listen()
-  } else {
-    // Production build: what users actually get, and no dev-mode overhead
-    // competing with the screen capture for CPU.
-    const outDir = path.join(CACHE_DIR, 'dist')
-    log('building frontend (vite build) ->', path.relative(REPO_ROOT, outDir))
-    await vite.build({ ...common, build: { outDir, emptyOutDir: true } })
-    server = await vite.preview({ ...common, build: { outDir }, preview: { port, strictPort: true, host: '127.0.0.1', proxy } })
-  }
+  const outDir = path.join(CACHE_DIR, 'dist')
+  if (!dev) log('building frontend (vite build) ->', path.relative(REPO_ROOT, outDir))
+  const { child, stop } = spawnManaged('frontend', process.execPath,
+    [VITE_SERVER, FRONTEND_DIR, String(port), String(backendPort), outDir, dev ? '1' : '0'], {
+      marker: VITE_SERVER,
+      cwd: FRONTEND_DIR, // see vite-server.mjs for why
+      stdio: ['ignore', 'pipe', 'inherit'],
+      onUnexpectedExit: (code, signal) => {
+        log(`frontend server exited unexpectedly (code ${code}, signal ${signal})`)
+        onDeath?.()
+      },
+    })
+  await new Promise((resolve, reject) => {
+    let buf = ''
+    child.stdout.on('data', d => {
+      buf += d
+      if (buf.includes('READY')) resolve()
+    })
+    child.once('exit', () => reject(new Error('frontend server failed to start')))
+  })
   const url = `http://127.0.0.1:${port}`
   await waitFor(url, 30000, 'frontend')
   log(`frontend ready on :${port} (${dev ? 'vite dev' : 'vite preview of production build'})`)
-  return {
-    url,
-    stop: async () => {
-      if (server.close) await server.close()
-      else if (server.httpServer) await new Promise(r => server.httpServer.close(r))
-    },
-  }
+  return { url, stop }
 }
