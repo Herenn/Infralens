@@ -6,6 +6,7 @@ import {
   AuthStatus,
   UNAUTHORIZED_EVENT,
   WS_REJECTED_EVENT,
+  clearSessionScopedStorage,
   fetchAuthStatus,
   installAuthInterceptor,
   logout,
@@ -23,10 +24,23 @@ type GateState =
  * before. Unmounting the app on logout or session loss also closes its
  * WebSocket, which is what stops it from reconnecting.
  */
+function wasReadyWithLogin(state: GateState): boolean {
+  return state.phase === 'ready' && !!state.status?.login_required
+}
+
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<GateState>({ phase: 'checking' })
   const [wsRejected, setWsRejected] = useState(false)
   const checkingRef = useRef(false)
+  const stateRef = useRef(state)
+  stateRef.current = state
+
+  // Entering the login screen - by sign-out, expiry or any 401 - drops the
+  // previous user's browser state. This runs after the app has unmounted,
+  // so nothing mounted can write it back.
+  useEffect(() => {
+    if (state.phase === 'login') clearSessionScopedStorage()
+  }, [state.phase])
 
   const evaluate = useCallback(async (notice?: string) => {
     // Many requests can 401 at once; one status check answers them all.
@@ -36,6 +50,9 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       const status = await fetchAuthStatus()
       if (status?.login_required && !status.authenticated) {
         setState((prev) => (prev.phase === 'login' ? prev : { phase: 'login', notice }))
+      } else if (status === null && wasReadyWithLogin(stateRef.current)) {
+        // The backend could not be asked (a blip after a 401): keep what we
+        // knew, so Sign out does not vanish from a session that requires it.
       } else {
         setState((prev) =>
           prev.phase === 'ready' &&

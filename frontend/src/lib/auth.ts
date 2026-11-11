@@ -135,22 +135,41 @@ export async function login(username: string, password: string): Promise<LoginRe
   }
 }
 
+// How long sign-out waits for the server before showing the login screen
+// anyway (the session cookie then simply expires on its own).
+const LOGOUT_TIMEOUT_MS = 5000
+
 export async function logout(): Promise<void> {
-  clearSessionScopedStorage()
+  const ctrl = new AbortController()
+  const timer = window.setTimeout(() => ctrl.abort(), LOGOUT_TIMEOUT_MS)
   try {
-    await nativeFetch(apiUrl('/api/v1/auth/logout'), { method: 'POST', credentials: credentials() })
+    await nativeFetch(apiUrl('/api/v1/auth/logout'), { method: 'POST', credentials: credentials(), signal: ctrl.signal })
   } catch {
     // The login screen is shown regardless; the cookie expires on its own.
+  } finally {
+    window.clearTimeout(timer)
   }
+  // Cleared after the request, not before: components still mounted while
+  // it was in flight could otherwise write keys back. AuthGate clears again
+  // once the app has unmounted (clearSessionScopedStorage).
+  clearSessionScopedStorage()
 }
 
-function clearSessionScopedStorage(): void {
+// Keys from before the infralens_ prefix convention, cleared with it.
+const LEGACY_SESSION_KEYS = ['infralens.changes.lastSeen']
+
+/**
+ * Removes per-user browser state (the Changes "last seen" marker, cached AI
+ * docs - every infralens_-prefixed key). Called whenever the login screen
+ * takes over: sign-out, session expiry, any 401 that ends the session.
+ */
+export function clearSessionScopedStorage(): void {
   for (const store of [window.localStorage, window.sessionStorage]) {
     try {
       const keys: string[] = []
       for (let i = 0; i < store.length; i++) {
         const key = store.key(i)
-        if (key?.startsWith(SESSION_SCOPED_STORAGE_PREFIX)) keys.push(key)
+        if (key && (key.startsWith(SESSION_SCOPED_STORAGE_PREFIX) || LEGACY_SESSION_KEYS.includes(key))) keys.push(key)
       }
       keys.forEach((key) => store.removeItem(key))
     } catch {
