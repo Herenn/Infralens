@@ -9,7 +9,7 @@ import (
 )
 
 // RecordNode extends or opens the reporting interval of a node's agent. Same
-// extend-or-open rules as RecordService, keyed by node name. Mirrors the
+// extend-or-open rules as RecordService, keyed by (group, node). Mirrors the
 // SQLite implementation.
 func (r *HistoryRepo) RecordNode(ctx context.Context, node, group string, at time.Time, maxGap time.Duration) error {
 	if node == "" {
@@ -21,16 +21,16 @@ func (r *HistoryRepo) RecordNode(ctx context.Context, node, group string, at tim
 
 	res, err := exec.ExecContext(ctx, `
 		UPDATE node_intervals
-		SET last_seen = $1, group_name = $5
+		SET last_seen = $1
 		WHERE id = (
 			SELECT id FROM node_intervals
-			WHERE node_name = $2
+			WHERE group_name = $2 AND node_name = $3
 			ORDER BY last_seen DESC
 			LIMIT 1
 		)
-		AND last_seen >= $3
-		AND last_seen <= $4`,
-		at, node, cutoff, at, group)
+		AND last_seen >= $4
+		AND last_seen <= $5`,
+		at, group, node, cutoff, at)
 	if err != nil {
 		return fmt.Errorf("extending node interval: %w", err)
 	}
@@ -44,7 +44,7 @@ func (r *HistoryRepo) RecordNode(ctx context.Context, node, group string, at tim
 		SELECT $1::text, $3::text, $2::timestamptz, $2::timestamptz
 		WHERE NOT EXISTS (
 			SELECT 1 FROM node_intervals
-			WHERE node_name = $1 AND first_seen <= $2 AND last_seen >= $2
+			WHERE group_name = $3 AND node_name = $1 AND first_seen <= $2 AND last_seen >= $2
 		)`,
 		node, at, group)
 	if err != nil {

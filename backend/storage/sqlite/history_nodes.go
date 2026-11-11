@@ -9,7 +9,8 @@ import (
 )
 
 // RecordNode extends or opens the reporting interval of a node's agent. Same
-// extend-or-open rules as RecordService, keyed by node name.
+// extend-or-open rules as RecordService, keyed by (group, node): two
+// clusters may have nodes with the same name.
 func (r *HistoryRepo) RecordNode(ctx context.Context, node, group string, at time.Time, maxGap time.Duration) error {
 	if node == "" {
 		return fmt.Errorf("recording node interval: node has no name")
@@ -20,10 +21,10 @@ func (r *HistoryRepo) RecordNode(ctx context.Context, node, group string, at tim
 
 	res, err := exec.ExecContext(ctx, `
 		UPDATE node_intervals
-		SET last_seen = ?, group_name = ?
+		SET last_seen = ?
 		WHERE id = (
 			SELECT id FROM node_intervals
-			WHERE node_name = ?
+			WHERE group_name = ? AND node_name = ?
 			ORDER BY last_seen DESC
 			LIMIT 1
 		)
@@ -43,9 +44,9 @@ func (r *HistoryRepo) RecordNode(ctx context.Context, node, group string, at tim
 		SELECT ?, ?, ?, ?
 		WHERE NOT EXISTS (
 			SELECT 1 FROM node_intervals
-			WHERE node_name = ? AND first_seen <= ? AND last_seen >= ?
+			WHERE group_name = ? AND node_name = ? AND first_seen <= ? AND last_seen >= ?
 		)`,
-		node, group, at, at, node, at, at)
+		node, group, at, at, group, node, at, at)
 	if err != nil {
 		return fmt.Errorf("opening node interval: %w", err)
 	}

@@ -215,7 +215,9 @@ func (ts *TopologyService) recordNodeHistory(ctx context.Context, node, group st
 		return
 	}
 	at = observationTime(at)
-	if !ts.claimHistoryRefresh("n:"+node, at) {
+	// Keyed by (group, node), like the intervals: same-named nodes in two
+	// clusters are two agents.
+	if !ts.claimHistoryRefresh("n:"+group+"\x00"+node, at) {
 		return
 	}
 	if err := ts.store.History().RecordNode(ctx, node, group, at, ts.historyMaxGap); err != nil {

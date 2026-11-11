@@ -104,6 +104,35 @@ func ParitySuite(t *testing.T, store Store) {
 		}
 	})
 
+	t.Run("NodeIntervalsAreKeyedByGroupAndNode", func(t *testing.T) {
+		// The same node name in two groups (or grouped and ungrouped) is two
+		// agents: their heartbeats never extend each other's interval.
+		node := tag + "-shared"
+		for _, at := range []time.Duration{0, time.Minute, 2 * time.Minute} {
+			for _, g := range []string{"east", "west", ""} {
+				if err := h.RecordNode(ctx, node, g, base.Add(at), gap); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		got, err := h.NodesBetween(ctx, base.Add(-time.Hour), base.Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		groups := map[string]int{}
+		for _, ni := range got {
+			if ni.Node == node {
+				groups[ni.Group]++
+				if !ni.FirstSeen.Equal(base) || !ni.LastSeen.Equal(base.Add(2*time.Minute)) {
+					t.Errorf("interval %+v, want [base, base+2m]", ni)
+				}
+			}
+		}
+		if len(groups) != 3 || groups["east"] != 1 || groups["west"] != 1 || groups[""] != 1 {
+			t.Errorf("intervals per group = %v, want one each for east, west and ungrouped", groups)
+		}
+	})
+
 	t.Run("TimesAreMicrosecondsTruncatedNotRounded", func(t *testing.T) {
 		at := base.Add(time.Hour).Add(999 * time.Nanosecond) // rounds up, truncates down
 		svc := &Service{ID: tag + "-precise"}

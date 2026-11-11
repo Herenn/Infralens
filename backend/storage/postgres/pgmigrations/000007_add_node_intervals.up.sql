@@ -12,11 +12,10 @@ CREATE TABLE IF NOT EXISTS node_intervals (
     last_seen TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
+-- An agent is identified by (group_name, node_name): two clusters may well
+-- have nodes with the same name.
 CREATE INDEX IF NOT EXISTS idx_node_intervals_lookup
-    ON node_intervals(node_name, last_seen);
-
-CREATE INDEX IF NOT EXISTS idx_node_intervals_group
-    ON node_intervals(group_name);
+    ON node_intervals(group_name, node_name, last_seen);
 
 CREATE INDEX IF NOT EXISTS idx_node_intervals_range
     ON node_intervals(first_seen, last_seen);
