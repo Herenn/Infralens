@@ -243,9 +243,10 @@ destinations (experimental, off by default).
   workload's DNS (its resolver, or anyone on the path) decides its labels,
   and on bridge-based CNIs a pod can spoof a query for a neighbour on the
   same node. Not visible: DNS over HTTPS/TLS, DNS over TCP, `/etc/hosts`,
-  lookups made before the agent started, some dual-stack cases (an AAAA
-  lookup followed by a connection over IPv4), and Cilium with eBPF host
-  routing.
+  lookups made before the agent started, and on dual-stack pods,
+  connections made over IPv6 when the lookup itself went over IPv4 (the
+  usual case: the answer is filed under the pod's IPv4 address). Cilium
+  with eBPF host routing may bypass the point where the agent captures DNS.
 - Idle spend cannot see a server reached through a differently named
   Kubernetes Service, hostPort/NodePort traffic to the node's IP,
   receive-only UDP, or jobs that run less often than the history retention.
