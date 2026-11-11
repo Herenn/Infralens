@@ -206,8 +206,9 @@ frontend:
   replicaCount: 1
 
   # Where the frontend's nginx proxies /api/ and /mcp. Empty: this release's
-  # backend Service. Must be scheme://host:port with no path (a trailing
-  # slash is dropped; a path is refused at render time).
+  # backend Service. Must be http(s)://host[:port] - a host name, IPv4 or
+  # [IPv6] address - with no path (a trailing slash is dropped; anything
+  # else is refused at render time).
   backendUrl: ""
   
   image:

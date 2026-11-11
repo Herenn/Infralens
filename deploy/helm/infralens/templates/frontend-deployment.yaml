@@ -31,8 +31,9 @@ spec:
             # scheme://host:port with no path: a trailing slash is dropped,
             # anything else with a path is refused.
             {{- $backendURL := .Values.frontend.backendUrl | default (printf "http://%s-backend:%v" (include "infralens.fullname" .) .Values.backend.service.port) | trimSuffix "/" }}
-            {{- if not (regexMatch "^https?://[^/?#]+$" $backendURL) }}
-            {{- fail (printf "frontend.backendUrl must be scheme://host:port with no path (got %q)" $backendURL) }}
+            {{- /* host: DNS name or IPv4, or a bracketed IPv6 address; port optional */}}
+            {{- if not (regexMatch "^https?://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\\[[0-9A-Fa-f:.]+\\])(:[0-9]{1,5})?$" $backendURL) }}
+            {{- fail (printf "frontend.backendUrl must be http(s)://host[:port] - a host name, IPv4 or [IPv6] address, no user info, path, query or spaces (got %q)" $backendURL) }}
             {{- end }}
             - name: INFRALENS_BACKEND_URL
               value: {{ $backendURL | quote }}
