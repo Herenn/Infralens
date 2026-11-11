@@ -5,6 +5,264 @@ All notable changes to InfraLens are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-11-11
+
+InfraLens tells you what changed, and lets you lock the door. v3.0 could
+remember the topology but only a webhook ever said when it moved, and anyone
+who could reach the UI could read all of it. v3.1 adds an opt-in UI login, a
+persisted Changes feed in the UI, a read-only MCP server so AI assistants can
+query the topology, an Idle spend report (beta), and DNS names for external
+destinations (experimental, off by default).
+
+### Upgrading from 3.0
+
+- **Back up the database first, and do not downgrade except to that
+  backup.** v3.1 adds migrations 000004–000007 (SQLite and PostgreSQL).
+  Once v3.1 has run, v3.0 refuses to start on the same database (it does not
+  know the schema version); with `DB_AUTO_MIGRATE=false` it would start and
+  write local-zone timestamps into a database that is now UTC.
+- **SQLite timestamps are rewritten to UTC once, at startup.** No action is
+  needed. It runs in batches, resumes where it stopped if interrupted, and
+  also runs when migrations are applied out of band (`DB_AUTO_MIGRATE=false`)
+  — but only once the schema is at v3.1; on an older schema the backend logs
+  a warning and leaves the rows alone. Large databases add a few seconds to
+  the first start.
+- **Drift detection is now on whenever history is** (`DRIFT_ENABLED=true` by
+  default), with or without a webhook. It starts from the history you
+  already have as a known baseline, so upgrading does not announce existing
+  dependencies. `DRIFT_ENABLED=false` switches the feed and the webhook off.
+- **Nothing changes for authentication unless you set `UI_PASSWORD`.**
+  Without it, reads stay public exactly as in v3.0 and the backend logs a
+  warning at startup.
+- **`/mcp` is mounted by default** (`MCP_ENABLED=true`) but is never open by
+  accident: it needs `MCP_API_KEY` or `API_KEY`; with no key it is open only
+  under `ALLOW_NO_AUTH=true` without a UI password.
+- **AI model defaults changed** and the bundled docker-compose file and Helm
+  chart no longer pin models: an empty `*_MODEL` means the backend default
+  (see *Changed*). A model you set explicitly is kept — so if your `.env`
+  (copied from the old `env.example`) or your own Helm values still carry
+  the old pins (`gpt-3.5-turbo`, `claude-3-haiku-20240307`, `gemini-pro`,
+  `llama2`), empty them, or pick a current model in the UI.
+- **Idle spend needs a little observation first.** Silence is measured only
+  while a node's own agent was reporting (agent heartbeats, new in this
+  release), so right after an upgrade services on nodes that have no
+  heartbeats yet — in particular Kubernetes services known only by resolved
+  name — are held back until about `IDLE_COST_QUIET_AFTER` (72h) of
+  heartbeats exist.
+- Agents and backends of 3.0 and 3.1 interoperate in either direction. An
+  agent needs 3.1 only for `--dns-names`.
+- **Helm / raw Kubernetes:** the frontend image now takes its upstream from
+  `INFRALENS_BACKEND_URL`; the chart and the manifests set it. The raw
+  manifests now need an `infralens-api-key` Secret before `kubectl apply -k`
+  (the command is in `deploy/k8s/backend-deployment.yaml`).
+
+### Added
+
+- **UI login (opt-in).** Set `UI_PASSWORD` (at least 8 characters, or the
+  backend refuses to start; under 12 logs a warning) and the UI shows a
+  login screen for a single admin account (`UI_USERNAME`, default `admin`).
+  The API becomes deny-by-default: everything except `/health`, `/ready` and
+  `/api/v1/auth/*` needs a session or the API key, so endpoints added later
+  are protected without being registered anywhere. Agent ingest and
+  Prometheus `/metrics` stay API-key-only. Endpoints:
+  `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`,
+  `GET /api/v1/auth/status`.
+  - Sessions are HMAC-signed cookies: HttpOnly, `SameSite=Strict`, `Secure`
+    when the request arrived over HTTPS (directly or per
+    `X-Forwarded-Proto`). `SESSION_TTL` (default 12h) is an absolute
+    lifetime. Set `SESSION_SECRET` (32+ characters) for sessions to survive
+    restarts and work across replicas; without it a random per-process key
+    is used. Changing the password ends every session.
+  - Logout is persisted in the database: it survives restarts, reaches other
+    replicas within about 5 seconds, and closes WebSockets bound to that
+    session.
+  - Cookie-authenticated requests, reads and WebSocket handshakes included,
+    must be same-origin or come from an exact `CORS_ORIGINS` entry; `*` and
+    wildcard patterns are never trusted with the cookie.
+  - Login throttling at three levels: per client (5 attempts, then one per
+    20 s), per directly connected peer (60, then one per second) and
+    globally (120, then two per second). A client that has signed in before
+    keeps only its own bucket, so neither forged forwarding headers nor a
+    distributed attack lock out a known admin. Throttled attempts get 429
+    with `Retry-After` and are refused even with the right password.
+    `TRUSTED_PROXIES` says whose `X-Forwarded-For` to believe (default:
+    loopback and private peers, one hop; a CIDR list; or `none`).
+  - Helm: `backend.auth.uiPassword`, `uiUsername`, `sessionSecret`,
+    `sessionTTL`, `trustedProxies`, or `existingSecret` to read the
+    credentials from a Secret of your own.
+- **Changes feed.** Every drift event is persisted (kept for
+  `HISTORY_RETENTION`) and shown in a Changes panel with an unread badge,
+  filters, click-to-focus on the map and a jump to that moment in time
+  travel. New events are pushed live over the WebSocket (`drift` messages,
+  at most 50 events each; larger passes are marked truncated). API:
+  `GET /api/v1/drift/events` (`since`/`until` exclusive, `kind`,
+  `external`, `limit` up to 500, `cursor`) and `GET /api/v1/drift/summary`.
+  The webhook payload is unchanged.
+- **MCP server for AI assistants** at `/mcp` (Streamable HTTP, served by
+  the backend and routed by the frontend's nginx and the Helm ingress).
+  Read-only, 13 tools: `topology_overview`, `search_services`,
+  `get_service`, `get_dependencies`, `get_blast_radius`,
+  `list_connections`, `diff_topology`, `rank_criticality`, `find_orphans`,
+  `find_stale_services`, `export_mermaid`, `list_drift_events` (only while
+  drift detection is on) and `get_idle_spend`. Speaks MCP 2026-07-28,
+  2025-11-25 and 2025-06-18, with no SDK dependency. `MCP_API_KEY` is a
+  read-only key valid on `/mcp` only — give it to AI clients instead of the
+  agents' `API_KEY`, which `/mcp` also accepts. Session cookies never
+  authenticate `/mcp`. A service's process fingerprint is returned only to
+  key-authenticated callers; command lines and environment never are.
+  `MCP_ENABLED`, `MCP_ALLOWED_ORIGINS`; Helm `backend.mcp.*`.
+- **Idle spend (beta).** A panel and `GET /api/v1/graph/idle-cost`
+  (`format=json|markdown|csv`, `assume_node_monthly` for a labelled what-if,
+  `limit`) listing cleanup candidates — services nothing talks to — with
+  the network evidence for each and an approximate share of their node's
+  price. Candidates to verify with their owners, not deletion
+  recommendations.
+  - Categories: no connections at all, no inbound, inbound stopped, reached
+    only by other idle services, not seen at all recently.
+  - Silence counts only while that node's own agent was reporting. Anything
+    still carrying traffic is never a candidate, and the figures for a node
+    never add up to more than its price. High idle confidence needs more
+    than 31 observed days, so with the default 30-day retention the best is
+    medium.
+  - Held back, with the reason shown: outbound-only workers and cron jobs,
+    monitoring, possible replicas and standbys, UDP services, servers
+    reached by address, new services, InfraLens itself, your excludes, and
+    everything but true orphans when history is off.
+  - No built-in prices: `IDLE_COST_NODE_MONTHLY`, `IDLE_COST_NODE_PRICES`
+    and `IDLE_COST_SERVICE_PRICES` (glob=price; a service price is carved
+    out of its node's), `IDLE_COST_CURRENCY` (a label, default USD),
+    `IDLE_COST_EXCLUDE`, `IDLE_COST_WINDOW` (30d), `IDLE_COST_QUIET_AFTER`
+    (72h), `IDLE_COST_WARMUP` (24h). Durations accept a `d` suffix;
+    malformed values are ignored with a warning shown in every report.
+    Reports are cached for 60 s. Helm `backend.idleCost.*`.
+  - Agents started with `--cluster` (Helm's default
+    `agent.clusterName: "Kubernetes"`) report every node under one name, so
+    only a low-confidence cluster-wide split is possible there.
+- **DNS names for external destinations (experimental, off by default).**
+  The agent can label external destinations with the name the workload
+  resolved (`api.stripe.com` instead of an IP): `--dns-names` /
+  `INFRALENS_DNS_NAMES` (Helm `agent.dnsNames`), tuned with
+  `--dns-max-pps` (5000), `--dns-cache-size` (32768) and
+  `--dns-stats-interval` (5m; Helm `agent.dns.*`). It passively reads DNS
+  over UDP with an AF_PACKET socket and a classic-BPF filter — userspace
+  only, no eBPF changes, no reverse lookups, needs `CAP_NET_RAW` — and
+  believes an answer only if it matches a query the same local workload
+  sent (address, port, server, transaction ID, question) on its own
+  interface within 5 s. Names are reported only for destinations that
+  workload then connected to. The backend keeps up to 8 names per
+  connection, drops names unseen for 7 days, and uses them in the map,
+  search, exports, AI context, Changes feed, webhook, MCP and Idle spend.
+  Service IDs do not change. See *Known limitations*.
+- Demo mode tells one story across the new features: 14 days of history, a
+  seeded Changes feed, scripted live changes, idle candidates and named SaaS
+  dependencies. It uses its own database file, `infralens-demo.db`, unless
+  `DB_DSN` is set, so trying the demo never leaves fake history in a real
+  database.
+- `GET /api/v1/graph/criticality` returns `hostname` for external services,
+  like `/topology`.
+- `scripts/demo-gif`: a scripted, reproducible recorder for the README GIF.
+- Agent heartbeats: the backend records when each node's agent was
+  reporting (migration 000007), which is what Idle spend and drift use to
+  tell "quiet" from "not watched".
+
+### Changed
+
+- **AI documentation.** Defaults are OpenAI `gpt-6-luna`, Anthropic
+  `claude-haiku-5-5` and Gemini `gemini-3.5-flash-lite`; Ollama and LM
+  Studio use the first installed or loaded model. Model lists are read live
+  from each provider (cached 15 minutes, static fallback). Requests follow
+  the current provider APIs (low reasoning effort with output headroom). A
+  model the provider rejects returns HTTP 422 `model_unavailable` with
+  suggestions; a refused, blocked or empty answer returns HTTP 502
+  `response_refused` and is never cached. `POST /api/v1/ai/config` keeps
+  fields you leave out and accepts `"clear": [...]` (Remove key / Reset to
+  default in the UI).
+- **UI.** The map is laid out in flow order (callers left, external
+  services in their own group on the right) and stays put on live updates.
+  Edge labels appear for the hovered or selected service. Secondary panels
+  (Changes, Idle spend, Most critical, Orphans, Decommission, Compare) open
+  one at a time from a left rail. Blast radius stays on the map until
+  cleared. A banner marks historical views. PNG export renders at 1:1.
+- Drift "gone" is measured in observed time: an outage of collection — the
+  whole backend or a single node's agent — does not count towards
+  `DRIFT_GONE_AFTER`. Detection resumes from a checkpoint after a restart,
+  replicas sharing a database do not notify the same change twice, and
+  failed feed writes are retried. A dependency reported gone that later
+  returns is re-armed silently.
+- The frontend's nginx forwards `X-Forwarded-Proto` and `X-Forwarded-Host`
+  and routes `/mcp` to the backend. The Vite dev proxy keeps the browser's
+  `Host` header (needed for the WebSocket same-origin check under login).
+- Helm drift timings (`backend.drift.checkInterval`, `goneAfter`, `warmup`)
+  apply without a webhook and default to empty, so the backend defaults
+  apply. Explicit zeros in Helm values are passed through rather than
+  dropped.
+
+### Fixed
+
+- **Time travel, diff and blast radius on non-UTC hosts.** SQLite stored
+  times in the host's local zone and compared them as text, so results were
+  wrong whenever the server was not on UTC, across DST changes, after a
+  host's time zone changed, and at exact instants. All times are now stored
+  in UTC (existing rows are converted once at startup). PostgreSQL results
+  are returned in UTC too.
+- Endpoints of long-lived connections no longer age out of the live
+  topology while traffic flows over them.
+- Mermaid export escapes line breaks and control characters in labels, so a
+  service name can no longer inject Mermaid syntax.
+- **Helm and raw Kubernetes.** The frontend could not start under either:
+  its nginx proxied to `http://backend:8080`, a host that exists only under
+  docker-compose. It now uses `INFRALENS_BACKEND_URL` (default
+  `http://backend:8080`), set by the chart and the manifests. Agents on
+  `hostNetwork` use `dnsPolicy: ClusterFirstWithHostNet`, so they can
+  resolve the backend Service. Helm rolls the agents as well as the backend
+  when the chart's Secret changes, so rotating `auth.apiKey` no longer
+  leaves agents sending the old key. The raw manifests are fixed: frontend
+  port, an ingress rewrite that broke every `/api` call, an agent flag that
+  does not exist, the agent's backend URL, and a required API key Secret.
+
+### Security
+
+- UI login, the separate read-only `MCP_API_KEY`, and the cookie
+  same-origin policy above.
+- The Gemini API key is sent in a header rather than the URL. Cloud AI
+  clients no longer follow redirects. Upstream error text is redacted
+  (including newer OpenAI key formats) and size-capped.
+
+### Known limitations
+
+- **DNS names are experimental and have not yet been run on a real cluster
+  by the maintainers.** CI runs the capture path's integration test as root
+  on a Linux runner. Before enabling it in production, run that test on a
+  representative node
+  (`go test -c -o dnscache.test ./agent/dnscache && sudo ./dnscache.test -test.run TestCaptureIntegration -test.v`),
+  then enable it on one canary node with `--dns-stats-interval=1m`, make a
+  lookup and a connection from a pod, and check that the agent logs
+  `learned>0` and `kernel_drops=0` and that the destination's `hostname`
+  appears in `GET /api/v1/topology`.
+- DNS names are display labels, not verified facts: whoever answers a
+  workload's DNS (its resolver, or anyone on the path) decides its labels,
+  and on bridge-based CNIs a pod can spoof a query for a neighbour on the
+  same node. Not visible: DNS over HTTPS/TLS, DNS over TCP, `/etc/hosts`,
+  lookups made before the agent started, some dual-stack cases (an AAAA
+  lookup followed by a connection over IPv4), and Cilium with eBPF host
+  routing.
+- Idle spend cannot see a server reached through a differently named
+  Kubernetes Service, hostPort/NodePort traffic to the node's IP,
+  receive-only UDP, or jobs that run less often than the history retention.
+- The PostgreSQL code added in 3.1 runs in the CI PostgreSQL job but was not
+  exercised against PostgreSQL during local development. Likewise the
+  frontend image's new nginx template was reviewed and its Helm rendering
+  checked, but the image was not run in a container during development.
+- With several backend replicas, live Changes pushes come only from the
+  replica that recorded them; the other replicas' UIs catch up on their next
+  poll (30 s with the Changes panel open, 60 s for the unread badge).
+- One admin account; no OIDC or roles.
+- The decommission list shows stale external destinations by IP, not by DNS
+  name.
+- The Changes feed has no "reappeared" marker for a dependency that comes
+  back after being reported gone.
+- Real per-connection latency is still not shipped.
+
 ## [3.0.0] - 2026-11-04
 
 InfraLens remembers. Until now it could only answer "what is talking to what
