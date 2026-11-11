@@ -741,3 +741,45 @@ func TestDevBuildNodeIntervalsAreRefused(t *testing.T) {
 	}
 	_ = s.Close()
 }
+
+// A database from the release candidate (node_intervals with group_name,
+// but the lookup index on (node_name, last_seen)) gets the same refusal.
+func TestReleaseCandidateNodeIntervalsIndexIsRefused(t *testing.T) {
+	dsn := t.TempDir() + "/rc.db"
+	s, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`DROP INDEX idx_node_intervals_lookup`,
+		`CREATE INDEX idx_node_intervals_lookup ON node_intervals(node_name, last_seen)`,
+		`CREATE INDEX idx_node_intervals_group ON node_intervals(group_name)`,
+	} {
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.Close()
+	for _, auto := range []bool{true, false} {
+		_, err := New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: auto})
+		if err == nil || !strings.Contains(err.Error(), "lookup index idx_node_intervals_lookup on (node_name, last_seen)") ||
+			!strings.Contains(err.Error(), "UPDATE schema_migrations SET version = 6") {
+			t.Fatalf("auto-migrate=%v: %v, want a refusal with recovery steps", auto, err)
+		}
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{`DROP TABLE IF EXISTS node_intervals`, `UPDATE schema_migrations SET version = 6, dirty = false`} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = db.Close()
+	s, err = New(storage.Config{Driver: "sqlite", DSN: dsn, AutoMigrate: true})
+	if err != nil {
+		t.Fatalf("after recovery: %v", err)
+	}
+	_ = s.Close()
+}

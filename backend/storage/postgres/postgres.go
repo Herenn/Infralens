@@ -161,7 +161,30 @@ func (s *Store) checkNodeIntervals(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("checking node_intervals: %w", err)
 	}
-	return storage.CheckNodeIntervals(version, cols)
+	irows, err := s.db.QueryContext(ctx, `
+		SELECT a.attname
+		FROM pg_class i
+		JOIN pg_namespace n ON n.oid = i.relnamespace
+		JOIN pg_index x ON x.indexrelid = i.oid
+		JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = ANY(x.indkey)
+		WHERE i.relname = $1 AND n.nspname = current_schema()
+		ORDER BY array_position(x.indkey::int2[], a.attnum)`, storage.NodeIntervalsLookupIndex)
+	if err != nil {
+		return fmt.Errorf("checking node_intervals index: %w", err)
+	}
+	defer irows.Close()
+	var lookup []string
+	for irows.Next() {
+		var c string
+		if err := irows.Scan(&c); err != nil {
+			return fmt.Errorf("checking node_intervals index: %w", err)
+		}
+		lookup = append(lookup, c)
+	}
+	if err := irows.Err(); err != nil {
+		return fmt.Errorf("checking node_intervals index: %w", err)
+	}
+	return storage.CheckNodeIntervals(version, cols, lookup)
 }
 
 // MigrateTo moves the schema to exactly version, applying up or down

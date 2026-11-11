@@ -103,16 +103,26 @@ func TestCheckSchemaNewerAndNodeIntervals(t *testing.T) {
 	if err := storage.CheckSchemaNotNewer(fsys, 7, true); err != nil {
 		t.Errorf("current schema: %v", err)
 	}
-	if err := storage.CheckNodeIntervals(6, nil); err != nil {
+	cols := []string{"id", "node_name", "group_name", "first_seen", "last_seen"}
+	lookup := []string{"group_name", "node_name", "last_seen"}
+	if err := storage.CheckNodeIntervals(6, nil, nil); err != nil {
 		t.Errorf("before migration 7: %v", err)
 	}
-	if err := storage.CheckNodeIntervals(7, []string{"id", "node_name", "group_name", "first_seen", "last_seen"}); err != nil {
+	if err := storage.CheckNodeIntervals(7, cols, lookup); err != nil {
 		t.Errorf("released table: %v", err)
 	}
-	if err := storage.CheckNodeIntervals(7, []string{"id", "node_name", "first_seen", "last_seen"}); err == nil || !strings.Contains(err.Error(), "group_name") {
+	if err := storage.CheckNodeIntervals(7, []string{"id", "node_name", "first_seen", "last_seen"}, []string{"node_name", "last_seen"}); err == nil || !strings.Contains(err.Error(), "group_name") {
 		t.Errorf("dev-build table: %v", err)
 	}
-	if err := storage.CheckNodeIntervals(8, nil); err == nil || !strings.Contains(err.Error(), "is missing") {
+	if err := storage.CheckNodeIntervals(7, cols, []string{"node_name", "last_seen"}); err == nil ||
+		!strings.Contains(err.Error(), "lookup index idx_node_intervals_lookup on (node_name, last_seen) instead of on (group_name, node_name, last_seen)") ||
+		!strings.Contains(err.Error(), "unreleased development build") {
+		t.Errorf("release-candidate index: %v", err)
+	}
+	if err := storage.CheckNodeIntervals(7, cols, nil); err == nil || !strings.Contains(err.Error(), "missing instead") {
+		t.Errorf("missing index: %v", err)
+	}
+	if err := storage.CheckNodeIntervals(8, nil, nil); err == nil || !strings.Contains(err.Error(), "is missing") {
 		t.Errorf("missing table: %v", err)
 	}
 }

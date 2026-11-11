@@ -112,10 +112,19 @@ const NodeIntervalsMigration = 7
 
 var nodeIntervalColumns = []string{"id", "node_name", "group_name", "first_seen", "last_seen"}
 
-// CheckNodeIntervals verifies node_intervals has the columns this backend
-// uses, given the columns the database reports (empty: no such table) and
-// its schema version. Below NodeIntervalsMigration there is nothing to check.
-func CheckNodeIntervals(version int, columns []string) error {
+// NodeIntervalsLookupIndex is the index heartbeats are extended through,
+// and nodeIntervalLookupColumns its columns in order. A release candidate
+// built it on (node_name, last_seen).
+const NodeIntervalsLookupIndex = "idx_node_intervals_lookup"
+
+var nodeIntervalLookupColumns = []string{"group_name", "node_name", "last_seen"}
+
+// CheckNodeIntervals verifies node_intervals has the columns and lookup
+// index this backend uses, given what the database reports (columns empty:
+// no such table; lookup: the index's columns in order, empty when missing)
+// and its schema version. Below NodeIntervalsMigration there is nothing to
+// check.
+func CheckNodeIntervals(version int, columns, lookup []string) error {
 	if version < NodeIntervalsMigration {
 		return nil
 	}
@@ -129,12 +138,20 @@ func CheckNodeIntervals(version int, columns []string) error {
 			missing = append(missing, c)
 		}
 	}
-	if len(missing) == 0 {
-		return nil
-	}
-	what := "lacks column(s) " + strings.Join(missing, ", ")
-	if len(columns) == 0 {
+	var what string
+	switch {
+	case len(columns) == 0:
 		what = "is missing"
+	case len(missing) > 0:
+		what = "lacks column(s) " + strings.Join(missing, ", ")
+	case strings.ToLower(strings.Join(lookup, ",")) != strings.Join(nodeIntervalLookupColumns, ","):
+		got := "missing"
+		if len(lookup) > 0 {
+			got = "on (" + strings.Join(lookup, ", ") + ")"
+		}
+		what = fmt.Sprintf("has its lookup index %s %s instead of on (%s)", NodeIntervalsLookupIndex, got, strings.Join(nodeIntervalLookupColumns, ", "))
+	default:
+		return nil
 	}
 	return fmt.Errorf("table node_intervals %s although the schema is at version %d: this database was created by an unreleased "+
 		"development build of InfraLens v3.1, whose migration %d differed from the released one. To recover, delete the database "+
