@@ -164,8 +164,9 @@ No prices are built in. Set a node price (`IDLE_COST_NODE_MONTHLY` /
 `agent.clusterName: "Kubernetes"` reports all nodes under one name, which only
 allows a low-confidence cluster-wide split. Silence counts only while every
 agent in the group is reporting; an agent silent for more than an hour stops
-holding the group back, and while one has gone silent the group's candidates
-are low confidence and out of the total. Set `agent.clusterName=""` for
+holding the group back, and if one was out like that within the evidence window
+(even if it is back) the group's candidates are low confidence and out of the
+total. Set `agent.clusterName=""` for
 per-node attribution.
 
 ### DNS names for external destinations (experimental)

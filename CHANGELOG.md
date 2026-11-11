@@ -142,9 +142,11 @@ destinations (experimental, off by default).
     only a low-confidence cluster-wide split is possible there. Silence
     counts only while every member agent is reporting; a member silent for
     more than an hour (scale-in, a replaced or crashed node) stops holding
-    the group back, and while any member has gone silent within the evidence
-    window the group's candidates are low confidence, left out of the total
-    and listed under a note naming the silent agents (`silent_agents`).
+    the group back, and if any member was out like that (or flapping) at
+    any time within the evidence window, even if it is reporting again, the
+    group's candidates are low confidence, left out of the total
+    (`not_in_total_reason: "silent_agent"`) and listed under a note naming
+    those agents (`silent_agents`).
     Set `agent.clusterName: ""` for per-node attribution.
 - **DNS names for external destinations (experimental, off by default).**
   The agent can label external destinations with the name the workload
@@ -275,6 +277,15 @@ destinations (experimental, off by default).
 - Idle spend cannot see a server reached through a differently named
   Kubernetes Service, hostPort/NodePort traffic to the node's IP,
   receive-only UDP, or jobs that run less often than the history retention.
+- Kubernetes-named services with replicas on several nodes are attributed
+  to the node last recorded on the source's service row. If only one
+  replica's node uses a dependency and that node's agent stops, the absence
+  is measured against the other node, and the Changes feed can report the
+  dependency gone after `DRIFT_GONE_AFTER`.
+- A `--cluster` member that reports only part of the time (between half and
+  almost all of it) is still counted as current: its gaps slow Idle spend
+  and drift detection in its group without the agent being listed as
+  silent.
 - The PostgreSQL code added in 3.1 runs in the CI PostgreSQL job but was not
   exercised against PostgreSQL during local development. Likewise the
   frontend image's new nginx template was reviewed and its Helm rendering
