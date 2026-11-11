@@ -105,6 +105,9 @@ func getIdleSpendTool() Tool {
 						"explanation":  it.Cost.Explanation,
 						"in_total":     it.InTotal,
 					}
+					if !it.InTotal {
+						item["cost"].(map[string]any)["not_in_total_reason"] = it.NotInTotalReason
+					}
 				} else {
 					item["cost"] = nil
 				}

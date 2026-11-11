@@ -64,9 +64,10 @@ type idleCandidate struct {
 	viaAddress      string
 	udp             bool
 
-	idleConf   string
-	inTotal    bool
-	silentNote string // an agent in its group stopped reporting
+	idleConf         string
+	inTotal          bool
+	notInTotalReason string // when !inTotal
+	silentNote       string // an agent in its group was out
 }
 
 type edgeObs struct {
@@ -510,6 +511,54 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 		}
 	}
 
+	// --- Group member outages -----------------------------------------------
+	//
+	// A member silent for longer than the member timeout (or flapping) no
+	// longer holds its group's coverage back (coverage.go), but what only its
+	// agent could see went unseen meanwhile: its services may look quiet. If
+	// any member of a group was out like that anywhere in the evidence window
+	// - still out, or back by now - that group's candidates are low
+	// confidence and left out of the total.
+	if in.historyEnabled {
+		outages := obs.memberOutages(coverageStart, now)
+		byGroup := map[string][]memberOutage{}
+		var groupOrder []string
+		for _, o := range outages {
+			if byGroup[o.Group] == nil {
+				groupOrder = append(groupOrder, o.Group)
+			}
+			byGroup[o.Group] = append(byGroup[o.Group], o)
+			if len(report.SilentAgents) < maxIdleSilentAgents {
+				a := IdleSilentAgent{Group: o.Group, Node: o.Node, LastSeen: o.LastSeen, SilentSince: o.From, Intermittent: o.Intermittent}
+				if !o.To.IsZero() {
+					to := o.To
+					a.ReturnedAt = &to
+				}
+				report.SilentAgents = append(report.SilentAgents, a)
+			}
+		}
+		sort.Strings(groupOrder)
+		var silentNotes []string
+		for _, g := range groupOrder {
+			agents := byGroup[g]
+			affected := 0
+			for _, id := range order {
+				c := idle[id]
+				if c.svc.Node != g {
+					continue
+				}
+				affected++
+				c.idleConf = ConfidenceLow
+				c.inTotal = false
+				c.notInTotalReason = NotInTotalSilentAgent
+				c.silentNote = fmt.Sprintf("Low confidence, not in the total: in CLUSTER_NAME group %q, %s - what only it could see went unseen, so this may be in use.",
+					g, outagePhrase(agents[0], now))
+			}
+			silentNotes = append(silentNotes, outageGroupNote(g, agents, affected, now, coverageStart))
+		}
+		report.Notes = append(silentNotes, report.Notes...)
+	}
+
 	// --- Cost attribution ----------------------------------------------------
 
 	members := map[string][]string{} // node/group -> member IDs
@@ -624,14 +673,19 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 				}
 			}
 		}
+		var idleNotInTotal float64
 		for _, id := range ids {
 			if c, ok := costs[id]; ok {
-				idleMonthly += c.Monthly
+				if idle[id].inTotal {
+					idleMonthly += c.Monthly
+				} else {
+					idleNotInTotal += c.Monthly
+				}
 			}
 		}
 
 		sum := IdleNodeSummary{Node: node, Cluster: isCluster, AgentNodes: agents, Services: len(ids), IdleServices: flagged,
-			IdleMonthly: round2(idleMonthly), FullyIdle: fullyIdle && !isCluster}
+			IdleMonthly: round2(idleMonthly), IdleMonthlyNotInTotal: round2(idleNotInTotal), FullyIdle: fullyIdle && !isCluster}
 		if priced {
 			p := round2(price)
 			sum.Monthly, sum.PriceSource, sum.PriceRule = &p, source, rule
@@ -677,47 +731,6 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 
 	report.Pricing.Warnings = append(report.Pricing.Warnings, unmatchedNodeRuleWarnings(cfg, in, members)...)
 
-	// --- Silent group members ------------------------------------------------
-	//
-	// A member silent for longer than the member timeout no longer holds its
-	// group's coverage back (coverage.go), but what only its agent could see
-	// is no longer seen: its services look quiet. While any member of a group
-	// went silent within the evidence window, that group's candidates are
-	// low confidence and left out of the total.
-	if in.historyEnabled {
-		silent := obs.silentAgents(coverageStart, now, true)
-		byGroup := map[string][]silentAgent{}
-		var groupOrder []string
-		for _, a := range silent {
-			if byGroup[a.Group] == nil {
-				groupOrder = append(groupOrder, a.Group)
-			}
-			byGroup[a.Group] = append(byGroup[a.Group], a)
-			if len(report.SilentAgents) < maxIdleSilentAgents {
-				report.SilentAgents = append(report.SilentAgents, IdleSilentAgent{Group: a.Group, Node: a.Node, LastSeen: a.LastSeen})
-			}
-		}
-		sort.Strings(groupOrder)
-		var silentNotes []string
-		for _, g := range groupOrder {
-			agents := byGroup[g]
-			affected := 0
-			for _, id := range order {
-				c := idle[id]
-				if c.svc.Node != g {
-					continue
-				}
-				affected++
-				c.idleConf = ConfidenceLow
-				c.inTotal = false
-				c.silentNote = fmt.Sprintf("Low confidence, not in the total: %s in CLUSTER_NAME group %q stopped reporting - what only it saw is no longer seen, so this may be in use.",
-					silentAgentList(agents[:1], now), g)
-			}
-			silentNotes = append(silentNotes, silentGroupNote(g, agents, affected, now, coverageStart))
-		}
-		report.Notes = append(silentNotes, report.Notes...)
-	}
-
 	// --- Items ---------------------------------------------------------------
 
 	items := make([]IdleServiceItem, 0, len(order))
@@ -726,6 +739,12 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 		item := IdleServiceItem{
 			ID: c.svc.ID, Name: displayName(c.svc), Type: c.svc.Type, Tech: c.svc.Tech, Namespace: c.svc.Namespace, Node: c.svc.Node,
 			InGraph: c.inGraph, Category: c.category, IdleConfidence: c.idleConf, InTotal: c.inTotal,
+		}
+		if !c.inTotal {
+			item.NotInTotalReason = c.notInTotalReason
+			if item.NotInTotalReason == "" {
+				item.NotInTotalReason = NotInTotalCurrentWindow // the only other cause: history disabled
+			}
 		}
 		item.Evidence = buildEvidence(c, in)
 		if c.silentNote != "" {
@@ -756,6 +775,9 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 		if summaries[i].IdleMonthly != summaries[j].IdleMonthly {
 			return summaries[i].IdleMonthly > summaries[j].IdleMonthly
 		}
+		if summaries[i].IdleMonthlyNotInTotal != summaries[j].IdleMonthlyNotInTotal {
+			return summaries[i].IdleMonthlyNotInTotal > summaries[j].IdleMonthlyNotInTotal
+		}
 		return summaries[i].Node < summaries[j].Node
 	})
 	if summaries != nil {
@@ -777,38 +799,44 @@ const (
 	maxIdleSilentNamed  = 3
 )
 
-// silentAgentList names agents and how long ago each stopped reporting:
-// "the agent on node-a (3d ago)", "the agents on node-a (3d ago), node-b
-// (5h ago) and 2 more".
-func silentAgentList(agents []silentAgent, now time.Time) string {
+// outagePhrase says what happened to one member's agent, e.g. "the agent on
+// node-a stopped reporting 3d ago", "the agent on node-a was not reporting
+// from 2026-11-01 10:00 UTC to 2026-11-05 08:00 UTC (3d 22h)".
+func outagePhrase(o memberOutage, now time.Time) string {
+	const layout = "2006-01-02 15:04 MST"
+	from := o.From.UTC().Format(layout)
+	switch {
+	case o.To.IsZero() && !o.Intermittent:
+		return fmt.Sprintf("the agent on %s stopped reporting %s ago", o.Node, humanDuration(now.Sub(o.From)))
+	case o.To.IsZero():
+		return fmt.Sprintf("the agent on %s has reported only intermittently since %s (%s)", o.Node, from, humanDuration(now.Sub(o.From)))
+	case !o.Intermittent:
+		return fmt.Sprintf("the agent on %s was not reporting from %s to %s (%s)", o.Node, from, o.To.UTC().Format(layout), humanDuration(o.To.Sub(o.From)))
+	default:
+		return fmt.Sprintf("the agent on %s reported only intermittently from %s to %s (%s)", o.Node, from, o.To.UTC().Format(layout), humanDuration(o.To.Sub(o.From)))
+	}
+}
+
+func outageGroupNote(group string, outages []memberOutage, affected int, now, windowStart time.Time) string {
 	var parts []string
-	for _, a := range firstNSilent(agents, maxIdleSilentNamed) {
-		parts = append(parts, fmt.Sprintf("%s (%s ago)", a.Node, humanDuration(now.Sub(a.LastSeen))))
+	ongoing := 0
+	for i, o := range outages {
+		if o.To.IsZero() {
+			ongoing++
+		}
+		if i < maxIdleSilentNamed {
+			parts = append(parts, outagePhrase(o, now))
+		}
 	}
-	list := strings.Join(parts, ", ")
-	if more := len(agents) - len(parts); more > 0 {
-		list += fmt.Sprintf(" and %d more", more)
+	list := strings.Join(parts, "; ")
+	if more := len(outages) - len(parts); more > 0 {
+		list += fmt.Sprintf("; and %d more", more)
 	}
-	if len(agents) == 1 {
-		return "the agent on " + list
+	pron := "it"
+	if len(outages) > 1 {
+		pron = "they"
 	}
-	return "the agents on " + list
-}
-
-func firstNSilent(xs []silentAgent, n int) []silentAgent {
-	if len(xs) > n {
-		return xs[:n]
-	}
-	return xs
-}
-
-func silentGroupNote(group string, agents []silentAgent, affected int, now, windowStart time.Time) string {
-	pron, fix, last := "it", "Restore the agent or remove the node", "its last report is"
-	if len(agents) > 1 {
-		pron, fix, last = "they", "Restore the agents or remove the nodes", "their last reports are"
-	}
-	note := fmt.Sprintf("In CLUSTER_NAME group %q, %s stopped reporting - services only %s could see may be listed wrongly. ",
-		group, silentAgentList(agents, now), pron)
+	note := fmt.Sprintf("In CLUSTER_NAME group %q, %s - services only %s could see may be listed wrongly. ", group, list, pron)
 	switch affected {
 	case 0:
 		note += "None of this group's services is flagged now; any that are while this lasts are low confidence and not in the total."
@@ -817,8 +845,17 @@ func silentGroupNote(group string, agents []silentAgent, affected int, now, wind
 	default:
 		note += fmt.Sprintf("The %d candidates in this group are low confidence and not in the total.", affected)
 	}
-	note += fmt.Sprintf(" %s; for a node that is gone this clears once %s older than the %s evidence window.",
-		fix, last, humanDuration(now.Sub(windowStart)))
+	window := humanDuration(now.Sub(windowStart))
+	switch {
+	case ongoing == 1 && len(outages) == 1:
+		note += fmt.Sprintf(" Restore the agent or remove the node; for a node that is gone this clears once its last report is older than the %s evidence window.", window)
+	case ongoing > 0:
+		note += fmt.Sprintf(" Restore the agents or remove the nodes; this clears once every outage listed is older than the %s evidence window.", window)
+	case len(outages) == 1:
+		note += fmt.Sprintf(" The agent is reporting again; this clears once the outage is older than the %s evidence window.", window)
+	default:
+		note += fmt.Sprintf(" The agents are reporting again; this clears once the outages are older than the %s evidence window.", window)
+	}
 	return note
 }
 
@@ -954,6 +991,10 @@ func finishIdleReport(report *IdleSpendReport, items []IdleServiceItem, excluded
 		report.Totals.Priced++
 		if !it.InTotal {
 			report.Totals.NotInTotalMonthly += it.Cost.Monthly
+			if report.Totals.NotInTotalByReason == nil {
+				report.Totals.NotInTotalByReason = map[string]float64{}
+			}
+			report.Totals.NotInTotalByReason[it.NotInTotalReason] += it.Cost.Monthly
 			continue
 		}
 		report.Totals.Monthly += it.Cost.Monthly
@@ -962,6 +1003,9 @@ func finishIdleReport(report *IdleSpendReport, items []IdleServiceItem, excluded
 	report.Totals.Monthly = round2(report.Totals.Monthly)
 	report.Totals.Annual = round2(report.Totals.Monthly * 12)
 	report.Totals.NotInTotalMonthly = round2(report.Totals.NotInTotalMonthly)
+	for k, v := range report.Totals.NotInTotalByReason {
+		report.Totals.NotInTotalByReason[k] = round2(v)
+	}
 	for k, v := range report.Totals.MonthlyByConfidence {
 		report.Totals.MonthlyByConfidence[k] = round2(v)
 	}

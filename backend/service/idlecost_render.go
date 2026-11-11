@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -63,7 +64,15 @@ func RenderIdleSpendMarkdown(r *IdleSpendReport) string {
 		}
 		b.WriteString("\n\n")
 		if r.Totals.NotInTotalMonthly > 0 {
-			fmt.Fprintf(&b, "Not in the total (current-window evidence only): %s%s/month\n\n", sym, md(formatMoney(r.Totals.NotInTotalMonthly)))
+			fmt.Fprintf(&b, "Not in the total: %s%s/month", sym, md(formatMoney(r.Totals.NotInTotalMonthly)))
+			var why []string
+			for _, reason := range sortedReasons(r.Totals.NotInTotalByReason) {
+				why = append(why, fmt.Sprintf("%s: %s%s", md(NotInTotalReasonText(reason)), sym, md(formatMoney(r.Totals.NotInTotalByReason[reason]))))
+			}
+			if len(why) > 0 {
+				b.WriteString(" (" + strings.Join(why, "; ") + ")")
+			}
+			b.WriteString("\n\n")
 		}
 		fmt.Fprintf(&b, "By confidence: high %s%s · medium %s%s · low %s%s\n\n",
 			sym, md(formatMoney(r.Totals.MonthlyByConfidence[ConfidenceHigh])),
@@ -90,7 +99,7 @@ func RenderIdleSpendMarkdown(r *IdleSpendReport) string {
 			if it.Cost != nil {
 				cost = sym + md(formatMoney(it.Cost.Monthly))
 				if !it.InTotal {
-					cost += " (not in total)"
+					cost += " (not in total: " + md(NotInTotalReasonText(it.NotInTotalReason)) + ")"
 				}
 			}
 			why := IdleCategoryLabel(it.Category)
@@ -148,6 +157,7 @@ func RenderIdleSpendCSV(r *IdleSpendReport) ([]byte, error) {
 	_ = w.Write([]string{
 		"id", "name", "node", "category", "quiet_days", "quiet_is_lower_bound", "last_inbound", "last_seen",
 		"monthly_cost", "annual_cost", "currency", "price_source", "share_method", "share",
+		"in_total", "not_in_total_reason",
 		"idle_confidence", "cost_confidence", "confidence", "evidence",
 	})
 	for _, it := range r.Items {
@@ -169,12 +179,34 @@ func RenderIdleSpendCSV(r *IdleSpendReport) ([]byte, error) {
 			strconv.FormatBool(it.Evidence.QuietIsLowerBound),
 			lastInbound, it.Evidence.LastSeen.UTC().Format(time.RFC3339),
 			monthly, annual, r.Currency, source, method, share,
+			strconv.FormatBool(it.InTotal), it.NotInTotalReason,
 			it.IdleConfidence, it.CostConfidence, it.Confidence,
 			csvSafe(strings.Join(it.Evidence.Notes, " ")),
 		})
 	}
 	w.Flush()
 	return buf.Bytes(), w.Error()
+}
+
+// NotInTotalReasonText words a not_in_total_reason for people.
+func NotInTotalReasonText(reason string) string {
+	switch reason {
+	case NotInTotalCurrentWindow:
+		return "current-window evidence only"
+	case NotInTotalSilentAgent:
+		return "an agent in its group was not reporting"
+	default:
+		return "see the notes"
+	}
+}
+
+func sortedReasons(m map[string]float64) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func pricingLine(r *IdleSpendReport) string {

@@ -112,6 +112,70 @@ func TestInvariantNodeAttributionNeverExceedsPrice(t *testing.T) {
 	}
 }
 
+// Totals, node summaries and per-item reasons agree, also when some items
+// are out of the total (history disabled, or a CLUSTER_NAME group with a
+// member that was out): over all nodes, idle_monthly adds up to the
+// headline and idle_monthly_not_in_total to not_in_total_monthly (less
+// node-less service-rule items), and every item out of the total says why.
+func TestInvariantTotalsMatchNodesAndReasons(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	near := func(a, b float64, n int) bool { return a-b < 0.01*float64(n+1) && b-a < 0.01*float64(n+1) }
+	kinds := map[string]int{}
+	for i := 0; i < 500; i++ {
+		w, cfg := randomWorld(rng)
+		switch rng.Intn(3) {
+		case 0: // n0 is a CLUSTER_NAME group; member b was out (still, or back)
+			w.in.groups = map[string][]string{"n0": {"a", "b"}}
+			w.in.historyNodes = []storage.NodeInterval{
+				{Node: "a", Group: "n0", FirstSeen: ago(14 * day), LastSeen: idleNow},
+				{Node: "b", Group: "n0", FirstSeen: ago(14 * day), LastSeen: ago(5 * day)},
+			}
+			if rng.Intn(2) == 0 {
+				w.in.historyNodes = append(w.in.historyNodes, storage.NodeInterval{Node: "b", Group: "n0", FirstSeen: ago(4 * day), LastSeen: idleNow})
+			}
+			for n := 1; n < 5; n++ {
+				w.in.historyNodes = append(w.in.historyNodes, storage.NodeInterval{Node: fmt.Sprintf("n%d", n), FirstSeen: ago(14 * day), LastSeen: idleNow})
+			}
+		case 1:
+			w.in.historyEnabled = false
+			w.in.historyEdges, w.in.historyServices, w.in.stale = nil, nil, nil
+			w.in.coverageStart = time.Time{}
+		}
+		r := w.run(cfg, IdleSpendQuery{AssumeNodeMonthly: float64(rng.Intn(3) * 100)})
+		label := fmt.Sprintf("world %d", i)
+		var nodeIn, nodeOut, lessIn, lessOut, byReason float64
+		for _, n := range r.Nodes {
+			nodeIn += n.IdleMonthly
+			nodeOut += n.IdleMonthlyNotInTotal
+		}
+		for _, it := range r.Items {
+			if it.InTotal != (it.NotInTotalReason == "") {
+				t.Errorf("%s: %s in_total=%v reason=%q", label, it.ID, it.InTotal, it.NotInTotalReason)
+			}
+			if it.Cost == nil || it.Node != "" {
+				continue
+			}
+			if it.InTotal {
+				lessIn += it.Cost.Monthly
+			} else {
+				lessOut += it.Cost.Monthly
+			}
+		}
+		for reason, v := range r.Totals.NotInTotalByReason {
+			byReason += v
+			kinds[reason]++
+		}
+		n := len(r.Items)
+		if !near(nodeIn, r.Totals.Monthly-lessIn, n) || !near(nodeOut, r.Totals.NotInTotalMonthly-lessOut, n) || !near(byReason, r.Totals.NotInTotalMonthly, n) {
+			t.Errorf("%s: nodes %.2f + %.2f, totals %.2f + %.2f (node-less %.2f + %.2f), by reason %.2f",
+				label, nodeIn, nodeOut, r.Totals.Monthly, r.Totals.NotInTotalMonthly, lessIn, lessOut, byReason)
+		}
+	}
+	if kinds[NotInTotalSilentAgent] == 0 || kinds[NotInTotalCurrentWindow] == 0 {
+		t.Errorf("worlds did not exercise both reasons: %v", kinds)
+	}
+}
+
 func TestInvariantLiveTrafficIsNeverFlagged(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
 	for i := 0; i < 500; i++ {
@@ -436,6 +500,12 @@ func TestReviewHistoryOffPricesOnlyOrphans(t *testing.T) {
 	}
 	if r.Totals.Monthly != 0 || r.Totals.NotInTotalMonthly <= 0 {
 		t.Errorf("totals = %+v", r.Totals)
+	}
+	if it.NotInTotalReason != NotInTotalCurrentWindow || r.Totals.NotInTotalByReason[NotInTotalCurrentWindow] != r.Totals.NotInTotalMonthly {
+		t.Errorf("reason = %q, by reason %v", it.NotInTotalReason, r.Totals.NotInTotalByReason)
+	}
+	if md := RenderIdleSpendMarkdown(r); !strings.Contains(md, "(current\\-window evidence only: $") || !strings.Contains(md, "(not in total: current\\-window evidence only)") {
+		t.Errorf("markdown:\n%s", md)
 	}
 }
 

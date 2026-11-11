@@ -394,3 +394,45 @@ func TestEdgeReporters(t *testing.T) {
 		}
 	}
 }
+
+// TestCoverageMemberOutages: per member, the most recent outage within the
+// window - still going on, ended, or flapping - and nothing for a silence
+// under the member timeout or for ungrouped agents.
+func TestCoverageMemberOutages(t *testing.T) {
+	now := time.Now().Truncate(time.Minute)
+	const g = "prod"
+	beats := []storage.NodeInterval{
+		{Node: "steady", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now},
+		{Node: "short", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now.Add(-3 * day)}, // 30 min out
+		{Node: "short", Group: g, FirstSeen: now.Add(-3*day + 30*time.Minute), LastSeen: now},
+		{Node: "dead", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now.Add(-2 * day)},
+		{Node: "back", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now.Add(-5 * day)},
+		{Node: "back", Group: g, FirstSeen: now.Add(-4 * day), LastSeen: now},
+		{Node: "old", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now.Add(-9 * day)}, // before the window
+		{Node: "old", Group: g, FirstSeen: now.Add(-8 * day), LastSeen: now},
+		{Node: "flappy", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now.Add(-3 * day)},
+		{Node: "flappy", Group: g, FirstSeen: now.Add(-2 * day), LastSeen: now},
+		{Node: "loner", FirstSeen: now.Add(-10 * day), LastSeen: now.Add(-2 * day)}, // ungrouped
+	}
+	for at := now.Add(-3*day + 20*time.Minute); at.Before(now.Add(-2 * day)); at = at.Add(20 * time.Minute) {
+		beats = append(beats, storage.NodeInterval{Node: "flappy", Group: g, FirstSeen: at, LastSeen: at}) // one heartbeat per 20 min
+	}
+	c := newObservationCoverage(5*time.Minute, 5*time.Minute, 7*day)
+	c.setHeartbeats(beats)
+	got := map[string]memberOutage{}
+	for _, o := range c.memberOutages(now.Add(-7*day), now) {
+		got[o.Node] = o
+	}
+	if len(got) != 3 {
+		t.Fatalf("outages = %+v, want dead, back, flappy", got)
+	}
+	if o := got["dead"]; !o.To.IsZero() || o.Intermittent || !o.From.Equal(now.Add(-2*day)) {
+		t.Errorf("dead = %+v, want ongoing since -2d", o)
+	}
+	if o := got["back"]; !o.From.Equal(now.Add(-5*day)) || !o.To.Equal(now.Add(-4*day)) || o.Intermittent {
+		t.Errorf("back = %+v, want -5d to -4d", o)
+	}
+	if o := got["flappy"]; !o.Intermittent || o.To.IsZero() || o.From.Before(now.Add(-3*day)) || !o.To.Equal(now.Add(-2*day)) {
+		t.Errorf("flappy = %+v, want intermittent, ended at -2d", o)
+	}
+}

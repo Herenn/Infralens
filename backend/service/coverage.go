@@ -673,6 +673,98 @@ func (c *observationCoverage) silentAgents(since, now time.Time, groupedOnly boo
 	return out
 }
 
+// memberOutage is a stretch during which a CLUSTER_NAME member was not
+// current - silent for longer than the member timeout, or flapping - and so
+// did not hold its group back while what only it could see went unseen.
+type memberOutage struct {
+	Group, Node string
+	// From is its last heartbeat before the outage; To the heartbeat that
+	// ended it, zero while it lasts.
+	From, To time.Time
+	// Intermittent: the agent kept reporting now and then (flapping)
+	// rather than being silent throughout.
+	Intermittent bool
+	LastSeen     time.Time // the agent's most recent heartbeat
+}
+
+// memberOutages lists, per CLUSTER_NAME member, its most recent outage
+// whose not-current part overlaps [since, now] - whether or not the agent
+// is reporting again. An outage starts where the silence it belongs to
+// starts; not-current stretches less than a member timeout apart (a crash
+// loop) are one outage. Ordered: ongoing first, then newest end first.
+func (c *observationCoverage) memberOutages(since, now time.Time) []memberOutage {
+	timeout := c.memberTimeout()
+	var out []memberOutage
+	for k, hb := range c.hb {
+		if k.group == "" || len(hb) == 0 {
+			continue
+		}
+		life := coverage{{hb[0].from, now}}
+		silence := life.minus(hb)
+		notCurrent := silence.minus(c.memberGaps(hb))
+		var cur *memberOutage
+		var last memberOutage
+		found := false
+		silences := 0
+		flush := func() {
+			if cur != nil {
+				cur.Intermittent = silences > 1
+				last, found = *cur, true
+			}
+		}
+		for _, nc := range notCurrent {
+			if !nc.to.After(since) {
+				continue
+			}
+			// the silence this stretch is part of
+			i := sort.Search(len(silence), func(i int) bool { return silence[i].to.After(nc.from) })
+			if i == len(silence) {
+				continue
+			}
+			sil := silence[i]
+			if cur != nil && !sil.from.After(cur.To.Add(timeout)) {
+				if sil.to.After(cur.To) { // a later silence, after a report
+					silences++
+					cur.To = sil.to
+				}
+				continue
+			}
+			flush()
+			cur = &memberOutage{Group: k.group, Node: k.node, From: sil.from.Add(-c.heartbeatGrace), To: sil.to}
+			silences = 1
+		}
+		flush()
+		if !found {
+			continue
+		}
+		if !last.To.Before(now) {
+			last.To = time.Time{} // still going on
+		}
+		last.LastSeen = hb.end().Add(-c.heartbeatGrace)
+		if last.LastSeen.After(now) {
+			last.LastSeen = now
+		}
+		out = append(out, last)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.To.IsZero() != b.To.IsZero() {
+			return a.To.IsZero()
+		}
+		if !a.To.Equal(b.To) {
+			return a.To.After(b.To)
+		}
+		if !a.From.Equal(b.From) {
+			return a.From.After(b.From)
+		}
+		if a.Group != b.Group {
+			return a.Group < b.Group
+		}
+		return a.Node < b.Node
+	})
+	return out
+}
+
 // observed is how much of [from, to] at least one of nodes was being watched.
 // No nodes (an endpoint with no node, such as an external address) means the
 // global coverage.

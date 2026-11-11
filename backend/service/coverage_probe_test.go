@@ -530,7 +530,7 @@ func TestReviewProbeIdleDeadAgent(t *testing.T) {
 				if r.Totals.Monthly != 0 || r.Totals.NotInTotalMonthly != 300 {
 					t.Errorf("totals = %+v, want 0 in the total and $300 not in it", r.Totals)
 				}
-				want := fmt.Sprintf("the agent on node-a (%dd ago) stopped reporting", deadDays)
+				want := fmt.Sprintf("the agent on node-a stopped reporting %dd ago", deadDays)
 				if !strings.Contains(r.Notes[0], want) {
 					t.Errorf("first note = %q, want it to contain %q", r.Notes[0], want)
 				}
@@ -539,5 +539,224 @@ func TestReviewProbeIdleDeadAgent(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A1 (fourth review): node-a's agent was down from -5d until 2h ago and is
+// reporting again. billing on node-a is called daily by a cron on node-a,
+// unseen during the outage. Per node, billing is held back (the outage is
+// not silence). In a CLUSTER_NAME group the outage stopped holding the group
+// back after an hour, so billing looks quiet: it is flagged, but low
+// confidence, out of the total, with the returned agent named - even though
+// that agent is reporting now. (Before: orphan, in the total, $150/mo, no
+// note.)
+func TestReviewR3ReturnedMember(t *testing.T) {
+	for _, g := range []string{"", "Kubernetes"} {
+		t.Run("group="+g, func(t *testing.T) {
+			ts, _ := newHistoryTestService(t, true)
+			ctx := context.Background()
+			now := time.Now()
+			na, nb := "node-a", "node-b"
+			if g != "" {
+				na, nb = g, g
+			}
+			down, back := now.Add(-5*day), now.Add(-2*time.Hour)
+			billing := &storage.Service{ID: "10.0.1.10/billing", Name: "billing", Type: "web_server", Node: na}
+			cron := &storage.Service{ID: "10.0.1.11/cron", Name: "cron", Type: "application", Node: na}
+			web := &storage.Service{ID: "10.0.2.10/web", Name: "web", Type: "web_server", Node: nb}
+			cl := &storage.Service{ID: "10.0.2.11/client", Name: "client", Type: "application", Node: nb}
+			var spans []HistorySpan
+			for d := 20; d >= 5; d-- { // cron->billing daily until the outage
+				at := now.Add(-time.Duration(d)*day + time.Hour)
+				if at.After(down) {
+					break
+				}
+				spans = append(spans, HistorySpan{Connection: &storage.Connection{ID: "cron->billing", SourceID: cron.ID, TargetID: "10.0.1.10:9000", Port: 9000}, From: at, To: at.Add(10 * time.Minute)})
+			}
+			spans = append(spans,
+				HistorySpan{Service: billing, From: now.Add(-20 * day), To: down},
+				HistorySpan{Service: billing, From: back, To: now},
+				HistorySpan{Service: cron, From: now.Add(-20 * day), To: down},
+				HistorySpan{Service: cron, From: back, To: now},
+				HistorySpan{Service: web, From: now.Add(-20 * day), To: now},
+				HistorySpan{Service: cl, From: now.Add(-20 * day), To: now},
+				HistorySpan{Connection: &storage.Connection{ID: "client->web", SourceID: cl.ID, TargetID: web.ID, Port: 80}, From: now.Add(-20 * day), To: now},
+				HistorySpan{Node: "node-a", Group: g, From: now.Add(-20 * day), To: down},
+				HistorySpan{Node: "node-a", Group: g, From: back, To: now},
+				HistorySpan{Node: "node-b", Group: g, From: now.Add(-20 * day), To: now},
+			)
+			if err := ts.ImportHistory(ctx, spans); err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range []*storage.Service{billing, cron, web, cl} {
+				cp := *s
+				if err := ts.AddOrUpdateService(ctx, &cp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := ts.AddConnection(ctx, &storage.Connection{ID: "client->web", SourceID: cl.ID, TargetID: web.ID, Port: 80, LastSeen: now}); err != nil {
+				t.Fatal(err)
+			}
+			if g != "" {
+				ts.NoteAgentNode(g, "node-a")
+				ts.NoteAgentNode(g, "node-b")
+			}
+			ts.ConfigureIdleCost(IdleCostConfig{DefaultNodeMonthly: 300, Warmup: -1})
+			r, err := ts.GetIdleSpend(ctx, IdleSpendQuery{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := findItem(r, billing.ID)
+			if g == "" {
+				if item != nil {
+					t.Fatalf("per node: billing flagged %s/%s", item.Category, item.IdleConfidence)
+				}
+				if len(r.SilentAgents) != 0 {
+					t.Errorf("per node: silent agents %+v", r.SilentAgents)
+				}
+				return
+			}
+			if item == nil {
+				t.Fatalf("grouped: billing not flagged: %+v", r.Excluded)
+			}
+			t.Logf("billing %s/%s in_total=%v reason=%q; silent=%+v; note=%q", item.Category, item.IdleConfidence, item.InTotal, item.NotInTotalReason, r.SilentAgents, r.Notes[0])
+			if item.IdleConfidence != ConfidenceLow || item.InTotal || item.NotInTotalReason != NotInTotalSilentAgent {
+				t.Errorf("billing conf=%s in_total=%v reason=%q, want low / false / silent_agent", item.IdleConfidence, item.InTotal, item.NotInTotalReason)
+			}
+			if len(r.SilentAgents) != 1 {
+				t.Fatalf("silent_agents = %+v, want node-a", r.SilentAgents)
+			}
+			a := r.SilentAgents[0]
+			if a.Node != "node-a" || a.Intermittent || a.ReturnedAt == nil ||
+				a.SilentSince.Sub(down).Abs() > time.Minute || a.ReturnedAt.Sub(back).Abs() > time.Minute {
+				t.Errorf("silent agent = %+v, want node-a out from %s, back at %s", a, down, back)
+			}
+			if !strings.Contains(r.Notes[0], "the agent on node-a was not reporting from") || !strings.Contains(r.Notes[0], "UTC (4d)") ||
+				!strings.Contains(r.Notes[0], "The agent is reporting again") {
+				t.Errorf("note = %q", r.Notes[0])
+			}
+			if r.Totals.Monthly != 0 || r.Totals.NotInTotalByReason[NotInTotalSilentAgent] != r.Totals.NotInTotalMonthly {
+				t.Errorf("totals = %+v", r.Totals)
+			}
+			// Exports say why, and the CSV lets a spreadsheet leave it out.
+			mdText := RenderIdleSpendMarkdown(r)
+			if !strings.Contains(mdText, "Not in the total: $150/month (an agent in its group was not reporting: $150)") ||
+				!strings.Contains(mdText, "$150 (not in total: an agent in its group was not reporting)") ||
+				strings.Contains(mdText, "current-window") {
+				t.Errorf("markdown:\n%s", mdText)
+			}
+			csvOut, err := RenderIdleSpendCSV(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows := strings.Split(strings.TrimSpace(string(csvOut)), "\n")
+			if !strings.Contains(rows[0], ",in_total,not_in_total_reason,") || !strings.Contains(rows[1], ",false,silent_agent,") {
+				t.Errorf("csv:\n%s", csvOut)
+			}
+			for _, n := range r.Nodes {
+				if n.Node == g && (n.IdleMonthly != 0 || n.IdleMonthlyNotInTotal != 150) {
+					t.Errorf("node summary %+v, want 0 in total and 150 out", n)
+				}
+			}
+		})
+	}
+}
+
+// A flapping member (one heartbeat every 20 minutes for two days, now
+// steady again) also marks its group's candidates low and out of the
+// total, reported as intermittent.
+func TestIdleFlappingMemberDowngrades(t *testing.T) {
+	ts, _ := newHistoryTestService(t, true)
+	ctx := context.Background()
+	now := time.Now()
+	const g = "Kubernetes"
+	billing := &storage.Service{ID: "10.0.1.10/billing", Name: "billing", Type: "web_server", Node: g}
+	spans := []HistorySpan{
+		{Service: billing, From: now.Add(-20 * day), To: now},
+		{Node: "node-b", Group: g, From: now.Add(-20 * day), To: now},
+		{Node: "node-a", Group: g, From: now.Add(-20 * day), To: now.Add(-6 * day)},
+		{Node: "node-a", Group: g, From: now.Add(-4 * day), To: now},
+	}
+	for at := now.Add(-6*day + 20*time.Minute); at.Before(now.Add(-4 * day)); at = at.Add(20 * time.Minute) {
+		spans = append(spans, HistorySpan{Node: "node-a", Group: g, From: at, To: at})
+	}
+	if err := ts.ImportHistory(ctx, spans); err != nil {
+		t.Fatal(err)
+	}
+	cp := *billing
+	if err := ts.AddOrUpdateService(ctx, &cp); err != nil {
+		t.Fatal(err)
+	}
+	ts.ConfigureIdleCost(IdleCostConfig{DefaultNodeMonthly: 300, Warmup: -1})
+	r, err := ts.GetIdleSpend(ctx, IdleSpendQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := findItem(r, billing.ID)
+	if item == nil {
+		t.Fatalf("billing not flagged: %+v", r.Excluded)
+	}
+	if item.IdleConfidence != ConfidenceLow || item.InTotal || item.NotInTotalReason != NotInTotalSilentAgent {
+		t.Errorf("billing conf=%s in_total=%v reason=%q", item.IdleConfidence, item.InTotal, item.NotInTotalReason)
+	}
+	if len(r.SilentAgents) != 1 || !r.SilentAgents[0].Intermittent || r.SilentAgents[0].ReturnedAt == nil {
+		t.Fatalf("silent_agents = %+v, want node-a, intermittent, returned", r.SilentAgents)
+	}
+	if !strings.Contains(r.Notes[0], "the agent on node-a reported only intermittently from") {
+		t.Errorf("note = %q", r.Notes[0])
+	}
+}
+
+// Decommissioned node-a with Kubernetes-named edges, grouped and not, back
+// after 12h: its edges are reported gone once, and its return announces
+// nothing.
+func TestReviewR3K8sDecommissionAndReturn(t *testing.T) {
+	for _, g := range []string{"", "Kubernetes"} {
+		t.Run("group="+g, func(t *testing.T) {
+			w := newProbeWorld(t, g, true)
+			w.warm(2*time.Hour, "node-a", "node-b", "node-c")
+			d := w.h.detectorWith(DriftConfig{GoneAfter: 30 * time.Minute, Warmup: 0}, nil)
+			goneAt := w.run(d, 18*time.Hour, func(el time.Duration) {
+				w.see("web", "redis", 6379)
+				w.see("worker", "q", 5672)
+				w.beat("node-b")
+				w.beat("node-c")
+				if el >= 12*time.Hour {
+					w.see("api", "db", 5432)
+					w.beat("node-a")
+				}
+			})
+			t.Logf("group=%q: gone at %v; %d events", g, goneAt, len(w.h.feed()))
+			want := strings.Join(sortedCopy([]string{w.edge("api", "db"), w.edge("api", "cache")}), ",")
+			if goneKeys(goneAt) != want || len(w.h.feed()) != 2 {
+				t.Errorf("gone = %v, feed %v; want both api edges once and nothing else", goneAt, feedIDs(w.h.feed()))
+			}
+		})
+	}
+}
+
+// Known limit (documented): Kubernetes-named edges are attributed to the
+// node on the source's service row. api has replicas on node-a and node-b,
+// its row says node-b, only node-a's replica calls cache: when node-a's
+// agent dies, api->cache is measured against node-b and reported gone after
+// GoneAfter.
+func TestReviewR3ReplicaAttribution(t *testing.T) {
+	w := newProbeWorld(t, "", true)
+	ctx := context.Background()
+	if err := w.h.store.Services().Upsert(ctx, &storage.Service{ID: w.ids["api"], Name: "api", Node: "node-b"}); err != nil {
+		t.Fatal(err)
+	}
+	w.warm(2*time.Hour, "node-a", "node-b", "node-c")
+	d := w.h.detectorWith(DriftConfig{GoneAfter: 30 * time.Minute, Warmup: 0}, nil)
+	goneAt := w.run(d, 3*time.Hour, func(el time.Duration) {
+		w.see("api", "db", 5432) // node-b's replica keeps calling db
+		w.see("web", "redis", 6379)
+		w.see("worker", "q", 5672)
+		w.beat("node-b")
+		w.beat("node-c")
+	})
+	t.Logf("replica attribution: gone at %v", goneAt)
+	if goneKeys(goneAt) != w.edge("api", "cache") {
+		t.Errorf("gone = %v; the documented limit is api->cache reported gone", goneAt)
 	}
 }

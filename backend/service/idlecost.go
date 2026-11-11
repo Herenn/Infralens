@@ -236,19 +236,31 @@ type IdleSpendReport struct {
 	Excluded       []IdleExclusion    `json:"excluded"`
 	ExcludedCount  int                `json:"excluded_count"`
 	Notes          []string           `json:"notes"`
-	// SilentAgents are CLUSTER_NAME members that stopped reporting within
-	// the evidence window (silent for longer than the one-hour member
-	// timeout), newest silence first, at most maxIdleSilentAgents. While a
-	// group has one, its candidates are low confidence and not in the total,
-	// and Notes says so.
+	// SilentAgents are CLUSTER_NAME members that were out within the
+	// evidence window - silent for longer than the one-hour member timeout,
+	// or flapping - whether still out or reporting again: one entry per
+	// agent (its most recent outage), still-out first, at most
+	// maxIdleSilentAgents. While a group has one, its candidates are low
+	// confidence and not in the total, and Notes opens with one sentence per
+	// such group saying so.
 	SilentAgents []IdleSilentAgent `json:"silent_agents"`
 }
 
-// IdleSilentAgent is a grouped agent that stopped reporting.
+// IdleSilentAgent is a grouped agent that was out within the evidence
+// window.
 type IdleSilentAgent struct {
-	Group    string    `json:"group"`
-	Node     string    `json:"node"`
+	Group string `json:"group"`
+	Node  string `json:"node"`
+	// LastSeen is its most recent heartbeat.
 	LastSeen time.Time `json:"last_seen"`
+	// SilentSince is its last heartbeat before the outage.
+	SilentSince time.Time `json:"silent_since"`
+	// ReturnedAt is the heartbeat that ended the outage; absent while the
+	// agent is still out.
+	ReturnedAt *time.Time `json:"returned_at,omitempty"`
+	// Intermittent: it kept reporting now and then (flapping) rather than
+	// being silent throughout.
+	Intermittent bool `json:"intermittent,omitempty"`
 }
 
 // IdleDisclaimer is shown with every report.
@@ -292,6 +304,9 @@ type IdleSpendTotals struct {
 	// (history disabled: current-window evidence only; or an agent in the
 	// candidate's CLUSTER_NAME group stopped reporting).
 	NotInTotalMonthly float64 `json:"not_in_total_monthly"`
+	// NotInTotalByReason splits NotInTotalMonthly by the items'
+	// not_in_total_reason; absent when nothing is left out.
+	NotInTotalByReason map[string]float64 `json:"not_in_total_by_reason,omitempty"`
 }
 
 // IdleServiceItem is one candidate: evidence, estimate, confidence.
@@ -312,10 +327,22 @@ type IdleServiceItem struct {
 	CostConfidence string            `json:"cost_confidence"`
 	Confidence     string            `json:"confidence"`
 
-	// InTotal is false when the cost is shown but kept out of the headline.
-	InTotal bool    `json:"in_total"`
-	Score   float64 `json:"score"`
+	// InTotal is false when the cost is shown but kept out of the headline;
+	// NotInTotalReason then says why (NotInTotal*).
+	InTotal          bool    `json:"in_total"`
+	NotInTotalReason string  `json:"not_in_total_reason,omitempty"`
+	Score            float64 `json:"score"`
 }
+
+// Why an item is not in the total.
+const (
+	// NotInTotalCurrentWindow: history is disabled, so the evidence is the
+	// current window only.
+	NotInTotalCurrentWindow = "current_window"
+	// NotInTotalSilentAgent: an agent in the item's CLUSTER_NAME group was
+	// out within the evidence window (IdleSpendReport.SilentAgents).
+	NotInTotalSilentAgent = "silent_agent"
+)
 
 // IdleEvidence is why a service is considered idle.
 type IdleEvidence struct {
@@ -368,11 +395,16 @@ type IdleNodeSummary struct {
 	PriceRule    string   `json:"price_rule,omitempty"`
 	Services     int      `json:"services"`
 	IdleServices int      `json:"idle_services"`
-	IdleMonthly  float64  `json:"idle_monthly"`
-	FullyIdle    bool     `json:"fully_idle"`
-	Reporting    bool     `json:"reporting"`
-	CPUPercent   *float64 `json:"cpu_percent,omitempty"`
-	MemPercent   *float64 `json:"mem_percent,omitempty"`
+	// IdleMonthly is the flagged services' cost counted in the report's
+	// total; IdleMonthlyNotInTotal the part shown but kept out of it. Over
+	// all nodes they add up to Totals.Monthly and Totals.NotInTotalMonthly,
+	// less node-less items priced by a service rule.
+	IdleMonthly           float64  `json:"idle_monthly"`
+	IdleMonthlyNotInTotal float64  `json:"idle_monthly_not_in_total"`
+	FullyIdle             bool     `json:"fully_idle"`
+	Reporting             bool     `json:"reporting"`
+	CPUPercent            *float64 `json:"cpu_percent,omitempty"`
+	MemPercent            *float64 `json:"mem_percent,omitempty"`
 }
 
 // IdleExclusion is a service a false-positive guard held back.
