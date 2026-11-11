@@ -55,12 +55,13 @@ jobs:
       # Stored times must not depend on the host's zone (v3.0's SQLite store
       # compared local-zone text). Runners are UTC, which would hide that, so
       # the time-sensitive packages also run in a zone with DST and one with
-      # a non-whole-hour history.
+      # a non-whole-hour history. -count=1: the test cache is not keyed on TZ,
+      # so without it the second run would replay the first one's results.
       - name: Test Backend (non-UTC time zones)
         run: |
           cd backend
-          TZ=America/New_York go test ./storage/... ./service/... ./mcp/... ./api/...
-          TZ=Europe/Istanbul go test ./storage/... ./service/... ./mcp/... ./api/...
+          TZ=America/New_York go test -count=1 ./storage/... ./service/... ./mcp/... ./api/...
+          TZ=Europe/Istanbul go test -count=1 ./storage/... ./service/... ./mcp/... ./api/...
 
   backend-postgres:
     name: Backend (PostgreSQL)
