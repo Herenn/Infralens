@@ -167,7 +167,8 @@ export function useWebSocket() {
 
   const connect = useCallback(() => {
     if (closedRef.current) return
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    const current = wsRef.current
+    if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) return
 
     const url = wsUrl()
     console.log('Connecting to WebSocket:', url)
@@ -196,6 +197,9 @@ export function useWebSocket() {
     }
 
     ws.onclose = () => {
+      // A socket this hook has already let go of (see the effect cleanup)
+      // must not touch the state of the one that replaced it.
+      if (wsRef.current !== ws) return
       console.log('WebSocket disconnected')
       setIsConnected(false)
       wsRef.current = null
@@ -250,9 +254,20 @@ export function useWebSocket() {
         clearTimeout(flushTimeoutRef.current)
         flushTimeoutRef.current = null
       }
-      if (wsRef.current) {
-        wsRef.current.close()
-        wsRef.current = null
+      const ws = wsRef.current
+      wsRef.current = null
+      if (ws) {
+        // Detach first: a socket closed here never reconnects or reports,
+        // whatever order its events arrive in (React StrictMode mounts,
+        // unmounts and remounts in development).
+        ws.onopen = null
+        ws.onmessage = null
+        ws.onerror = null
+        ws.onclose = null
+        // Closing a socket that is still connecting logs a browser error;
+        // let it finish opening, then close it.
+        if (ws.readyState === WebSocket.CONNECTING) ws.addEventListener('open', () => ws.close())
+        else ws.close()
       }
     }
   }, [connect])
