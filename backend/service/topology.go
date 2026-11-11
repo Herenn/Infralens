@@ -837,6 +837,9 @@ func (ts *TopologyService) rankedCriticality(ctx context.Context) ([]ServiceCrit
 	if err != nil {
 		return nil, fmt.Errorf("getting topology: %w", err)
 	}
+	// So the ranking names external endpoints by hostname (ServiceHostname),
+	// like the map does, instead of ":443".
+	annotateTopology(topo)
 
 	byEndpoint := buildImpactIndex(topo.Connections, ImpactUpstream)
 

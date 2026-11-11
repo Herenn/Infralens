@@ -362,6 +362,7 @@ func (h *TopologyHandler) HandleGetCriticality(w http.ResponseWriter, r *http.Re
 		response = append(response, CriticalityResponse{
 			ID:          sc.Service.ID,
 			Name:        sc.Service.Name,
+			Hostname:    service.ServiceHostname(&sc.Service),
 			Type:        sc.Service.Type,
 			Node:        sc.Service.Node,
 			BlastRadius: sc.BlastRadius,
@@ -478,8 +479,11 @@ type StaleServiceResponse struct {
 
 // CriticalityResponse is a service's rank in the blast-radius-size ranking.
 type CriticalityResponse struct {
-	ID          string `json:"id"`
-	Name        string `json:"name,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	// Hostname is the DNS name an external (address-keyed) service is
+	// labelled with, as in ServiceResponse.
+	Hostname    string `json:"hostname,omitempty"`
 	Type        string `json:"type,omitempty"`
 	Node        string `json:"node,omitempty"`
 	BlastRadius int    `json:"blast_radius"`

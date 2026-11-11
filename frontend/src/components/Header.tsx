@@ -106,7 +106,7 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
   const exportPos = getDropdownPosition(exportButtonRef)
 
   return (
-    <header className="h-14 px-6 flex items-center justify-between border-b border-dark-800 bg-dark-900/80 backdrop-blur-sm relative z-50">
+    <header className="h-14 px-6 flex items-center justify-between gap-4 border-b border-dark-800 bg-dark-900/80 backdrop-blur-sm relative z-50">
       {/* Logo */}
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-lens-500 to-lens-600 flex items-center justify-center">
@@ -316,8 +316,10 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
         )}
       </div>
 
-      {/* Stats */}
-      <div className="flex items-center gap-6">
+      {/* Stats. Below 1440px the "services"/"connections" words give way
+          (numbers and icons stay, with a tooltip) so the header keeps to one
+          line at 1280px with every v3.1 control and the Disconnected state. */}
+      <div className="flex items-center gap-4 min-[1440px]:gap-6">
         {/* The two side panels that open in the map's top-left slot (one at
             a time - see App.tsx), side by side. */}
         {(changes || onToggleIdleSpend) && (
@@ -343,19 +345,19 @@ export default function Header({ isConnected, stats, filters, onFiltersChange, f
           </div>
         )}
 
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-2 text-sm" title={`${displayStats.services} services`}>
           <Server size={16} className="text-dark-400" />
           <span className="text-dark-300">{displayStats.services}</span>
-          <span className="text-dark-500">services</span>
+          <span className="text-dark-500 hidden min-[1440px]:inline">services</span>
           {hasFilters && stats.services !== displayStats.services && (
             <span className="text-dark-600 text-xs">/ {stats.services}</span>
           )}
         </div>
         
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-2 text-sm" title={`${displayStats.connections} connections`}>
           <GitBranch size={16} className="text-dark-400" />
           <span className="text-dark-300">{displayStats.connections}</span>
-          <span className="text-dark-500">connections</span>
+          <span className="text-dark-500 hidden min-[1440px]:inline">connections</span>
           {hasFilters && stats.connections !== displayStats.connections && (
             <span className="text-dark-600 text-xs">/ {stats.connections}</span>
           )}

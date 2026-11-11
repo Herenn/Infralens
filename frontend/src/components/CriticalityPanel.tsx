@@ -11,7 +11,7 @@ export default function CriticalityPanel() {
       fetchUrl="/api/v1/graph/criticality"
       emptyMessage="Not enough connections yet to rank criticality."
       getId={svc => svc.id}
-      getName={svc => svc.name || svc.id}
+      getName={svc => svc.hostname || svc.name || svc.id}
       renderSubtitle={svc => (
         <>breaks {svc.blast_radius} service{svc.blast_radius === 1 ? '' : 's'} if it goes down</>
       )}

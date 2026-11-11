@@ -82,6 +82,8 @@ export interface StaleService {
 export interface CriticalityEntry {
   id: string
   name?: string
+  // DNS name of an external (address-keyed) service, when known.
+  hostname?: string
   type?: string
   node?: string
   blast_radius: number

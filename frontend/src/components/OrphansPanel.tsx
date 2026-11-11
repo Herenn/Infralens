@@ -11,7 +11,7 @@ export default function OrphansPanel() {
       fetchUrl="/api/v1/graph/orphans"
       emptyMessage="No orphans — every service has at least one connection."
       getId={svc => svc.id}
-      getName={svc => svc.name || svc.id}
+      getName={svc => svc.hostname || svc.name || svc.id}
       renderSubtitle={svc => (
         <>{svc.type || svc.tech || 'no connections'}{svc.node && <> · {svc.node}</>}</>
       )}
