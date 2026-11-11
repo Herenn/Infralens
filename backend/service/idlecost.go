@@ -236,6 +236,19 @@ type IdleSpendReport struct {
 	Excluded       []IdleExclusion    `json:"excluded"`
 	ExcludedCount  int                `json:"excluded_count"`
 	Notes          []string           `json:"notes"`
+	// SilentAgents are CLUSTER_NAME members that stopped reporting within
+	// the evidence window (silent for longer than the one-hour member
+	// timeout), newest silence first, at most maxIdleSilentAgents. While a
+	// group has one, its candidates are low confidence and not in the total,
+	// and Notes says so.
+	SilentAgents []IdleSilentAgent `json:"silent_agents"`
+}
+
+// IdleSilentAgent is a grouped agent that stopped reporting.
+type IdleSilentAgent struct {
+	Group    string    `json:"group"`
+	Node     string    `json:"node"`
+	LastSeen time.Time `json:"last_seen"`
 }
 
 // IdleDisclaimer is shown with every report.
@@ -276,7 +289,8 @@ type IdleSpendTotals struct {
 	Unpriced            int                `json:"unpriced"`
 	MonthlyByConfidence map[string]float64 `json:"monthly_by_confidence"`
 	// NotInTotalMonthly is priced but deliberately left out of Monthly
-	// (history disabled: current-window evidence only).
+	// (history disabled: current-window evidence only; or an agent in the
+	// candidate's CLUSTER_NAME group stopped reporting).
 	NotInTotalMonthly float64 `json:"not_in_total_monthly"`
 }
 

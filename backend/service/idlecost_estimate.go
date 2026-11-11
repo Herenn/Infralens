@@ -64,8 +64,9 @@ type idleCandidate struct {
 	viaAddress      string
 	udp             bool
 
-	idleConf string
-	inTotal  bool
+	idleConf   string
+	inTotal    bool
+	silentNote string // an agent in its group stopped reporting
 }
 
 type edgeObs struct {
@@ -89,6 +90,7 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 		Nodes:          []IdleNodeSummary{},
 		Excluded:       []IdleExclusion{},
 		Notes:          []string{},
+		SilentAgents:   []IdleSilentAgent{},
 		Totals:         IdleSpendTotals{MonthlyByConfidence: map[string]float64{ConfidenceHigh: 0, ConfidenceMedium: 0, ConfidenceLow: 0}},
 	}
 	report.Pricing = pricingSummary(cfg, q)
@@ -171,7 +173,18 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 	}
 	in.coverageStart = coverageStart
 	obs := buildIdleCoverage(in, nodeOf)
-	observedTotal := obs.total(coverageStart, now)
+	// Observed: the global coverage - and, with CLUSTER_NAME groups, only
+	// while every group carrying services was observed too: one live member
+	// does not make a group with a silent one observed (coverage.go).
+	observedCov := obs.globalCoverage()
+	groupsInUse := map[string]bool{}
+	for _, s := range in.services {
+		if s.Node != "" && obs.isGroup(s.Node) && !groupsInUse[s.Node] {
+			groupsInUse[s.Node] = true
+			observedCov = observedCov.intersect(obs.nodeCoverage(s.Node))
+		}
+	}
+	observedTotal := observedCov.covered(coverageStart, now)
 	report.Evidence = IdleEvidenceWindow{
 		HistoryEnabled:    in.historyEnabled,
 		From:              coverageStart,
@@ -664,6 +677,47 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 
 	report.Pricing.Warnings = append(report.Pricing.Warnings, unmatchedNodeRuleWarnings(cfg, in, members)...)
 
+	// --- Silent group members ------------------------------------------------
+	//
+	// A member silent for longer than the member timeout no longer holds its
+	// group's coverage back (coverage.go), but what only its agent could see
+	// is no longer seen: its services look quiet. While any member of a group
+	// went silent within the evidence window, that group's candidates are
+	// low confidence and left out of the total.
+	if in.historyEnabled {
+		silent := obs.silentAgents(coverageStart, now, true)
+		byGroup := map[string][]silentAgent{}
+		var groupOrder []string
+		for _, a := range silent {
+			if byGroup[a.Group] == nil {
+				groupOrder = append(groupOrder, a.Group)
+			}
+			byGroup[a.Group] = append(byGroup[a.Group], a)
+			if len(report.SilentAgents) < maxIdleSilentAgents {
+				report.SilentAgents = append(report.SilentAgents, IdleSilentAgent{Group: a.Group, Node: a.Node, LastSeen: a.LastSeen})
+			}
+		}
+		sort.Strings(groupOrder)
+		var silentNotes []string
+		for _, g := range groupOrder {
+			agents := byGroup[g]
+			affected := 0
+			for _, id := range order {
+				c := idle[id]
+				if c.svc.Node != g {
+					continue
+				}
+				affected++
+				c.idleConf = ConfidenceLow
+				c.inTotal = false
+				c.silentNote = fmt.Sprintf("Low confidence, not in the total: %s in CLUSTER_NAME group %q stopped reporting - what only it saw is no longer seen, so this may be in use.",
+					silentAgentList(agents[:1], now), g)
+			}
+			silentNotes = append(silentNotes, silentGroupNote(g, agents, affected, now, coverageStart))
+		}
+		report.Notes = append(silentNotes, report.Notes...)
+	}
+
 	// --- Items ---------------------------------------------------------------
 
 	items := make([]IdleServiceItem, 0, len(order))
@@ -674,6 +728,9 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 			InGraph: c.inGraph, Category: c.category, IdleConfidence: c.idleConf, InTotal: c.inTotal,
 		}
 		item.Evidence = buildEvidence(c, in)
+		if c.silentNote != "" {
+			item.Evidence.Notes = append([]string{c.silentNote}, item.Evidence.Notes...)
+		}
 		est := costs[id]
 		cc := costConf[id]
 		if est != nil && c.category == IdleCategoryStale {
@@ -711,6 +768,58 @@ func estimateIdleSpend(in idleInputs, cfg IdleCostConfig, q IdleSpendQuery) *Idl
 
 	finishIdleReport(report, items, excluded, q.Limit)
 	return report
+}
+
+// maxIdleSilentAgents caps IdleSpendReport.SilentAgents; notes name at most
+// maxIdleSilentNamed agents per group.
+const (
+	maxIdleSilentAgents = 20
+	maxIdleSilentNamed  = 3
+)
+
+// silentAgentList names agents and how long ago each stopped reporting:
+// "the agent on node-a (3d ago)", "the agents on node-a (3d ago), node-b
+// (5h ago) and 2 more".
+func silentAgentList(agents []silentAgent, now time.Time) string {
+	var parts []string
+	for _, a := range firstNSilent(agents, maxIdleSilentNamed) {
+		parts = append(parts, fmt.Sprintf("%s (%s ago)", a.Node, humanDuration(now.Sub(a.LastSeen))))
+	}
+	list := strings.Join(parts, ", ")
+	if more := len(agents) - len(parts); more > 0 {
+		list += fmt.Sprintf(" and %d more", more)
+	}
+	if len(agents) == 1 {
+		return "the agent on " + list
+	}
+	return "the agents on " + list
+}
+
+func firstNSilent(xs []silentAgent, n int) []silentAgent {
+	if len(xs) > n {
+		return xs[:n]
+	}
+	return xs
+}
+
+func silentGroupNote(group string, agents []silentAgent, affected int, now, windowStart time.Time) string {
+	pron, fix, last := "it", "Restore the agent or remove the node", "its last report is"
+	if len(agents) > 1 {
+		pron, fix, last = "they", "Restore the agents or remove the nodes", "their last reports are"
+	}
+	note := fmt.Sprintf("In CLUSTER_NAME group %q, %s stopped reporting - services only %s could see may be listed wrongly. ",
+		group, silentAgentList(agents, now), pron)
+	switch affected {
+	case 0:
+		note += "None of this group's services is flagged now; any that are while this lasts are low confidence and not in the total."
+	case 1:
+		note += "The 1 candidate in this group is low confidence and not in the total."
+	default:
+		note += fmt.Sprintf("The %d candidates in this group are low confidence and not in the total.", affected)
+	}
+	note += fmt.Sprintf(" %s; for a node that is gone this clears once %s older than the %s evidence window.",
+		fix, last, humanDuration(now.Sub(windowStart)))
+	return note
 }
 
 func notQuietDetail(c *idleCandidate, cfg IdleCostConfig) string {

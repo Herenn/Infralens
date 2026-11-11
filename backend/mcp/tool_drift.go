@@ -158,6 +158,20 @@ func listDriftEventsTool() Tool {
 				if !st.WarmupUntil.IsZero() && st.WarmupUntil.After(now) {
 					det["warmup_until"] = formatTime(st.WarmupUntil)
 				}
+				if st.SilentAgentsTotal > 0 {
+					// Absence is not measured while an agent is silent (in a
+					// CLUSTER_NAME group: only for its first hour).
+					silent := make([]map[string]any, 0, len(st.SilentAgents))
+					for _, a := range st.SilentAgents {
+						m := map[string]any{"node": a.Node, "last_seen": formatTime(a.LastSeen)}
+						if a.Group != "" {
+							m["group"] = a.Group
+						}
+						silent = append(silent, m)
+					}
+					det["silent_agents"] = silent
+					det["silent_agents_total"] = st.SilentAgentsTotal
+				}
 				out["detector"] = det
 			} else {
 				out["detector"] = map[string]any{"running": false}

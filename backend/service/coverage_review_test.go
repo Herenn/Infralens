@@ -115,23 +115,32 @@ func sortedCopy(in []string) []string {
 // A node that is decommissioned (its agent never comes back) while the rest
 // keeps reporting: after the retirement threshold (6h floor at a 30m
 // GoneAfter) its edges are reported gone - once - instead of never. v3.0
-// reported them; the first coverage fix had gone silent for good.
+// reported them; the first coverage fix had gone silent for good. In a
+// CLUSTER_NAME group the member stops being required after the one-hour
+// member timeout instead, so its edges are reported about GoneAfter later;
+// the drift status lists it as silent meanwhile.
 func TestDriftRetiredNodeIsReportedGone(t *testing.T) {
 	for _, group := range []string{"", "prod"} {
 		name := "per-node"
+		quietFor := 6 * time.Hour // the retirement threshold
 		if group != "" {
 			name = "CLUSTER_NAME group"
+			quietFor = 80 * time.Minute // the member timeout plus under GoneAfter
 		}
 		t.Run(name, func(t *testing.T) {
 			s := newDriftScenario(t, group)
 			s.run(2*time.Hour, func() { s.nodeA(true, true); s.nodeB() })
 			s.start()
 
-			s.run(6*time.Hour, s.nodeB) // inside the retirement threshold
+			s.run(quietFor, s.nodeB)
 			if g := gone(s.h.feed()); len(g) != 0 {
-				t.Fatalf("reported gone before retirement: %v", g)
+				t.Fatalf("reported gone after %s: %v", quietFor, g)
 			}
-			s.run(4*time.Hour, s.nodeB)
+			st := s.h.ts.GetDriftStatus()
+			if st.SilentAgentsTotal != 1 || st.SilentAgents[0].Node != "node-a" || st.SilentAgents[0].Group != group {
+				t.Errorf("silent agents = %+v, want node-a (group %q)", st.SilentAgents, group)
+			}
+			s.run(10*time.Hour-quietFor, s.nodeB)
 			apiDB, apiCache := scAPI+"->"+scDB, scAPI+"->"+scCache
 			wantGone(t, s.h.feed(), apiDB, apiCache)
 			s.run(2*time.Hour, s.nodeB)
@@ -141,16 +150,39 @@ func TestDriftRetiredNodeIsReportedGone(t *testing.T) {
 }
 
 // A single agent outage shorter than the retirement threshold produces
-// nothing, also for a CLUSTER_NAME group (where one live member used to keep
-// the dead one "observed"), and nothing on recovery.
+// nothing, and nothing on recovery. In a CLUSTER_NAME group (where one live
+// member used to keep the dead one "observed") the same holds for an outage
+// shorter than the member timeout plus GoneAfter.
 func TestDriftGroupMemberOutageIsQuiet(t *testing.T) {
+	for _, c := range []struct {
+		group  string
+		outage time.Duration
+	}{{"", 3 * time.Hour}, {"prod", 80 * time.Minute}} {
+		t.Run(c.group, func(t *testing.T) {
+			s := newDriftScenario(t, c.group)
+			s.run(2*time.Hour, func() { s.nodeA(true, true); s.nodeB() })
+			s.start()
+			s.run(c.outage, s.nodeB)
+			s.run(time.Hour, func() { s.nodeA(true, true); s.nodeB() })
+			if ev := s.h.feed(); len(ev) != 0 {
+				t.Fatalf("agent outage of %s reported as drift: %v", c.outage, feedIDs(ev))
+			}
+		})
+	}
+}
+
+// A real disappearance on a live node of a CLUSTER_NAME group is reported
+// while another member's agent is silent for good (scale-in): the silent
+// member holds the group up for the member timeout, not for the retirement
+// threshold.
+func TestDriftGroupScaleInDoesNotBlindGroup(t *testing.T) {
 	s := newDriftScenario(t, "prod")
 	s.run(2*time.Hour, func() { s.nodeA(true, true); s.nodeB() })
 	s.start()
-	s.run(3*time.Hour, s.nodeB) // node-a's agent down 6x GoneAfter
-	s.run(time.Hour, func() { s.nodeA(true, true); s.nodeB() })
-	if ev := s.h.feed(); len(ev) != 0 {
-		t.Fatalf("group member outage reported as drift: %v", feedIDs(ev))
+	// node-a scaled in, api rescheduled onto node-b; api->db really gone.
+	s.run(3*time.Hour, func() { s.h.see(scAPI, scCache, 6379); s.nodeB() })
+	if g := gone(s.h.feed()); len(g) != 1 || g[0] != scAPI+"->"+scDB {
+		t.Errorf("gone = %v, want only api->db", g)
 	}
 }
 
@@ -212,9 +244,13 @@ func TestDriftAcrossTheHeartbeatUpgrade(t *testing.T) {
 
 // The review's Idle-spend probe under the Helm default (agent.clusterName
 // "Kubernetes"): node-a's agent dead for 8 days, node-b heartbeating under
-// the same group. billing on node-a is not flagged - it was "orphan / medium
-// / unobserved 0s, $200/mo" while the group heartbeat counted for both.
-// Also: members joining and leaving.
+// the same group. billing (only node-a could see its traffic) was "orphan /
+// medium / unobserved 0s, $200/mo" while the group heartbeat counted for
+// both. A silent member stops holding the group back after the one-hour
+// member timeout, so billing is flagged again - but, while a member of its
+// group went silent within the evidence window, at low confidence, out of
+// the total, under a note naming the agent. Also: members joining and
+// leaving.
 func TestIdleClusterGroupCoverage(t *testing.T) {
 	const g = "Kubernetes"
 	type member struct {
@@ -222,16 +258,16 @@ func TestIdleClusterGroupCoverage(t *testing.T) {
 		from, to time.Duration // ago
 	}
 	cases := []struct {
-		name     string
-		members  []member
-		wantFlag bool
+		name       string
+		members    []member
+		wantFlag   bool
+		wantSilent string // a member listed as silent: billing is low, out of the total
 	}{
-		{"one member dead for 8 days", []member{{"node-a", 14 * day, 8 * day}, {"node-b", 14 * day, 0}}, false},
-		{"all members up throughout", []member{{"node-a", 14 * day, 0}, {"node-b", 14 * day, 0}}, true},
-		{"a member joined 2 days ago", []member{{"node-a", 14 * day, 0}, {"node-b", 14 * day, 0}, {"node-c", 2 * day, 0}}, true},
-		// Scaled in 13 days ago: retired after the stale threshold (7d), so
-		// the group is observed again for the last 6 days - enough to flag.
-		{"a member removed 13 days ago", []member{{"node-a", 14 * day, 0}, {"node-b", 14 * day, 0}, {"node-old", 14 * day, 13 * day}}, true},
+		{"one member dead for 8 days", []member{{"node-a", 14 * day, 8 * day}, {"node-b", 14 * day, 0}}, true, "node-a"},
+		{"all members up throughout", []member{{"node-a", 14 * day, 0}, {"node-b", 14 * day, 0}}, true, ""},
+		{"a member joined 2 days ago", []member{{"node-a", 14 * day, 0}, {"node-b", 14 * day, 0}, {"node-c", 2 * day, 0}}, true, ""},
+		{"a member removed 13 days ago", []member{{"node-a", 14 * day, 0}, {"node-b", 14 * day, 0}, {"node-old", 14 * day, 13 * day}}, true, "node-old"},
+		{"a member out for 30 minutes", []member{{"node-a", 14 * day, 0}, {"node-b", 14 * day, 2 * day}, {"node-b", 2*day - 30*time.Minute, 0}}, true, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -278,12 +314,32 @@ func TestIdleClusterGroupCoverage(t *testing.T) {
 				t.Fatalf("billing flagged %s/%s unobserved=%ds: a group member's agent was down",
 					item.Category, item.IdleConfidence, item.Evidence.UnobservedSeconds)
 			}
-			if !c.wantFlag {
-				for _, ex := range r.Excluded {
-					if ex.ID == billing.ID && ex.Reason != IdleExcludedNotQuietEnough {
-						t.Errorf("billing held back as %s, want %s", ex.Reason, IdleExcludedNotQuietEnough)
-					}
+			if item == nil {
+				return
+			}
+			silentNote := ""
+			for _, n := range r.Notes {
+				if strings.Contains(n, "stopped reporting") {
+					silentNote = n
 				}
+			}
+			if c.wantSilent == "" {
+				if !item.InTotal || item.IdleConfidence == ConfidenceLow || silentNote != "" || len(r.SilentAgents) != 0 {
+					t.Errorf("no silent member: in_total=%v conf=%s silent=%+v note=%q", item.InTotal, item.IdleConfidence, r.SilentAgents, silentNote)
+				}
+				return
+			}
+			if item.InTotal || item.IdleConfidence != ConfidenceLow {
+				t.Errorf("silent member %s: billing in_total=%v conf=%s, want false/low", c.wantSilent, item.InTotal, item.IdleConfidence)
+			}
+			if !strings.Contains(silentNote, c.wantSilent) || !strings.Contains(item.Evidence.Notes[0], c.wantSilent) {
+				t.Errorf("note does not name %s: report %q, item %q", c.wantSilent, silentNote, item.Evidence.Notes[0])
+			}
+			if len(r.SilentAgents) != 1 || r.SilentAgents[0].Node != c.wantSilent || r.SilentAgents[0].Group != g {
+				t.Errorf("silent_agents = %+v", r.SilentAgents)
+			}
+			if r.Totals.Monthly != 0 || r.Totals.NotInTotalMonthly == 0 {
+				t.Errorf("totals = %+v, want billing out of the headline", r.Totals)
 			}
 		})
 	}

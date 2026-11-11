@@ -96,6 +96,19 @@ type DriftDetectorResponse struct {
 	LastCheck            *string `json:"last_check"`
 	CheckIntervalSeconds int64   `json:"check_interval_seconds,omitempty"`
 	GoneAfterSeconds     int64   `json:"gone_after_seconds,omitempty"`
+	// SilentAgents: agents that stopped reporting recently (see
+	// service.DriftStatus), newest silence first, capped; SilentAgentsTotal
+	// counts them all. Always present while running (possibly empty).
+	SilentAgents      []DriftSilentAgentResponse `json:"silent_agents"`
+	SilentAgentsTotal int                        `json:"silent_agents_total"`
+}
+
+// DriftSilentAgentResponse is one agent that stopped reporting. Group is its
+// CLUSTER_NAME, omitted for an ungrouped agent.
+type DriftSilentAgentResponse struct {
+	Node     string `json:"node"`
+	Group    string `json:"group,omitempty"`
+	LastSeen string `json:"last_seen"`
 }
 
 func formatDriftTime(t time.Time) string {
@@ -294,7 +307,13 @@ func (h *DriftHandler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 			LastCheck:            optionalDriftTime(st.LastCheck),
 			CheckIntervalSeconds: int64(st.Interval / time.Second),
 			GoneAfterSeconds:     int64(st.GoneAfter / time.Second),
+			SilentAgents:         []DriftSilentAgentResponse{},
+			SilentAgentsTotal:    st.SilentAgentsTotal,
 		},
+	}
+	for _, a := range st.SilentAgents {
+		resp.Detector.SilentAgents = append(resp.Detector.SilentAgents, DriftSilentAgentResponse{
+			Node: a.Node, Group: a.Group, LastSeen: formatDriftTime(a.LastSeen)})
 	}
 	if raw := r.URL.Query().Get("since"); raw != "" {
 		resp.Since = &raw

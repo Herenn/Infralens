@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -226,43 +227,104 @@ func TestCoverageHeartbeatsAndOwnActivity(t *testing.T) {
 	}
 }
 
-// TestCoverageClusterGroup: a CLUSTER_NAME group is observed only while every
-// member agent reports; members join at their first heartbeat and drop out
-// once retired, so autoscaling does not leave the group unobserved for good.
+// TestCoverageClusterGroup: a CLUSTER_NAME group is observed only while no
+// current member is silent. A member is current from its first heartbeat
+// until it has been silent for the member timeout (1h), so a member that
+// stops for good holds the group up for an hour, not until it is retired.
 func TestCoverageClusterGroup(t *testing.T) {
 	now := time.Now()
 	const g = "Kubernetes"
 	c := newObservationCoverage(0, 0, 6*time.Hour)
 	c.setHeartbeats([]storage.NodeInterval{
 		{Node: "a", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now.Add(-8 * day)}, // dies, never returns
-		{Node: "b", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now},
-		{Node: "c", Group: g, FirstSeen: now.Add(-3 * day), LastSeen: now.Add(-2 * day)}, // joins, dies for 2h, back
+		{Node: "b", Group: g, FirstSeen: now.Add(-10 * day), LastSeen: now.Add(-day)},
+		{Node: "b", Group: g, FirstSeen: now.Add(-day + 30*time.Minute), LastSeen: now},  // 30 min out
+		{Node: "c", Group: g, FirstSeen: now.Add(-3 * day), LastSeen: now.Add(-2 * day)}, // joins, out for 2h, back
 		{Node: "c", Group: g, FirstSeen: now.Add(-2*day + 2*time.Hour), LastSeen: now},
-		{Node: "x", FirstSeen: now.Add(-10 * day), LastSeen: now}, // another, ungrouped node
+		{Node: "x", FirstSeen: now.Add(-10 * day), LastSeen: now},                 // another, ungrouped node
+		{Node: "a", Group: "other", FirstSeen: now.Add(-10 * day), LastSeen: now}, // same name, other cluster
 	})
 	obs := func(from, to time.Time) time.Duration { return c.observed([]string{g}, from, to) }
 	if got := obs(now.Add(-10*day), now.Add(-8*day)); got < 2*day-time.Minute {
 		t.Errorf("all members up: %s, want 2d", got)
 	}
-	if got := obs(now.Add(-8*day+time.Minute), now.Add(-8*day+6*time.Hour)); got != 0 {
-		t.Errorf("member a down (not yet retired), b up: %s, want 0 - one live agent must not cover a dead one", got)
+	if got := obs(now.Add(-8*day), now.Add(-8*day+time.Hour)); got != 0 {
+		t.Errorf("member a silent, within the member timeout: %s, want 0 - one live agent must not cover a dead one", got)
 	}
-	if got := obs(now.Add(-8*day+7*time.Hour), now.Add(-3*day)); got < 5*day-8*time.Hour {
-		t.Errorf("after a retired: %s, want b's coverage", got)
+	if got := obs(now.Add(-8*day+time.Hour), now.Add(-3*day)); got < 5*day-time.Hour-time.Minute {
+		t.Errorf("a silent for longer than the timeout: %s, want b's coverage", got)
 	}
-	if got := obs(now.Add(-4*day), now.Add(-3*day)); got < day-time.Minute {
-		t.Errorf("before c joined: %s, want covered (c is not a member yet)", got)
+	if got := obs(now.Add(-day), now.Add(-day+30*time.Minute)); got != 0 {
+		t.Errorf("member b out for 30 minutes: %s, want 0", got)
 	}
-	if got := obs(now.Add(-2*day+time.Minute), now.Add(-2*day+2*time.Hour)); got != 0 {
-		t.Errorf("member c down for 2h: %s, want 0", got)
+	if got := obs(now.Add(-2*day), now.Add(-2*day+time.Hour)); got != 0 {
+		t.Errorf("member c out, first hour: %s, want 0", got)
 	}
-	if got := obs(now.Add(-2*day+2*time.Hour), now); got < 2*day-2*time.Hour-time.Minute {
+	if got := obs(now.Add(-2*day+time.Hour), now.Add(-2*day+2*time.Hour)); got < time.Hour-time.Minute {
+		t.Errorf("member c out, second hour: %s, want 1h (no longer required)", got)
+	}
+	if got := obs(now.Add(-2*day+2*time.Hour), now.Add(-day)); got < day-2*time.Hour-time.Minute {
 		t.Errorf("c back: %s, want covered", got)
 	}
-	// Members are not nodes of their own for services: an ungrouped node is
-	// unaffected by the group.
+	// Agents are (group, node): the ungrouped node x and node a of another
+	// cluster are unaffected by the group, and vice versa.
 	if got := c.observed([]string{"x"}, now.Add(-8*day), now); got < 8*day {
 		t.Errorf("ungrouped node x: %s", got)
+	}
+	if got := c.observed([]string{"other"}, now.Add(-8*day), now); got < 8*day {
+		t.Errorf("group other (its own node a reporting): %s", got)
+	}
+	if got := c.observed([]string{"a"}, now.Add(-8*day), now); got != 0 {
+		t.Errorf("ungrouped node a (never reported ungrouped): %s, want 0", got)
+	}
+	silent := c.silentAgents(now.Add(-9*day), now, true)
+	if len(silent) != 1 || silent[0].Node != "a" || silent[0].Group != g {
+		t.Errorf("silent agents = %+v, want a in %s", silent, g)
+	}
+}
+
+// TestCoverageGroupWithoutHeartbeats: a known group with no member
+// heartbeats is unobserved - local evidence recorded under the group name is
+// not used.
+func TestCoverageGroupWithoutHeartbeats(t *testing.T) {
+	now := time.Now()
+	c := newObservationCoverage(time.Minute, time.Minute, 0)
+	c.addEvidence("", []string{"Kubernetes"}, now.Add(-10*day), now)
+	c.setGroups([]string{"Kubernetes"})
+	if got := c.observed([]string{"Kubernetes"}, now.Add(-10*day), now); got != 0 {
+		t.Errorf("group before any member heartbeat: %s, want 0", got)
+	}
+	if got := c.total(now.Add(-10*day), now); got < 10*day-time.Minute {
+		t.Errorf("global: %s, want the evidence", got)
+	}
+}
+
+// TestCoverageFlappingMember: a crash-looping member (5 minutes of
+// heartbeats every 20) stops holding the group up once it has reported for
+// less than half of the preceding two hours; until then its gaps count as
+// unobserved.
+func TestCoverageFlappingMember(t *testing.T) {
+	now := time.Now().Truncate(time.Minute)
+	const g = "prod"
+	start := now.Add(-12 * time.Hour)
+	beats := []storage.NodeInterval{
+		{Node: "steady", Group: g, FirstSeen: now.Add(-day), LastSeen: now},
+		{Node: "flappy", Group: g, FirstSeen: now.Add(-day), LastSeen: start},
+	}
+	for t := start.Add(20 * time.Minute); t.Before(now); t = t.Add(20 * time.Minute) {
+		beats = append(beats, storage.NodeInterval{Node: "flappy", Group: g, FirstSeen: t, LastSeen: t.Add(5 * time.Minute)})
+	}
+	c := newObservationCoverage(0, 0, 72*time.Hour)
+	c.setHeartbeats(beats)
+	obs := func(from, to time.Time) time.Duration { return c.observed([]string{g}, from, to) }
+	// First hour of flapping: still current, mostly unobserved.
+	if got := obs(start, start.Add(time.Hour)); got > 20*time.Minute {
+		t.Errorf("first hour of flapping: %s observed, want at most its reporting time", got)
+	}
+	// Ratio over the last 2h falls under 50% after 80 minutes: from then on
+	// the group is observed.
+	if got := obs(start.Add(2*time.Hour), now); got < 10*time.Hour-time.Minute {
+		t.Errorf("after the flapping rule applies: %s observed of 10h", got)
 	}
 }
 
@@ -299,6 +361,36 @@ func TestCoverageMinus(t *testing.T) {
 	for i := range want {
 		if !got[i].from.Equal(want[i].from) || !got[i].to.Equal(want[i].to) {
 			t.Fatalf("minus = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestEdgeReporters: an edge's absence is measured against the nodes of its
+// process-keyed endpoints; failing those, the node on the source's service
+// row, else the target's; only node-less edges use the global coverage.
+// Evidence of observation is credited to process-keyed endpoints only.
+func TestEdgeReporters(t *testing.T) {
+	nodes := map[string]string{
+		"10.0.1.10/api": "node-a", "Deploy:prod/api": "node-a", "Deploy:prod/web": "Kubernetes",
+		"Svc:prod/db": "node-b", "10.0.3.10:5432": "",
+	}
+	nodeOf := func(id string) string { return nodes[id] }
+	for _, c := range []struct {
+		src, tgt string
+		want     string
+		evidence string
+	}{
+		{"10.0.1.10/api", "10.0.3.10:5432", "node-a", "node-a"},
+		{"Deploy:prod/api", "Svc:prod/db", "node-a", ""},
+		{"Deploy:prod/web", "Svc:prod/db", "Kubernetes", ""},
+		{"Deploy:prod/unknown", "Svc:prod/db", "node-b", ""},
+		{"203.0.113.9", "198.51.100.7:443", "", ""},
+	} {
+		if got := strings.Join(edgeReporters(c.src, c.tgt, nodeOf), ","); got != c.want {
+			t.Errorf("edgeReporters(%s, %s) = %q, want %q", c.src, c.tgt, got, c.want)
+		}
+		if got := strings.Join(edgeEvidenceNodes(c.src, c.tgt, nodeOf), ","); got != c.evidence {
+			t.Errorf("edgeEvidenceNodes(%s, %s) = %q, want %q", c.src, c.tgt, got, c.evidence)
 		}
 	}
 }

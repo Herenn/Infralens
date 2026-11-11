@@ -139,6 +139,10 @@ type DriftDetector struct {
 	// history at seed and from current state on every pass.
 	nodes map[string]string
 
+	// silent: agents that stopped reporting within the retirement window,
+	// as of the last pass (see silentAgents), for the status.
+	silent []silentAgent
+
 	// pending holds events that could not be written to the feed yet.
 	pending []storage.DriftEvent
 }
@@ -369,13 +373,14 @@ func (d *DriftDetector) see(ci storage.ConnectionInterval) {
 	if ci.ID == 0 {
 		key = ci.ConnectionID + "|" + ci.FirstSeen.String()
 	}
-	d.cov.addEvidence(key, edgeReporters(ci.SourceID, ci.TargetID, d.nodeOf), ci.FirstSeen, ci.LastSeen)
+	d.cov.addEvidence(key, edgeEvidenceNodes(ci.SourceID, ci.TargetID, d.nodeOf), ci.FirstSeen, ci.LastSeen)
 }
 
 func (d *DriftDetector) nodeOf(id string) string { return d.nodes[id] }
 
 // loadCoverage refreshes what the coverage needs from the store: every agent
-// heartbeat within retention, and the node of every current service. Node
+// heartbeat within retention, the CLUSTER_NAME groups agents report under
+// now, and the node of every current service. Node
 // mappings of services that left current state are kept only while a known
 // edge still refers to them, so the map is bounded by current state plus
 // the known edges.
@@ -387,7 +392,14 @@ func (d *DriftDetector) loadCoverage(ctx context.Context, now time.Time, prune b
 	if err != nil {
 		return fmt.Errorf("loading node coverage: %w", err)
 	}
+	d.cov.now = d.now
 	d.cov.setHeartbeats(beats)
+	groups := make([]string, 0)
+	for g := range d.ts.agentGroups(now) {
+		groups = append(groups, g)
+	}
+	d.cov.setGroups(groups)
+	d.silent = d.cov.silentAgents(now.Add(-d.retireAfter()), now, false)
 	services, err := d.ts.store.Services().List(ctx, storage.ServiceFilter{})
 	if err != nil {
 		return fmt.Errorf("loading service nodes: %w", err)
@@ -413,7 +425,8 @@ func (d *DriftDetector) loadCoverage(ctx context.Context, now time.Time, prune b
 }
 
 // gone reports whether an edge has gone unobserved for GoneAfter of observed
-// time, as of ref - observed by an agent that could have recorded it.
+// time, as of ref - observed by the agent(s) that could have recorded it
+// (edgeReporters).
 func (d *DriftDetector) gone(st *driftEdgeState, ref time.Time) bool {
 	reporters := edgeReporters(st.edge.SourceID, st.edge.TargetID, d.nodeOf)
 	return d.cov.observed(reporters, st.edge.LastSeen, ref) > d.cfg.GoneAfter

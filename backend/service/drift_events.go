@@ -40,7 +40,28 @@ type DriftStatus struct {
 	LastCheck time.Time
 	Interval  time.Duration
 	GoneAfter time.Duration
+	// SilentAgents are agents that stopped reporting more than an hour
+	// (the group member timeout) before the last pass and less than the
+	// retirement threshold ago, newest silence first, at most
+	// MaxDriftSilentAgents; SilentAgentsTotal counts them all. Edges only
+	// such an agent could see are not reported gone while it is merely
+	// silent - except in a CLUSTER_NAME group, where a member silent for
+	// longer than the timeout no longer holds the group back (see
+	// coverage.go): what only it could see may then be reported gone.
+	SilentAgents      []SilentAgent
+	SilentAgentsTotal int
 }
+
+// SilentAgent is an agent that stopped reporting.
+type SilentAgent struct {
+	Node string
+	// Group is the agent's CLUSTER_NAME, "" when it reports ungrouped.
+	Group    string
+	LastSeen time.Time
+}
+
+// MaxDriftSilentAgents caps DriftStatus.SilentAgents.
+const MaxDriftSilentAgents = 20
 
 // ListDriftEvents returns one page of the persisted drift feed, newest
 // first. A non-positive filter.Limit means DefaultDriftEventLimit; it is
@@ -125,12 +146,21 @@ func (d *DriftDetector) publishStatus() {
 	if d.ts == nil {
 		return
 	}
+	silent := make([]SilentAgent, 0, len(d.silent))
+	for _, a := range d.silent {
+		if len(silent) == MaxDriftSilentAgents {
+			break
+		}
+		silent = append(silent, SilentAgent{Node: a.Node, Group: a.Group, LastSeen: a.LastSeen})
+	}
 	d.ts.driftStatus.Store(&DriftStatus{
-		Running:     true,
-		WarmupUntil: d.baselineUntil,
-		LastCheck:   d.lastCheck,
-		Interval:    d.cfg.Interval,
-		GoneAfter:   d.cfg.GoneAfter,
+		Running:           true,
+		WarmupUntil:       d.baselineUntil,
+		LastCheck:         d.lastCheck,
+		Interval:          d.cfg.Interval,
+		GoneAfter:         d.cfg.GoneAfter,
+		SilentAgents:      silent,
+		SilentAgentsTotal: len(d.silent),
 	})
 }
 

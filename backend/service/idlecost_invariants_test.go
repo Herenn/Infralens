@@ -351,6 +351,10 @@ func TestReviewClusterGroupingNeverYieldsPerNodeFigures(t *testing.T) {
 	build := func() *idleWorld {
 		w := newIdleWorld().node("Kubernetes")
 		w.in.groups = map[string][]string{"Kubernetes": {"node-1", "node-2", "node-3"}}
+		// A group is observed only through its members' heartbeats.
+		for _, n := range w.in.groups["Kubernetes"] {
+			w.in.historyNodes = append(w.in.historyNodes, storage.NodeInterval{Node: n, Group: "Kubernetes", FirstSeen: ago(14 * day), LastSeen: idleNow})
+		}
 		w.svc("10.0.8.8", "external", "unknown", "")
 		w.in.services[len(w.in.services)-1].Tech = "External"
 		for i := 0; i < 30; i++ {

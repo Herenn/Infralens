@@ -198,6 +198,9 @@ func TestHandleDriftSummary(t *testing.T) {
 	if all.Detector.Running {
 		t.Error("no detector is running in this test, but the summary says one is")
 	}
+	if all.Detector.SilentAgents == nil || len(all.Detector.SilentAgents) != 0 || all.Detector.SilentAgentsTotal != 0 {
+		t.Errorf("silent_agents = %v (total %d), want an empty list", all.Detector.SilentAgents, all.Detector.SilentAgentsTotal)
+	}
 
 	unread := get("?since=" + url.QueryEscape(events[4].DetectedAt.UTC().Format(time.RFC3339Nano)))
 	if unread.Total != 2 {

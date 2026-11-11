@@ -1,7 +1,6 @@
 package service
 
 import (
-	"fmt"
 	"net"
 	"sort"
 	"strings"
@@ -42,6 +41,12 @@ import (
 //     ID, so a live client keeps a dead server's edge and service row fresh)
 //     and credit no node.
 //
+// Which coverage an edge's absence is measured against (edgeReporters): the
+// nodes of its process-keyed endpoints; for an edge with none (both ends
+// Kubernetes names, say), the node recorded on the source's service row,
+// else on the target's - a service row's node is set by the agent that saw
+// the service locally.
+//
 // A node's coverage is the union of both: a node whose metrics posting fails
 // but whose agent still reports traffic is still observed (history from
 // before heartbeats existed has only the second kind). A node with neither
@@ -51,22 +56,39 @@ import (
 //
 // CLUSTER_NAME groups. Grouped agents record every service and edge under
 // the group name, so local activity cannot say which member's agent
-// produced it, and a group is observed only while EVERY member agent is
-// reporting (the intersection of the members' heartbeats): one live agent
-// must not keep a dead member's services and edges "observed". Members come
-// and go (autoscaling, replaced hosts): a member counts from its first
-// heartbeat, and stops counting once it has been silent for the retirement
-// threshold below, so a removed node does not leave its group unobserved for
-// good.
+// produced it and is not used: a group is observed only through its
+// members' heartbeats, and before any member has sent one it is simply
+// unobserved. Heartbeats are kept per (group, node), so a node's grouped and
+// ungrouped reporting, or same-named nodes in two clusters, never mix.
+//
+// Membership is time-local. A member is "current" from its first heartbeat
+// until it has been silent for memberTimeout (1h, at least
+// memberTimeoutBeats heartbeat gaps). The group is observed while at least
+// one member reports and no current member is silent: one live agent must
+// not keep a dead member's services and edges "observed", but a member that
+// stops for good (scale-in, a replaced host) holds the group up for at most
+// the timeout, not until it is retired. Silences shorter than the timeout
+// count as unobserved. A flapping member - one that, at that moment, has
+// reported for less than half (flapMinRatio) of the preceding two timeouts
+// (flapWindowTimeouts), or of its life so far if that is shorter - is not
+// current either, so a crash-looping agent cannot hold the group unobserved
+// indefinitely: it does so for at most about an hour after the flapping
+// starts, and for at most half the time after that.
+//
+// A member that stopped for good is no longer required, but what only it
+// could see is no longer seen either. Callers that turn silence into
+// verdicts list such members (silentAgents) instead of hiding them: Idle
+// spend caps that group's candidates at low confidence and leaves them out
+// of the total, and the drift status names them.
 //
 // Retirement. Outage and retirement look the same at first - an agent stops
-// reporting. A node (or group member) whose own agent has been silent for
-// longer than retireAfter while InfraLens keeps observing elsewhere is
-// treated as retired: from then on its coverage follows the global coverage,
-// so what was on it is (after the usual delays) reported gone or offered as
-// a decommission candidate instead of staying unknown forever. A shorter
-// outage still accrues nothing. Callers choose retireAfter (drift:
-// driftRetireAfter; idle spend: the stale threshold).
+// reporting. A node whose own agent has been silent for longer than
+// retireAfter (a group: every member) while InfraLens keeps observing
+// elsewhere is treated as retired: from then on its coverage follows the
+// global coverage, so what was on it is (after the usual delays) reported
+// gone or offered as a decommission candidate instead of staying unknown
+// forever. A shorter outage still accrues nothing. Callers choose
+// retireAfter (drift: driftRetireAfter; idle spend: the stale threshold).
 //
 // Known limit: a node where genuinely nothing happened and whose agent sent
 // no heartbeats (history from before heartbeats) shows a gap. That errs in
@@ -196,41 +218,65 @@ func (c coverage) total() time.Duration {
 	return d
 }
 
+// Group membership (see the top of this file).
+const (
+	memberTimeout      = time.Hour
+	memberTimeoutBeats = 4   // the timeout is at least this many heartbeat gaps
+	flapWindowTimeouts = 2   // a member's reporting ratio is taken over this many timeouts
+	flapMinRatio       = 0.5 // below this ratio a member is flapping, not current
+	flapStep           = 5 * time.Minute
+)
+
+// agentKey identifies an agent: its node within its CLUSTER_NAME group (""
+// for an ungrouped agent).
+type agentKey struct{ group, node string }
+
+// silentAgent is a grouped or ungrouped agent that stopped reporting.
+type silentAgent struct {
+	Group, Node string
+	LastSeen    time.Time
+}
+
 // observationCoverage is the shared coverage model (see the top of this
 // file). Give it heartbeats and evidence, then ask observed(nodes, from, to).
 // The drift detector keeps one for its lifetime: it replaces the heartbeats
 // on every pass and updates evidence by key as intervals are extended.
 //
-// Evidence is indexed by node as it arrives; per-node merged coverage is
-// rebuilt only for nodes whose evidence changed, so a pass over a large
-// pre-heartbeat history costs little more than one over a small one.
+// Memory scales with nodes and distinct edges, not with intervals: only
+// evidence that can still be extended (its interval ended within
+// openWindow) is kept by key; everything older is folded into per-node
+// merged coverage as soon as it is seen or closes.
 type observationCoverage struct {
 	heartbeatGrace time.Duration // added to a heartbeat interval's end
 	evidenceGrace  time.Duration // added to an evidence interval's end
 	retireAfter    time.Duration // silence after which a node counts as retired; 0: never
+	now            func() time.Time
 
 	// heartbeats
-	hb      map[string]coverage // real agent node -> merged heartbeats (with grace)
-	members map[string][]string // CLUSTER_NAME group -> member agent nodes
+	hb      map[agentKey]coverage // merged heartbeats (with grace)
+	members map[string][]agentKey // CLUSTER_NAME group -> members with heartbeats
+	groups  map[string]bool       // known CLUSTER_NAME groups, with or without heartbeats
 	hbAll   coverage
 
 	// evidence
-	evidence   map[string]evidenceSpan    // by caller-chosen key
-	evByNode   map[string]map[string]span // node -> key -> span
-	evMerged   map[string]coverage        // node -> merged evidence (lazily)
-	evNodeless map[string]span            // evidence crediting no node, by key
-	evAll      coverage                   // all evidence, merged (lazily)
-	evAllOK    bool
+	open      map[string]evidenceSpan    // extendable evidence, by caller-chosen key
+	openBy    map[string]map[string]span // node ("" for none) -> key -> span, for open
+	closed    map[string]coverage        // node ("" for none) -> merged closed evidence
+	pending   map[string][]span          // node ("" for none) -> closed, not merged yet
+	evMerged  map[string]coverage        // node -> all its evidence, merged (lazily)
+	evAll     coverage                   // all evidence, merged (lazily)
+	evAllOK   bool
+	sinceSwep int
 
 	global   coverage // hbAll ∪ evAll (lazily)
 	globalOK bool
 	final    map[string]coverage // per node key, final coverage (lazily)
-	seq      int
 }
 
 type evidenceSpan struct {
 	nodes []string
 	s     span
+	to    time.Time // raw end, without grace
 }
 
 func newObservationCoverage(heartbeatGrace, evidenceGrace, retireAfter time.Duration) *observationCoverage {
@@ -238,49 +284,85 @@ func newObservationCoverage(heartbeatGrace, evidenceGrace, retireAfter time.Dura
 		heartbeatGrace: heartbeatGrace,
 		evidenceGrace:  evidenceGrace,
 		retireAfter:    retireAfter,
-		hb:             map[string]coverage{},
-		members:        map[string][]string{},
-		evidence:       map[string]evidenceSpan{},
-		evByNode:       map[string]map[string]span{},
+		now:            time.Now,
+		hb:             map[agentKey]coverage{},
+		members:        map[string][]agentKey{},
+		groups:         map[string]bool{},
+		open:           map[string]evidenceSpan{},
+		openBy:         map[string]map[string]span{},
+		closed:         map[string]coverage{},
+		pending:        map[string][]span{},
 		evMerged:       map[string]coverage{},
-		evNodeless:     map[string]span{},
 		final:          map[string]coverage{},
 	}
 }
 
+// memberTimeout is how long a group member may be silent before it stops
+// being required (see the top of this file).
+func (c *observationCoverage) memberTimeout() time.Duration {
+	t := memberTimeout
+	if f := memberTimeoutBeats * c.heartbeatGrace; f > t {
+		t = f
+	}
+	return t
+}
+
+// openWindow: evidence whose interval ended longer ago than this can no
+// longer be extended (history opens a new interval after maxGap - the
+// heartbeat grace - of silence), with as much again for late writes.
+func (c *observationCoverage) openWindow() time.Duration {
+	w := 2 * c.heartbeatGrace
+	if w < 2*storage.DefaultHistoryMaxGap {
+		w = 2 * storage.DefaultHistoryMaxGap
+	}
+	return w
+}
+
+func (c *observationCoverage) invalidate() {
+	c.globalOK = false
+	c.final = map[string]coverage{}
+}
+
 // setHeartbeats replaces all heartbeat coverage with the given intervals.
+// Their groups are known groups from then on (see setGroups).
 func (c *observationCoverage) setHeartbeats(intervals []storage.NodeInterval) {
-	raw := map[string][]span{}
-	groupsOf := map[string]map[string]bool{}
+	raw := map[agentKey][]span{}
 	var all []span
 	for _, ni := range intervals {
 		if ni.Node == "" {
 			continue
 		}
 		s := span{from: ni.FirstSeen, to: ni.LastSeen.Add(c.heartbeatGrace)}
-		raw[ni.Node] = append(raw[ni.Node], s)
+		k := agentKey{ni.Group, ni.Node}
+		raw[k] = append(raw[k], s)
 		all = append(all, s)
-		if ni.Group != "" {
-			if groupsOf[ni.Group] == nil {
-				groupsOf[ni.Group] = map[string]bool{}
-			}
-			groupsOf[ni.Group][ni.Node] = true
+	}
+	c.hb = make(map[agentKey]coverage, len(raw))
+	c.members = map[string][]agentKey{}
+	for k, ss := range raw {
+		c.hb[k] = buildCoverage(ss, time.Time{}, time.Time{})
+		if k.group != "" {
+			c.members[k.group] = append(c.members[k.group], k)
+			c.groups[k.group] = true
 		}
 	}
-	c.hb = make(map[string]coverage, len(raw))
-	for n, ss := range raw {
-		c.hb[n] = buildCoverage(ss, time.Time{}, time.Time{})
-	}
-	c.members = make(map[string][]string, len(groupsOf))
-	for g, ms := range groupsOf {
-		for m := range ms {
-			c.members[g] = append(c.members[g], m)
-		}
-		sort.Strings(c.members[g])
+	for g := range c.members {
+		sort.Slice(c.members[g], func(i, j int) bool { return c.members[g][i].node < c.members[g][j].node })
 	}
 	c.hbAll = buildCoverage(all, time.Time{}, time.Time{})
-	c.globalOK = false
-	c.final = map[string]coverage{}
+	c.invalidate()
+}
+
+// setGroups adds CLUSTER_NAME groups known from elsewhere (agents reporting
+// now). A known group with no member heartbeats is unobserved; its name is
+// never treated as an ungrouped node with local evidence.
+func (c *observationCoverage) setGroups(groups []string) {
+	for _, g := range groups {
+		if g != "" && !c.groups[g] {
+			c.groups[g] = true
+			c.invalidate()
+		}
+	}
 }
 
 // addHeartbeat adds one ungrouped heartbeat interval (tests, idle inputs
@@ -290,55 +372,91 @@ func (c *observationCoverage) addHeartbeat(node string, from, to time.Time) {
 		return
 	}
 	s := span{from: from, to: to.Add(c.heartbeatGrace)}
-	c.hb[node] = union(c.hb[node], coverage{s})
+	k := agentKey{"", node}
+	c.hb[k] = union(c.hb[k], coverage{s})
 	c.hbAll = union(c.hbAll, coverage{s})
-	c.globalOK = false
-	c.final = map[string]coverage{}
+	c.invalidate()
 }
 
 // addEvidence records a service or edge interval as evidence for the given
-// nodes (those whose agent produced it - see edgeReporters). Every interval
-// also counts towards the global coverage. A later call with the same key
-// replaces the span (an interval extended in place); an empty key always
-// adds.
+// nodes (those whose agent produced it - see edgeEvidenceNodes). Every
+// interval also counts towards the global coverage. A later call with the
+// same key replaces the span while the interval can still be extended; an
+// empty key, or an interval that ended more than openWindow ago, is folded
+// in for good.
 func (c *observationCoverage) addEvidence(key string, nodes []string, from, to time.Time) {
-	if key == "" {
-		c.seq++
-		key = fmt.Sprintf("#%d", c.seq)
-	}
 	s := span{from: from, to: to.Add(c.evidenceGrace)}
-	if old, ok := c.evidence[key]; ok {
+	if !s.to.After(s.from) {
+		return
+	}
+	if old, ok := c.open[key]; ok && key != "" {
 		if old.s == s && sameNodes(old.nodes, nodes) {
 			return // re-read, unchanged
 		}
-		c.dropEvidence(key, old)
+		c.dropOpen(key, old)
 	}
-	c.evidence[key] = evidenceSpan{nodes: nodes, s: s}
-	if len(nodes) == 0 {
-		c.evNodeless[key] = s
-	}
-	for _, n := range nodes {
-		if c.evByNode[n] == nil {
-			c.evByNode[n] = map[string]span{}
+	if key == "" || to.Before(c.now().Add(-c.openWindow())) {
+		c.fold(nodes, s)
+	} else {
+		c.open[key] = evidenceSpan{nodes: nodes, s: s, to: to}
+		for _, n := range nodeKeys(nodes) {
+			if c.openBy[n] == nil {
+				c.openBy[n] = map[string]span{}
+			}
+			c.openBy[n][key] = s
+			delete(c.evMerged, n)
 		}
-		c.evByNode[n][key] = s
-		delete(c.evMerged, n)
 	}
-	c.evAllOK, c.globalOK = false, false
-	c.final = map[string]coverage{}
+	c.evAllOK = false
+	c.invalidate()
+	if c.sinceSwep++; c.sinceSwep >= 4096 && c.sinceSwep >= len(c.open) {
+		c.closeOpen()
+	}
 }
 
-func (c *observationCoverage) dropEvidence(key string, e evidenceSpan) {
-	delete(c.evidence, key)
-	delete(c.evNodeless, key)
-	for _, n := range e.nodes {
-		if m := c.evByNode[n]; m != nil {
+// nodeKeys is the evidence index keys of nodes: "" for evidence crediting no
+// node (it still counts towards the global coverage).
+func nodeKeys(nodes []string) []string {
+	if len(nodes) == 0 {
+		return []string{""}
+	}
+	return nodes
+}
+
+func (c *observationCoverage) fold(nodes []string, s span) {
+	for _, n := range nodeKeys(nodes) {
+		p := append(c.pending[n], s)
+		if len(p) > 256 && len(p) > 2*len(c.closed[n]) {
+			c.closed[n] = union(c.closed[n], coverage(p))
+			p = nil
+		}
+		c.pending[n] = p
+		delete(c.evMerged, n)
+	}
+}
+
+func (c *observationCoverage) dropOpen(key string, e evidenceSpan) {
+	delete(c.open, key)
+	for _, n := range nodeKeys(e.nodes) {
+		if m := c.openBy[n]; m != nil {
 			delete(m, key)
 			if len(m) == 0 {
-				delete(c.evByNode, n)
+				delete(c.openBy, n)
 			}
 		}
 		delete(c.evMerged, n)
+	}
+}
+
+// closeOpen folds evidence that can no longer be extended.
+func (c *observationCoverage) closeOpen() {
+	c.sinceSwep = 0
+	cutoff := c.now().Add(-c.openWindow())
+	for k, e := range c.open {
+		if e.to.Before(cutoff) {
+			c.dropOpen(k, e)
+			c.fold(e.nodes, e.s)
+		}
 	}
 }
 
@@ -354,24 +472,50 @@ func sameNodes(a, b []string) bool {
 	return true
 }
 
-// forget drops evidence that ended before the cutoff (drift's retention).
-// Heartbeats are replaced wholesale by setHeartbeats instead.
+// forget drops evidence before the cutoff (drift's retention) and folds
+// evidence that can no longer be extended. Heartbeats are replaced
+// wholesale by setHeartbeats instead.
 func (c *observationCoverage) forget(before time.Time) {
-	for k, e := range c.evidence {
-		if e.s.to.Before(before) {
-			c.dropEvidence(k, e)
-			c.evAllOK, c.globalOK = false, false
+	c.closeOpen()
+	for n := range c.pending {
+		c.mergeClosed(n)
+	}
+	for n, cv := range c.closed {
+		if len(cv) > 0 && cv[0].to.Before(before) {
+			if cv = cv.from(before); len(cv) == 0 {
+				delete(c.closed, n)
+			} else {
+				c.closed[n] = cv
+			}
+			delete(c.evMerged, n)
+			c.evAllOK = false
 		}
 	}
-	c.final = map[string]coverage{}
+	for k, e := range c.open {
+		if e.s.to.Before(before) {
+			c.dropOpen(k, e)
+			c.evAllOK = false
+		}
+	}
+	c.invalidate()
 }
 
+func (c *observationCoverage) mergeClosed(n string) {
+	if p := c.pending[n]; len(p) > 0 {
+		c.closed[n] = union(c.closed[n], coverage(p))
+	}
+	delete(c.pending, n)
+}
+
+// evidenceOf is all evidence of node n ("": crediting no node), merged.
 func (c *observationCoverage) evidenceOf(n string) coverage {
 	if cv, ok := c.evMerged[n]; ok {
 		return cv
 	}
-	m := c.evByNode[n]
-	ss := make([]span, 0, len(m))
+	c.mergeClosed(n)
+	m := c.openBy[n]
+	ss := make([]span, 0, len(m)+len(c.closed[n]))
+	ss = append(ss, c.closed[n]...)
 	for _, s := range m {
 		ss = append(ss, s)
 	}
@@ -386,15 +530,20 @@ func (c *observationCoverage) globalCoverage() coverage {
 		return c.global
 	}
 	if !c.evAllOK {
-		parts := make([]coverage, 0, len(c.evByNode)+1)
-		for n := range c.evByNode {
+		seen := map[string]bool{}
+		var parts []coverage
+		for n := range c.closed {
+			seen[n] = true
+		}
+		for n := range c.pending {
+			seen[n] = true
+		}
+		for n := range c.openBy {
+			seen[n] = true
+		}
+		for n := range seen {
 			parts = append(parts, c.evidenceOf(n))
 		}
-		nodeless := make([]span, 0, len(c.evNodeless))
-		for _, s := range c.evNodeless {
-			nodeless = append(nodeless, s)
-		}
-		parts = append(parts, buildCoverage(nodeless, time.Time{}, time.Time{}))
 		c.evAll, c.evAllOK = union(parts...), true
 	}
 	c.global, c.globalOK = union(c.hbAll, c.evAll), true
@@ -411,6 +560,11 @@ func (c *observationCoverage) retired(base coverage) coverage {
 	return union(base, c.globalCoverage().from(base.end().Add(c.retireAfter)))
 }
 
+// isGroup reports whether a node key is a CLUSTER_NAME group.
+func (c *observationCoverage) isGroup(n string) bool {
+	return c.groups[n]
+}
+
 // nodeCoverage is the final coverage of one node key: a real node, or a
 // CLUSTER_NAME group.
 func (c *observationCoverage) nodeCoverage(n string) coverage {
@@ -418,47 +572,105 @@ func (c *observationCoverage) nodeCoverage(n string) coverage {
 		return cv
 	}
 	var cv coverage
-	if ms := c.members[n]; len(ms) > 0 {
-		cv = c.groupCoverage(ms)
+	if c.isGroup(n) {
+		cv = c.groupCoverage(c.members[n])
 	} else {
-		cv = c.retired(union(c.hb[n], c.evidenceOf(n)))
+		cv = c.retired(union(c.hb[agentKey{"", n}], c.evidenceOf(n)))
 	}
 	c.final[n] = cv
 	return cv
 }
 
-// groupCoverage: observed while at least one member is active and every
-// active member's agent is heartbeating. A member is active from its first
-// heartbeat until it has been silent for retireAfter (it then counts as
-// retired and drops out). Local activity cannot be attributed to a member
-// and is not used. When every member has retired, the group follows the
-// global coverage (retired as a whole).
-func (c *observationCoverage) groupCoverage(members []string) coverage {
-	var active, gaps []coverage
+// memberGaps is when a member was current but not reporting: silences up to
+// the member timeout after each heartbeat interval, minus the times it was
+// flapping (see the top of this file).
+func (c *observationCoverage) memberGaps(hb coverage) coverage {
+	if len(hb) == 0 {
+		return nil
+	}
+	timeout := c.memberTimeout()
+	window := flapWindowTimeouts * timeout
+	req := make([]span, len(hb))
+	for i, s := range hb {
+		req[i] = span{s.from, s.to.Add(timeout)}
+	}
+	first := hb[0].from
+	var out coverage
+	for _, g := range buildCoverage(req, time.Time{}, time.Time{}).minus(hb) {
+		// Decide per step, at its start: the ratio only falls further into
+		// the silence, so this errs towards "current" (unobserved).
+		for p := g.from; p.Before(g.to); p = p.Add(flapStep) {
+			q := p.Add(flapStep)
+			if q.After(g.to) {
+				q = g.to
+			}
+			lo := p.Add(-window)
+			if lo.Before(first) {
+				lo = first
+			}
+			if life := p.Sub(lo); life > 0 && float64(hb.covered(lo, p)) < flapMinRatio*float64(life) {
+				continue // flapping: not current
+			}
+			if n := len(out); n > 0 && out[n-1].to.Equal(p) {
+				out[n-1].to = q
+			} else {
+				out = append(out, span{p, q})
+			}
+		}
+	}
+	return out
+}
+
+// groupCoverage: observed while at least one member reports and no current
+// member is silent (see the top of this file). When every member has been
+// silent for retireAfter, the group follows the global coverage (retired as
+// a whole). No member heartbeats at all: unobserved.
+func (c *observationCoverage) groupCoverage(members []agentKey) coverage {
+	var hbs, gaps []coverage
 	var last time.Time
 	for _, m := range members {
 		hb := c.hb[m]
 		if len(hb) == 0 {
 			continue
 		}
-		until := hb.end()
-		if c.retireAfter > 0 {
-			until = until.Add(c.retireAfter)
-		} else {
-			until = time.Unix(1<<40, 0) // never retires
-		}
-		window := coverage{{from: hb[0].from, to: until}}
-		active = append(active, window)
-		gaps = append(gaps, window.minus(hb))
+		hbs = append(hbs, hb)
+		gaps = append(gaps, c.memberGaps(hb))
 		if hb.end().After(last) {
 			last = hb.end()
 		}
 	}
-	cv := union(active...).minus(union(gaps...))
+	cv := union(hbs...).minus(union(gaps...))
 	if c.retireAfter > 0 && !last.IsZero() {
 		cv = union(cv, c.globalCoverage().from(last.Add(c.retireAfter)))
 	}
 	return cv
+}
+
+// silentAgents lists agents that stopped reporting: their last heartbeat
+// ended more than the member timeout before now and at or after since.
+// groupedOnly restricts it to CLUSTER_NAME members. Newest silence first.
+func (c *observationCoverage) silentAgents(since, now time.Time, groupedOnly bool) []silentAgent {
+	cutoff := now.Add(-c.memberTimeout())
+	var out []silentAgent
+	for k, hb := range c.hb {
+		if len(hb) == 0 || (groupedOnly && k.group == "") {
+			continue
+		}
+		last := hb.end().Add(-c.heartbeatGrace)
+		if last.Before(cutoff) && !last.Before(since) {
+			out = append(out, silentAgent{Group: k.group, Node: k.node, LastSeen: last})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].LastSeen.Equal(out[j].LastSeen) {
+			return out[i].LastSeen.After(out[j].LastSeen)
+		}
+		if out[i].Group != out[j].Group {
+			return out[i].Group < out[j].Group
+		}
+		return out[i].Node < out[j].Node
+	})
+	return out
 }
 
 // observed is how much of [from, to] at least one of nodes was being watched.
@@ -492,6 +704,11 @@ func (c *observationCoverage) total(from, to time.Time) time.Duration {
 	return c.observed(nil, from, to)
 }
 
+// intersect is the part of c also in b.
+func (c coverage) intersect(b coverage) coverage {
+	return c.minus(c.minus(b))
+}
+
 // localEndpointID reports whether a service ID can only have been produced by
 // the agent of the node it is on: a process-keyed ID ("IP/proc", see
 // makeServiceIDWithProcess). "IP:port" and bare-IP IDs are the far end as
@@ -501,9 +718,10 @@ func localEndpointID(id string) bool {
 	return i > 0 && net.ParseIP(id[:i]) != nil
 }
 
-// edgeReporters returns the nodes whose agent could have recorded an edge:
-// the nodes of its local endpoints. Empty when neither end has a known node.
-func edgeReporters(sourceID, targetID string, nodeOf func(string) string) []string {
+// edgeEvidenceNodes returns the nodes an edge interval is evidence of
+// observation for: the nodes of its process-keyed endpoints only, since
+// either agent can extend an edge between Kubernetes names.
+func edgeEvidenceNodes(sourceID, targetID string, nodeOf func(string) string) []string {
 	var out []string
 	for _, id := range []string{sourceID, targetID} {
 		if !localEndpointID(id) {
@@ -516,6 +734,22 @@ func edgeReporters(sourceID, targetID string, nodeOf func(string) string) []stri
 	return out
 }
 
+// edgeReporters returns the nodes whose coverage an edge's absence is
+// measured against: the nodes of its process-keyed endpoints; failing those,
+// the node on the source's service row, else the target's. Empty when
+// neither end has a node (external addresses): the global coverage.
+func edgeReporters(sourceID, targetID string, nodeOf func(string) string) []string {
+	if out := edgeEvidenceNodes(sourceID, targetID, nodeOf); len(out) > 0 {
+		return out
+	}
+	for _, id := range []string{sourceID, targetID} {
+		if n := nodeOf(id); n != "" {
+			return []string{n}
+		}
+	}
+	return nil
+}
+
 // buildIdleCoverage is the coverage for one idle-spend report: heartbeats
 // from node intervals, local activity from the window's service and edge
 // intervals.
@@ -525,6 +759,8 @@ func buildIdleCoverage(in idleInputs, nodeOf func(id string) string) *observatio
 		grace = storage.DefaultHistoryMaxGap
 	}
 	cov := newObservationCoverage(grace, grace, in.retireAfter)
+	now := in.now
+	cov.now = func() time.Time { return now }
 	lo, hi := in.coverageStart, in.now
 	clip := func(from, to time.Time) (time.Time, time.Time, bool) {
 		if from.Before(lo) {
@@ -543,6 +779,11 @@ func buildIdleCoverage(in idleInputs, nodeOf func(id string) string) *observatio
 		}
 	}
 	cov.setHeartbeats(beats)
+	groups := make([]string, 0, len(in.groups))
+	for g := range in.groups {
+		groups = append(groups, g)
+	}
+	cov.setGroups(groups)
 	for _, si := range in.historyServices {
 		if from, to, ok := clip(si.FirstSeen, si.LastSeen); ok {
 			var nodes []string
@@ -554,7 +795,7 @@ func buildIdleCoverage(in idleInputs, nodeOf func(id string) string) *observatio
 	}
 	for _, ci := range in.historyEdges {
 		if from, to, ok := clip(ci.FirstSeen, ci.LastSeen); ok {
-			cov.addEvidence("", edgeReporters(ci.SourceID, ci.TargetID, nodeOf), from, to)
+			cov.addEvidence("", edgeEvidenceNodes(ci.SourceID, ci.TargetID, nodeOf), from, to)
 		}
 	}
 	return cov
