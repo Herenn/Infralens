@@ -116,6 +116,10 @@ func TestIdleNodeAgentOutageIsNotSilence(t *testing.T) {
 		// History from before heartbeats existed: only n1's own process-keyed
 		// IDs can show n1 was watched.
 		{"no heartbeats, address IDs", "10.0.1.10/api", "10.0.1.11/billing", "10.0.1.12/gw", "10.0.2.5/client", "10.0.1.10:8080", false},
+		// Before heartbeats, with resolved names nothing proves n1's agent
+		// was up: n1 counts as not observed rather than borrowing n2's
+		// coverage.
+		{"no heartbeats, resolved names", "shop/api", "shop/billing", "shop/gw", "shop/client", "shop/api", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -522,6 +522,12 @@ func TestReviewRenderEscaping(t *testing.T) {
 		svc("10.0.0.7/b", "<img src=x onerror=alert(1)>", "web_server", "n1").
 		liveEdge("10.0.0.9/srv", "10.0.0.8/a", 80).
 		node("n1")
+	// The oddly named node has only a name-keyed service, which is not
+	// evidence of its agent; its heartbeat is.
+	w.in.historyNodes = []storage.NodeInterval{
+		{Node: "[n](http://e.vil)", FirstSeen: ago(14 * day), LastSeen: idleNow},
+		{Node: "n1", FirstSeen: ago(14 * day), LastSeen: idleNow},
+	}
 	r := w.run(IdleCostConfig{DefaultNodeMonthly: 100, Currency: "<b>X</b>|"}, IdleSpendQuery{})
 	if r.Currency != "USD" || len(r.Pricing.Warnings) == 0 {
 		t.Errorf("bad currency accepted: %q %v", r.Currency, r.Pricing.Warnings)

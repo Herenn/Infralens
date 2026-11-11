@@ -45,11 +45,14 @@ import (
 //     agents report the same ID, so a live client keeps a dead server's edge
 //     and service row fresh) and credit no node.
 //
-// A node with no evidence of either kind (no heartbeat ever, or no local
-// edge before the epoch) falls back to the global coverage - the union over
-// all nodes, whose gaps are backend or collection-wide outages. After the
-// epoch a node without heartbeats in a stretch was not observed in it,
-// whatever its peers reported.
+// A node with no such evidence was not observed - before the epoch too, so
+// history from before heartbeats with only resolved names counts as
+// unobserved and Idle spend holds those services back until heartbeats
+// accumulate, rather than borrowing other nodes' coverage. Only an endpoint
+// with no node at all (an external address) is measured against the global
+// coverage - the union over all nodes, whose gaps are backend or
+// collection-wide outages. After the epoch a node without heartbeats in a
+// stretch was not observed in it, whatever its peers reported.
 //
 // Known limit: before the epoch, a node where genuinely nothing happened for
 // a while also shows a gap. That errs in the safe direction - silence is
@@ -244,10 +247,10 @@ func (c *observationCoverage) observed(nodes []string, from, to time.Time) time.
 					}
 				}
 			}
-			if len(mine) == 0 {
-				return all // no evidence of this node at all: global
+			if len(nodes) == 0 {
+				return all // an endpoint without a node: global
 			}
-			return mine
+			return mine // no evidence this node's agent was up: not observed
 		})
 		d += cv.covered(from, split)
 	}

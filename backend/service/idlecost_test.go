@@ -430,6 +430,12 @@ func TestIdleSpendCostAttribution(t *testing.T) {
 			world: func() *idleWorld {
 				w := busyNode(newIdleWorld()).node("empty-node")
 				w.in.stale = []storage.ServiceInterval{{ServiceID: "10.0.5.1/old", Name: "old", Node: "empty-node", LastSeen: ago(10 * day)}}
+				// Nothing on the node left any history: only its agent's
+				// heartbeat shows it was watched (and paid for) meanwhile.
+				w.in.historyNodes = []storage.NodeInterval{
+					{Node: "empty-node", FirstSeen: ago(14 * day), LastSeen: idleNow},
+					{Node: "n1", FirstSeen: ago(14 * day), LastSeen: idleNow},
+				}
 				return w
 			},
 			cfg: IdleCostConfig{DefaultNodeMonthly: 60},
